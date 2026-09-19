@@ -48,7 +48,7 @@ Goal 1 is the primary goal. Goals 2-6 are guardrails that the server must meet t
 | 5 | Responsive | p95 overhead for pages under 1 MB, excluding remote server time | <= 500 ms | none - new |
 | 6 | Works in real clients | Server registers and tool call succeeds in Claude Code on aarch64-linux and macOS arm64, by v1.0 | Yes | none - new |
 
-Decision rule: if the spikes show the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped before Milestone M2 (see Section 9).
+Decision rule: if the spikes show the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped at the go/no-go gate G0 (end of Sprint 0) or the memory gate G4 (end of Sprint 4), before safety and packaging work (see Section 9).
 
 ## 3. User Personas
 
@@ -194,12 +194,12 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 
 | Milestone | Target | Exit Criteria |
 |---|---|---|
-| M0: Decisions and spikes | Sprint 0 (Weeks 1-2) | OQ-1, OQ-2, OQ-8 and OQ-9 resolved (done). Benchmark harness and absolute memory targets defined (E-1). `rmcp` and crate choices validated, aarch64 cross-build proven (A-1). Go/no-go on memory target recorded. |
-| M1: Walking skeleton | Sprint 1 (Weeks 3-4) | FR-01, FR-02, FR-13 pass; streaming bounded fetch (FR-16); text returned in Claude Code. |
-| M2: Core fetch + memory gate | Sprints 2-4 (Weeks 5-10) | FR-03, FR-04, FR-07, FR-08, FR-10 pass; benchmark harness live; NFR-10 to NFR-12 meet targets. Decision gate: if not met, stop or re-scope. |
-| M3: Safety | Sprints 5-6 (Weeks 11-14) | FR-05, FR-06 pass; SSRF suite 100%; NFR-04 met. |
-| M4: Config, packaging, ARM | Sprints 7-9 (Weeks 15-20) | FR-09, FR-12, FR-15 pass; NFR-15 CI green; README with ARM install steps. |
-| M5: v1.0 | Sprints 10-11 (Weeks 21-24) | FR-11, all Goals in Section 2 met; benchmark report published; NFR targets verified; tagged release. |
+| M0: Decisions and spikes | Sprint 0 (Weeks 1-2) | OQ-1, OQ-2, OQ-8 and OQ-9 resolved (done). Benchmark harness and absolute memory targets defined (E-1). `rmcp` and crate choices validated, aarch64 cross-build proven (A-1). Hosted PR CI baseline live (D-7). Go/no-go on memory target recorded (G0). |
+| M1: Walking skeleton | Sprints 1-2 (Weeks 3-6) | FR-01, FR-02, FR-13 pass (Sprint 1); SSRF core tested (A-3a); streaming bounded, SSRF-guarded fetch (FR-16, A-3b, Sprint 2); text returned in Claude Code via a throwaway config; 50-URL snapshots captured (E-7). |
+| M2: Core fetch + memory gate | Sprints 3-6 (Weeks 7-14) | Harness live and idle RSS checked (Sprint 3); FR-03 and the memory gate G4, NFR-10 to NFR-12, at the end of Sprint 4 (decision gate: if not met, stop or re-scope); FR-04, FR-08 (Sprint 5); FR-10 (Sprint 6). |
+| M3: Safety | Sprints 6-8 (Weeks 13-18) | FR-05 (B-3, Sprint 7), FR-06 (B-1/B-2, Sprints 6-7) pass; SSRF suite 100% and coverage gate (B-5) at the end of Sprint 8; NFR-04 met. Reached at the end of Sprint 8; no tagged build before it. |
+| M4: Config, packaging, ARM | Sprints 9-11 (Weeks 19-24) | FR-15 (D-2, Sprint 9, MVP complete), FR-12 (Sprint 10), FR-09 (Sprint 11) pass; hosted CI green since Sprint 0, aarch64 test job (Sprint 11); README with ARM install steps (Sprint 9). |
+| M5: v1.0 | Sprints 11-12 (Weeks 23-26) | FR-11 (B-4, Sprint 11), labelling per OQ-5 (Sprint 12), memory-gate CI (E-6), all Goals in Section 2 met; benchmark report published (E-5); NFR targets verified; tagged release (D-6, Sprint 12). |
 
 ## 10. Open Questions
 
@@ -207,10 +207,10 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 |---|---|---|---|---|
 | 1 | Why build this instead of using the existing `mcp__fetch__fetch`? | Michael | - | **Resolved 2026-09-19:** build a new fetch MCP server with a small memory footprint on ARM. |
 | 2 | TypeScript or Python SDK? | Michael | - | **Resolved 2026-09-19:** Rust with the official `rmcp` SDK, stdio transport. |
-| 3 | Should robots.txt be enforced by default for agent-initiated fetches? | Michael | Before M4 | Open |
-| 4 | Is a private-host allowlist needed for home-lab use, or is blanket blocking acceptable? | Michael | Before M3 | Open |
-| 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before M2 | Open |
+| 3 | Should robots.txt be enforced by default for agent-initiated fetches? | Michael | Before Sprint 11 (B-4; needed by C-1 default in Sprint 10 only as a placeholder) | Open |
+| 4 | Is a private-host allowlist needed for home-lab use, or is blanket blocking acceptable? | Michael | Before Sprint 10 (C-2) | Open |
+| 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before Sprint 2 (envelope of A-3b/A-4) | Open |
 | 6 | Is a v1.1 headless-browser mode wanted, and if so as a separate tool? | Michael | After v1.0 | Open |
-| 7 | Will this be distributed publicly (crates.io, GitHub releases, registry), which affects licensing and docs? | Michael | Before M5 | Open |
+| 7 | Will this be distributed publicly (crates.io, GitHub releases, registry), which affects licensing and docs? | Michael | Before Sprint 9 (D-2, D-4; then D-6 in Sprint 12) | Open |
 | 8 | (New) Which incumbent is being replaced, and is its parameter schema the compatibility target? | Michael | Before E-1 | **Resolved 2026-09-19:** not a replacement; no incumbent. Schema `url`, `max_length`, `start_index`, `raw` stays as the default design, not a compatibility contract. |
 | 9 | (New) Is a native aarch64-linux host or runner available for benchmarking, and what is its RAM? | Michael | Before E-1 | **Resolved 2026-09-19:** the author's native aarch64 runner on their cluster; RAM and OS to be recorded later. |

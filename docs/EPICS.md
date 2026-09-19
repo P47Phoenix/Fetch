@@ -1,6 +1,6 @@
 # Epics and Stories: Fetch MCP Server (Rust, low-memory, ARM)
 
-Source: `docs/PRD.md` v0.4 (31 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
+Source: `docs/PRD.md` v0.4 (33 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19; D-7 and E-7 added in plan revision 1). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
 
 Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment capped at 80% (8 points).
 
@@ -48,8 +48,9 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 | E-4 | Peak RSS and boundedness checks | High | 3 | 6 | E-1, E-2, A-3b, A-4 |
 | E-5 | Benchmark report and release decision | High | 2 | 10 | E-3, E-4, A-7 |
 | E-6 | CI regression gate on aarch64 | Medium | 3 | 11 | E-2, D-2 |
+| E-7 | Offline 50-URL snapshot set | High | 2 | 5 | E-1, A-3b |
 
-**MVP Slice:** E-1, E-2, E-3, E-4, E-5. Rationale: these prove or disprove the primary claim. E-6 protects it after release and can follow.
+**MVP Slice:** E-1, E-2, E-3, E-4, E-5, E-7. Rationale: these prove or disprove the primary claim. E-6 protects it after release and can follow.
 
 ### E-1: Spike - define benchmark harness and absolute targets (3 pts) [SPIKE, time-box 2 days]
 Maps to: NFR-10, NFR-11, NFR-14, Goals 1a, 1b, 2, 3.
@@ -69,8 +70,9 @@ As the project owner, I want a one-command harness so that memory measurements a
 - Given a run, when results are produced, then each figure is the median of at least 10 runs with min and max shown.
 - Given Linux and macOS hosts, when the harness runs, then it reads `/proc/<pid>/status` on Linux and `/usr/bin/time -l` on macOS.
 - Given fixtures, when the harness starts, then it provides a 5 MB HTML page, a 50 MB body served both with and without `Content-Length` (chunked), a gzip variant, and a slow-drip response; each fixture is generated from a fixed seed with a committed sha256 and size in a manifest, and the harness refuses to run on a hash mismatch.
-- Given the gating scenarios G1-G7 (5 MB HTML window at end; same gzip; `raw=true`; late-landmark holdback-full HTML; window beyond the 5 MiB cap expecting `too_large`; 10 concurrent calls; 50 MB with Content-Length, chunked window inside cap, chunked window beyond cap), when the harness runs, then the gating peak is the maximum of the per-scenario medians.
+- Given the gating scenarios G1-G7 (5 MB HTML window at end; same gzip; `raw=true`; late-landmark holdback-full HTML; window beyond the 5 MiB cap expecting `too_large`; 10 concurrent calls; 50 MB with Content-Length, chunked window inside cap, chunked window beyond cap), when the harness runs, then the gating peak is the maximum of the per-scenario medians, excluding the 10-concurrent scenario, which is recorded and reported (see E-4) and does not gate.
 - Given the validity rule, when a run early-stops before reading the expected amount (fixture server byte counter below the manifest `expected_min_bytes`), then that sample is invalid, and fewer than 10 valid samples for any scenario makes the whole report INVALID.
+- Given Sprint 3 precedes the D-2 pipeline, when the harness builds the gnu and musl binaries, then it uses a documented interim build script derived from the A-1 spike with `cargo-zigbuild` and `ziglang` versions pinned from the start (D-2 later adopts the same pins), and the native aarch64 runner is provisioned per architecture 9.2 (isolated, no fork PRs, no secrets) with OS and RAM recorded.
 - Given the determinism list (fresh process per sample, pinned child environment, recorded page size, THP, governor and load average, native-ARM preflight refusing QEMU, both gnu and musl binaries), when the harness runs, then it applies and records each item; idle samples may run in parallel processes; the full matrix runs nightly and on main and tag builds.
 
 ### E-3: Idle RSS measurement and target check (2 pts)
@@ -101,7 +103,16 @@ Maps to: NFR-14, NFR-15.
 As the project owner, I want CI to fail on memory regressions so that the saving persists.
 - Given a pull request, when CI runs on an aarch64 runner, then it executes the E-3 and E-4 checks against the built binary.
 - Given the median idle or peak RSS exceeds the absolute target, or regresses more than 10% against the stored last-main baseline, when CI runs, then the job fails and prints the figures. The 10% is relative to the baseline and never a licence to exceed the absolute target; E-6 is a regression tripwire, while the release gate (E-3/E-5) is the strict absolute target.
+- Given E-6 lands (this story creates the memory-gate job), when it is merged, then the memory-gate job is added as a required status check and the release workflow from D-2 is updated to depend on it (moved here from D-2, plan revision 1).
 - Given no aarch64 runner is available, when CI runs, then the job fails or blocks (a skipped job never reads as green: it is a required status check and the release workflow depends on it); a documented manual run of the same bench command on the same runner, attached to the release, is accepted as equivalent.
+
+### E-7: Offline 50-URL snapshot set (2 pts)
+Maps to: Goals 2 and 3 (inputs for A-4).
+As the project owner, I want the 50 curated pages captured once as offline snapshots so that conversion success and token reduction are measured against a fixed set.
+- Given the URL list from E-1, when the snapshots are captured (a script using the A-3b client or `curl`, run once by the author), then each page is stored as an HTML file with a manifest carrying its URL, capture date, size and sha256, and the harness or test refuses a hash mismatch.
+- Given the set, when committed, then the total size and licensing of the stored pages are recorded and the set contains no page that needs cookies or authentication.
+- Given the set, when the 10-URL live smoke list is defined, then it is stored as a separate non-gating list.
+- The 95% conversion success and 50% median token reduction checks run in A-4 (Sprint 4); this story only supplies the set.
 
 ---
 
@@ -147,7 +158,7 @@ As an MCP client developer, I want a registered `fetch` tool with a validated sc
 - Given `url` is missing, uses `file:` or `ftp:`, or numeric params are negative or non-integer, when `fetch` is called, then the call is rejected with a validation error naming the field.
 - Given any request is logged, when the server runs, then all logs go to stderr and stdout carries only MCP protocol messages.
 - Given an aarch64 host, when the server starts, then it reaches ready within 250 ms.
-- Given Claude Code is configured with the binary path, when it lists tools, then `fetch` appears.
+- Given Claude Code is configured with the binary path in a throwaway config on the author's machine (no registration in a permanent config before M3; no fetch-capable code exists yet in Sprint 1), when it lists tools, then `fetch` appears.
 
 ### A-3a: SSRF core - range table, resolver filter, fail-closed policy (5 pts)
 Maps to: FR-06, NFR-04, Risk 2. Split from A-3 on 2026-09-19 (user decision). Architecture modules: `ssrf::ranges`, `ssrf::resolver`, `ssrf::check_url` (14.1).
@@ -156,7 +167,7 @@ As a home-lab operator, I want the address-blocking core to exist and be tested 
 - Given a URL whose host is an IP literal, when `check_url` runs, then blocked literals are refused before any resolution or connection.
 - Given a name, when the resolver filter runs (with an injectable test resolver), then it resolves once, refuses if any answer is blocked, and returns only the validated set for dialling (no second lookup).
 - Given a redirect target, when the per-hop revalidation function runs, then it applies the same scheme, IP-literal and resolver checks to the new URL and refuses non-http(s) schemes.
-- Given the default `Policy`, when constructed, then it is fail-closed (blocks everything non-public); the only way to permit loopback is the cfg/feature-gated test constructor (R12), asserted absent from release builds.
+- Given the default `Policy`, when constructed, then it is fail-closed (blocks everything non-public); the only way to permit loopback is the cfg/feature-gated test constructor (R12), asserted absent from release builds by a CI job (release build, `cargo tree -e features` and a symbol grep for `test-support`) that is a required check (job skeleton from D-7).
 - Given the module, when reviewed, then it has no dependency on the HTTP client, so it is testable without network access.
 - Given the module, when complete, then `cargo test`, clippy and fmt pass and unit tests cover each range and the mixed-answer case; deeper encoding, rebinding and coverage-gate work stays in B-1, B-2, B-5.
 
@@ -174,6 +185,7 @@ As a developer on ARM, I want the body read as a stream and capped so that memor
 - Given the integration tests through the real client, when run, then they prove `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are each refused; A-3b is not Done until they pass.
 - Given a gzip response, when decoded with `flate2` (pinned when added), then only identity or a single gzip is accepted (checked from the header before decode), stacked, unknown, multi-member and trailing-garbage fixtures behave per ADR-004, and the decompressed-byte cap applies with output steps of at most 64 KiB (bomb fixture asserts it).
 - Given explicit header size and count limits, when a header-bomb fixture is served, then the call fails cleanly.
+- Given the DoD benchmark rule, when A-3b is closed, then a non-gating manual RSS smoke (one 5 MB fetch on native aarch64, VmHWM read from `/proc/<pid>/status`, result noted in the PR) is recorded; the full memory gate is E-3/E-4 in Sprints 3-4 (harness lands in Sprint 3).
 - Given a byte stream, when decoded, then the UTF-8 streaming decoder with replacement is used (non-UTF-8 charsets complete in A-8).
 
 Note: B-1, B-2 and B-3 own test depth (encodings, mixed answers, rebinding simulation), the coverage gate and hardening for what A-3a and A-3b land. Split rationale and cut: see `.delivery/artifacts/05-plan/po/sprint-plan.md`.
@@ -183,7 +195,7 @@ Maps to: FR-03, NFR-02.
 As an LLM agent, I want clean markdown so that I spend fewer tokens.
 - Given an HTML page with headings, links, lists and code blocks, when `fetch` is called, then those elements are preserved in markdown.
 - Given `<script>`, `<style>` and hidden navigation chrome, when converted, then their text is absent.
-- Given the 50-URL test set, when run, then median token reduction is at least 50% and no output contains `<script>` text.
+- Given the E-7 offline snapshot set, when converted, then at least 95% of the 50 pages convert successfully, median token reduction is at least 50% and no output contains `<script>` text (Goals 2 and 3; both checks are part of the Sprint 4 exit).
 - Given a 1 MB HTML page, when converted, then overhead is at most 500 ms p95 on aarch64.
 - Given the converter, when used, then it sits behind a trait so it can be swapped.
 
@@ -334,7 +346,7 @@ As a home-lab operator, I want to allow named internal hosts so that the agent c
 Maps to: FR-07, FR-12, US-6.
 As a developer, I want to tune limits so that I can trade completeness against memory.
 - Given `FETCH_TIMEOUT_MS=5000`, when a server takes longer, then the call fails with a timeout error.
-- Given `FETCH_MAX_BYTES=1048576`, when a larger body is served, then reading stops at 1 MB with a size error.
+- Given `FETCH_MAX_BYTES=1048576`, when a larger body is served, then a `Content-Length` above 1 MB or a chunked body whose requested window extends beyond 1 MB gives a size error, and a chunked body whose window completes inside 1 MB succeeds (same rule as FR-07).
 - Given a configured max size, when peak RSS is measured, then it scales with the configured limit rather than the response size.
 - Given `FETCH_MAX_LENGTH_CAP` is unset, when the server starts, then the `max_length` hard cap is 100,000 characters (was 200,000 in an earlier draft; lowered to fit the memory budget); a set value is validated and applied.
 
@@ -353,13 +365,14 @@ As a developer, I want to tune limits so that I can trade completeness against m
 | # | Story | Value | Effort | Priority | Dependencies |
 |---|---|---|---|---|---|
 | D-1 | Size- and memory-optimized release profile | High | 2 | 12 | A-3b |
-| D-2 | ARM build pipeline (aarch64-linux, macOS arm64) | High | 5 | 12 | A-1, D-1 |
+| D-2 | ARM release pipeline (aarch64-linux, macOS arm64) | High | 5 | 12 | A-1, D-1, D-7, OQ-7 |
 | D-3 | Test suite on aarch64 | High | 3 | 14 | D-2 |
-| D-4 | README, install and migration guide | High | 2 | 14 | D-2 |
+| D-4 | README, install and migration guide | High | 2 | 14 | D-2, OQ-7 |
 | D-5 | Tool description within 150 words | Low | 1 | 14 | A-5 |
 | D-6 | Licensing, dependency audit and release tag | Medium | 2 | 15 | D-3, OQ-7 |
+| D-7 | Hosted PR CI baseline (x86_64) | High | 2 | 1 | None |
 
-**MVP Slice:** D-1, D-2, D-4. Rationale: a release needs a buildable ARM binary and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
+**MVP Slice:** D-7, D-1, D-2, D-4. Rationale: a release needs a buildable ARM binary and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
 
 ### D-1: Size- and memory-optimized release profile (2 pts)
 Maps to: FR-15, NFR-13.
@@ -374,9 +387,10 @@ As a developer, I want CI to build ARM release binaries so that I can install wi
 - Given a tag push, when CI runs, then it produces stripped binaries for `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`, with checksums.
 - Given the aarch64-linux artifact, when run on a clean aarch64 container, then it completes the MCP handshake.
 - Given an x86_64-linux build, when requested, then it is produced as best-effort and its failure does not block release.
-- Given the Rust toolchain, when the MSRV is set, then it is pinned in `rust-toolchain.toml` (exact channel), `Cargo.lock` is committed, all CI commands use `--locked`, high-churn direct dependencies use exact `=` requirements, cross-build tools (`cargo-zigbuild`, `ziglang`) are version-pinned, and every GitHub Action is pinned by full commit SHA.
-- Given the runner topology (architecture 9.2), when workflows are written, then hosted jobs run PR checks, self-hosted aarch64 jobs run only on main, tags, nightly and maintainer dispatch, fork PRs never reach the self-hosted runner, and the aarch64 test and memory-gate jobs are required status checks that the release workflow depends on.
-- Given `deny.toml`, when committed, then it has `advisories`, `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`), `sources` (crates.io only) and `licenses` (permissive allow-list) sections, and CI asserts the release build has neither the `test-support` nor the bench fixture-CA feature.
+- Given the toolchain and pins from D-7, when the release pipeline is written, then it reuses them and adds the version-pinned cross-build tools (`cargo-zigbuild`, `ziglang`, same pins as the Sprint 3 interim build script) and asserts the hosted checks are green before a release job runs.
+- Given the runner topology (architecture 9.2), when the release workflow is written, then self-hosted aarch64 jobs run only on main, tags, nightly and maintainer dispatch and fork PRs never reach the self-hosted runner. Hosted PR checks already exist from D-7. The aarch64 test job (D-3) and memory-gate job (E-6) do not exist yet; until they land (Sprints 11 and 12) the MVP release depends on the documented manual bench run (E-6's equivalent) plus the E-5 report, and D-3 and E-6 add themselves as required checks the release workflow depends on. Tagged builds before M3 remain prohibited; D-6 is the v1.0 tagger.
+- Given OQ-7 is decided before Sprint 9, when artifacts are named and published, then the channel and licence follow that decision.
+- Given `deny.toml` (committed in D-7), when the release pipeline runs, then it still has `advisories`, `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`), `sources` (crates.io only) and `licenses` (permissive allow-list) sections, and CI asserts the release build has neither the `test-support` nor the bench fixture-CA feature.
 - Given the binary, when run with `--version`, then it prints crate version, commit, target triple and libc, and startup writes one `info` line to stderr.
 
 ### D-3: Test suite on aarch64 (3 pts)
@@ -390,7 +404,7 @@ As a developer, I want tests to run on real ARM so that ARM-specific issues are 
 Maps to: US-8, Goal 6.
 As a developer, I want clear install steps so that I can register the server quickly.
 - Given the README, when followed on aarch64-linux and macOS arm64, then the server is registered in Claude Code and `fetch` works.
-- Given the README, when read, then it lists environment variables, defaults, limitations (no JS, prompt-injection note), and a section "Registering in Claude Code" with the config snippet.
+- Given the README, when read, then it lists environment variables (defaults only at Sprint 9; the env-var and config-error sections are re-checked when C-1 lands in Sprint 10), defaults, limitations (no JS, prompt-injection note), and a section "Registering in Claude Code" with the config snippet.
 - Given the benchmark report exists, when linked, then the README states the measured idle and peak memory.
 - Given the README, when read, then it documents: config errors exit before the handshake with the variable named on stderr; proxies are unsupported (fixed no-proxy); hosts behind a local NAT64 gateway should note that NAT64/6to4 addresses with public embedded IPv4 are allowed; and the musl static build may not resolve `.local` or split-DNS names that glibc resolves.
 
@@ -407,15 +421,25 @@ As the project owner, I want a clean v1.0 tag so that the release is auditable.
 - Given a licence is selected per OQ-7, when the release is tagged, then LICENSE is present and direct dependencies are at most 15.
 - Given all PRD Goals are met, when v1.0 is tagged, then the release notes link the benchmark report.
 
+### D-7: Hosted PR CI baseline (2 pts) [added in plan revision 1]
+Maps to: NFR-15, NFR-04 (release-build guard), Definition of Done.
+As a solo developer, I want hosted PR checks from Sprint 0 so that "CI green" in the Definition of Done is real from the first story.
+- Given a pull request, when hosted CI runs on x86_64, then `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` run and are required status checks.
+- Given the repo, when committed, then `rust-toolchain.toml` pins the exact channel, `Cargo.lock` is committed, all CI commands use `--locked`, and every GitHub Action is pinned by full commit SHA.
+- Given `deny.toml` (sections `advisories`, `bans` denying `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`, `sources` crates.io only, `licenses` permissive allow-list), when CI runs, then `cargo deny` passes.
+- Given the crate, when CI runs, then a job skeleton builds the release profile and asserts absence of the `test-support` and bench fixture-CA features (fails if present; becomes meaningful once A-3a adds `test-support`).
+- Given fork pull requests, when CI runs, then only hosted jobs run; no self-hosted runner is used here (that is D-2/D-3/E-6).
+- Note: pushing the branch and opening the sprint PR is covered by the owner's sprint-start instruction; native aarch64 per-story benchmarks are manual on PRs because self-hosted jobs run only on main, tags, nightly and dispatch.
+
 ---
 
 # Overall MVP Slice (cross-epic)
 
 **Definition:** "Safe to run on my ARM machines, with the memory targets proven."
 
-Included (68 points; was 63 before the A-3 split and re-estimate, 5 to 5+5): E-1, A-1, A-2, A-3a, A-3b, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
+Included (72 points; was 68 before plan revision 1 added D-7 (2) and E-7 (2), and 63 before the A-3 split): E-1, A-1, D-7, A-2, A-3a, A-3b, E-7, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
 
-Deferred to post-MVP (v1.0 completion): A-8, A-9, C-1, C-2, C-3, B-4, B-6, D-3, D-5, D-6, E-6.
+Deferred to post-MVP (v1.0 completion, 24 points): A-8, A-9, C-1, C-2, C-3, B-4, B-6, D-3, D-5, D-6, E-6.
 
 Rationale: the MVP contains every story needed to (a) prove the memory case, (b) deliver the core fetch behavior, (c) refuse internal addresses, and (d) install on ARM. Charset handling, config knobs, robots.txt and labelling do not affect the release decision. Trade-off: MVP ships with fixed defaults and UTF-8-only decoding; acceptable for personal use. Cost of adding A-8 early is low (2 pts) and it can be pulled forward if the test set shows encoding failures.
 
@@ -427,11 +451,11 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 
 | Sprint | Goal | Stories | Points |
 |---|---|---|---|
-| 0 | De-risk: benchmark harness/targets and crate stack; go/no-go | E-1, A-1 | 6 |
+| 0 | De-risk and CI baseline: targets, crate stack, hosted CI; go/no-go | E-1, A-1, D-7 | 8 |
 | 1 | Walking skeleton and SSRF core (no network code yet) | A-2, A-3a | 8 |
-| 2 | Bounded streaming fetch in Claude Code, SSRF-guarded | A-3b, A-9 | 6 |
-| 3 | Benchmark harness and idle RSS | E-2, E-3 | 7 |
-| 4 | Convert, and memory gate: idle/peak verified | A-4, E-4 | 8 |
+| 2 | Bounded streaming fetch, SSRF-guarded; 50-URL snapshots captured | A-3b, E-7 | 7 |
+| 3 | Benchmark harness and idle RSS | E-2, E-3, A-9 | 8 |
+| 4 | Convert (95%/50% checks), and memory gate | A-4, E-4 | 8 |
 | 5 | Paginate and content types | A-5, A-6 | 6 |
 | 6 | Clear errors and private-IP test depth | A-7, B-1 | 8 |
 | 7 | Redirect limit, encoded forms, benchmark report | B-3, B-2, E-5 | 8 |
@@ -441,7 +465,7 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 | 11 | robots.txt, charset, ARM tests | B-4, A-8, D-3 | 8 |
 | 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 |
 
-Total 92 points over 13 sprints (0-12). Overall MVP (68 points) is reached at the end of Sprint 9 (D-2, D-4 land there; E-5 landed in Sprint 7), unchanged from before the split. Non-MVP A-9 (Sprint 2) and D-5 (Sprint 8) fill slack; C-2 (Sprint 10) needs C-1. v1.0 moves from Sprint 11 to Sprint 12 because the re-estimate added 5 points. To reach MVP sooner, move D-1 into Sprint 7 and D-2 into Sprint 8, at the cost of delaying B-5.
+Total 96 points over 13 sprints (0-12) (was 92; plan revision 1 added D-7 and E-7). Overall MVP (72 points) is reached at the end of Sprint 9 (D-2, D-4 land there; E-5 landed in Sprint 7), still Sprint 9. Non-MVP A-9 (Sprint 3) and D-5 (Sprint 8) fill slack; C-2 (Sprint 10) needs C-1. v1.0 moves from Sprint 11 to Sprint 12 because the re-estimate added 5 points. To reach MVP sooner, move D-1 into Sprint 7 and D-2 into Sprint 8, at the cost of delaying B-5.
 
 **Split decision (2026-09-19, user):** A-3 is split into A-3a (SSRF core, Sprint 1, 5 pts) and A-3b (fetch client, Sprint 2, 5 pts). The original 5 pts under-estimated the absorbed scope; the two halves are re-estimated at 5 each (+5 total). Sprint 1 stays at the 8-point ceiling (A-2 + A-3a) and A-3b moves to Sprint 2, so no fetch-capable build exists before A-3a is in place, and A-3b has a merge gate requiring A-3a's checks. The following stories moved one to two sprints later as a result: A-4 (Sprint 2 to 4), A-5 (2 to 5), A-6 (3 to 5), A-7 (4 to 6); E-2, E-3 and E-4 keep Sprints 3, 3 and 4. The memory gate stays at the end of Sprint 4 (E-3 in Sprint 3, E-4 in Sprint 4).
 
@@ -486,9 +510,9 @@ Trade-off: Sprint 10 is 7 points with C-2 and 5 if OQ-4 is "no" (C-2 dropped).
 
 | # | Item | Owner | Blocks |
 |---|---|---|---|
-| OQ-3 | robots.txt default | Michael | B-4, C-1 default |
-| OQ-4 | Private-host allowlist needed | Michael | C-2 (Sprint 10) |
+| OQ-3 | robots.txt default. DUE before Sprint 11 | Michael | B-4, C-1 default |
+| OQ-4 | Private-host allowlist needed. DUE before Sprint 10 | Michael | C-2 (Sprint 10) |
 | OQ-5 | Untrusted-content labelling. DUE before Sprint 2 (affects result envelope in A-3b/A-4) | Michael | B-6 |
-| OQ-7 | Distribution and licence | Michael | D-6 |
+| OQ-7 | Distribution and licence. DUE before Sprint 9 starts (D-2 artifact naming/publication, D-4 install guide, LICENSE) | Michael | D-2, D-4, D-6 |
 | OQ-8 | Resolved 2026-09-19: not a replacement; no incumbent; schema is default design | Michael | None |
 | OQ-9 | Resolved 2026-09-19: native aarch64 runner on author's cluster; RAM/OS to be recorded | Michael | None |
