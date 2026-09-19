@@ -5,8 +5,10 @@
 
 Scenarios: see scenarios.py (`g4a`/`g4b` expand to groups). Idle = VmRSS after initialize + tools/list + settle
 (default 30 s). Peak = VmHWM after one `fetch` returned. Every sample is a fresh process.
-Exit codes: 0 all targets met and report VALID; 1 a target missed; 2 INVALID or refused (fewer than 10 valid runs,
-fixture hash mismatch, wrong binary kind, unimplemented scenario); 3 --gate requested but host is not native aarch64.
+Exit codes: 0 all targets met and report VALID; 1 a target missed; 2 INVALID, INCOMPLETE or refused (fewer than 10 valid
+runs, fixture hash mismatch, wrong binary kind or missing/non-executable binary, unimplemented scenario, --gate override or
+incomplete gate set, a boundedness scenario without its 5 MiB reference); 3 --gate requested but host is not native aarch64
+(checked after every other --gate rule, so those refusals are exercisable anywhere).
 Without --gate the run is advisory (record has gating=false). MB = MiB (2**20). Linux only here (macOS: E-2).
 """
 import argparse, concurrent.futures as cf, json, os, platform, queue, statistics, subprocess, sys, threading, time
@@ -16,6 +18,16 @@ from scenarios import SCENARIOS, GROUPS
 MIB_KB = 1024                      # kB per MiB: /proc reports kB (KiB)
 IDLE_TARGET_MIB, PEAK_TARGET_MIB, BOUND_RATIO = 10, 40, 1.10
 PINNED_ENV = {"FETCH_LOG": "warn", "LC_ALL": "C"}   # plus PATH; RUST_LOG, LD_PRELOAD, MALLOC_* deliberately absent
+GATE_CHILD_ENV_ALLOW = frozenset()   # --gate allowlist for --child-env keys: none. The pinned env is the whole environment.
+SHIPPED_FORBIDDEN_MARKERS = ("bench-loopback", "test-support", "FETCH_MCP_MARKER_")  # any of these in --version => not "shipped"
+
+
+def required_gate_set(kind, names):
+    """Scenarios a --gate run of this binary kind must contain (architecture 11.0): shipped -> idle; bench -> every
+    scenario of each gate group (G4a/G4b) the run touches, or the whole G4a group if it touches neither."""
+    if kind == "shipped": return ["idle"]
+    groups = [g for g in ("g4a", "g4b") if any(n in GROUPS[g] for n in names)] or ["g4a"]
+    return [n for g in groups for n in GROUPS[g]]
 
 
 def proc_status(pid):
@@ -96,8 +108,9 @@ class Server:
 
 def sample(binary, env_extra, scen, srv, base_url, settle):
     """One fresh-process sample -> dict(valid, reason, rss_kB, hwm_kB)."""
-    s = Server(binary, env_extra)
+    s = None
     try:
+        s = Server(binary, env_extra)
         s.handshake()
         if scen["kind"] == "idle":
             time.sleep(settle)
@@ -119,7 +132,7 @@ def sample(binary, env_extra, scen, srv, base_url, settle):
     except Exception as e:  # any handshake/protocol failure is an invalid sample, never silently dropped
         return {"valid": False, "reason": f"{type(e).__name__}: {e}", "rss_kB": 0, "hwm_kB": 0}
     finally:
-        s.close()
+        if s: s.close()
 
 
 def version_of(binary, env_extra):
@@ -160,14 +173,16 @@ def main(argv=None):
     unknown = [n for n in names if n not in SCENARIOS]
     if unknown: return refuse(f"unknown scenario {unknown}")
     if a.gate:
-        ok, why = native_aarch64()
-        if not ok: return refuse(f"--gate refused: {why} (QEMU/non-native RSS never gates)", 3)
         if a.smoke or (a.idle_target_mib, a.peak_target_mib) != (IDLE_TARGET_MIB, PEAK_TARGET_MIB):
             return refuse("--gate forbids --smoke and target overrides")
         if a.settle != 30.0 or a.parallel_idle != 1:
             return refuse("--gate forbids --settle other than 30 and --parallel-idle > 1")
-        forbidden = [kv for kv in a.child_env if kv.split("=", 1)[0] in ("LD_PRELOAD", "RUST_LOG") or kv.startswith("MALLOC_")]
-        if forbidden: return refuse(f"--gate forbids child env overrides of the pinned environment: {forbidden}")
+        missing = [n for n in required_gate_set(a.binary_kind, names) if n not in names]
+        if missing: return refuse(f"--gate incomplete: required gate scenarios missing from the run: {missing}")
+        forbidden = [kv for kv in a.child_env if kv.split("=", 1)[0] not in GATE_CHILD_ENV_ALLOW]
+        if forbidden: return refuse(f"--gate forbids any child env override (allowlist is empty): {forbidden}")
+        ok, why = native_aarch64()
+        if not ok: return refuse(f"--gate refused: {why} (QEMU/non-native RSS never gates)", 3)
     if a.runs < 10 and not a.smoke: return refuse(f"--runs {a.runs} < 10 valid runs required (use --smoke for a non-gating check)")
     for n in names:
         if not SCENARIOS[n]["implemented"]: return refuse(f"scenario {n} not implemented yet (needs E-2 fixtures/args or A-5/A-6)")
@@ -177,10 +192,12 @@ def main(argv=None):
     if bad: return refuse("fixture hash mismatch: " + "; ".join(bad))
     manifest = fixtures.load_manifest()
 
+    if not (os.path.isfile(a.binary) and os.access(a.binary, os.X_OK)): return refuse(f"binary not found or not executable: {a.binary}")
     ver = version_of(a.binary, env_extra)
     marker = "bench-loopback" in ver
     if a.binary_kind == "bench" and not marker: return refuse("--binary-kind bench but --version lacks the bench-loopback marker")
-    if a.binary_kind == "shipped" and marker: return refuse("--binary-kind shipped but binary carries the bench-loopback marker")
+    carried = [m for m in SHIPPED_FORBIDDEN_MARKERS if m in ver]
+    if a.binary_kind == "shipped" and carried: return refuse(f"--binary-kind shipped but --version carries a forbidden-feature marker: {carried}")
     for n in names:
         need = SCENARIOS[n].get("binary", "bench")
         if need != a.binary_kind: return refuse(f"scenario {n} is gated on the {need} binary, got {a.binary_kind}")
@@ -192,7 +209,7 @@ def main(argv=None):
 
     srv = serve.FixtureServer(a.fixtures_dir, manifest).start()
     base = f"http://127.0.0.1:{srv.port}"
-    medians, invalid, missed = {}, [], []
+    medians, invalid, missed, incomplete = {}, [], [], []
     try:
         for n in names:
             scen = dict(SCENARIOS[n]); scen["min_bytes_v"] = scen["min_bytes"](manifest) if "min_bytes" in scen else 0
@@ -228,15 +245,17 @@ def main(argv=None):
     if peaks: summ["gating_peak_kB"] = max(peaks.values()); summ["gating_peak_MiB"] = round(max(peaks.values()) / MIB_KB, 2)
     for n in names:
         ref = SCENARIOS[n].get("bounded_vs")
-        if ref and n in medians and ref in medians:
-            ratio = medians[n] / medians[ref]; summ.setdefault("boundedness", {})[n] = round(ratio, 3)
-            if ratio > BOUND_RATIO: missed.append(n + " (boundedness)")
-    summ["missed"] = missed; summ["invalid"] = invalid
+        if not ref or n not in medians: continue
+        if ref not in medians:   # reference absent or invalid: boundedness unchecked, so never a PASS
+            incomplete.append(f"{n} (boundedness reference {ref} has no valid result)"); continue
+        ratio = medians[n] / medians[ref]; summ.setdefault("boundedness", {})[n] = round(ratio, 3)
+        if ratio > BOUND_RATIO: missed.append(n + " (boundedness)")
+    summ["missed"] = missed; summ["invalid"] = invalid; summ["incomplete"] = incomplete
     # A pass without --gate is advisory and must not read as a gate PASS.
-    summ["verdict"] = "INVALID" if invalid else ("FAIL" if missed else ("PASS" if a.gate else "ADVISORY_PASS"))
+    summ["verdict"] = "INVALID" if invalid else ("FAIL" if missed else ("INCOMPLETE" if incomplete else ("PASS" if a.gate else "ADVISORY_PASS")))
     summ["note"] = "" if a.gate else "advisory: not a gating run (no --gate); never valid for NFR claims"
     emit(summ)
-    return finish(2 if invalid else 1 if missed else 0)
+    return finish(2 if invalid else 1 if missed else 2 if incomplete else 0)
 
 
 if __name__ == "__main__":

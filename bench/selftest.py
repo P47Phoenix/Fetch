@@ -10,8 +10,8 @@ STANDIN = os.path.join(HERE, "standin_mcp.py")
 fails = []
 
 
-def run(*args):
-    p = subprocess.run([sys.executable, os.path.join(HERE, "measure.py"), "--binary", STANDIN, "--settle", "0.3", *args],
+def run(*args, settle=True):
+    p = subprocess.run([sys.executable, os.path.join(HERE, "measure.py"), "--binary", STANDIN, *(["--settle", "0.3"] if settle else []), *args],
                        capture_output=True, text=True)
     recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
     return p.returncode, recs
@@ -74,13 +74,29 @@ with tempfile.TemporaryDirectory() as d:
     check("idle on bench-marked binary refused", rc == 2)
     rc, _ = run(*F, *bk, "--scenario", "g4b-raw")
     check("unimplemented scenario refused", rc == 2)
-    rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate")
+    rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", settle=False)
     import platform
-    check("--gate refused off native aarch64 (exit 3)" if platform.machine() != "aarch64" else "--gate host is aarch64 (skip)",
+    check("--gate complete set refused off native aarch64 (exit 3)" if platform.machine() != "aarch64" else "--gate host is aarch64 (skip)",
           rc == 3 or platform.machine() == "aarch64", f"rc={rc}")
     for flag, val in (("--settle", "1"), ("--parallel-idle", "2")):
-        rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", flag, val)
-        check(f"--gate with {flag} refused (non-native hosts exit 3, native exit 2)", rc in (2, 3), f"rc={rc}")
+        rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", flag, val, settle=False)
+        check(f"--gate with {flag} refused by the override rule, exit 2 on any host", rc == 2 and "forbids" in r[-1]["reason"], f"rc={rc}")
+    for kv in ("GLIBC_TUNABLES=x", "FETCH_TIMEOUT_MS=1", "LC_ALL=en_US", "PATH=/tmp", "LD_PRELOAD=x"):
+        rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", "--child-env", kv, settle=False)
+        check(f"--gate refuses child env {kv.split('=')[0]}, exit 2 on any host", rc == 2 and "child env" in r[-1]["reason"], f"rc={rc}")
+    rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--gate", settle=False)
+    check("--gate with a partial G4a set refused as incomplete, exit 2", rc == 2 and "incomplete" in r[-1]["reason"], f"rc={rc}")
+    # boundedness reference absent must never PASS (the QA probe): 30 MiB blow-up on the 50 MB path alone
+    for g in ([], ["--smoke"]):
+        rc, r = run(*F, *bk, "--scenario", "g4a-50mib-cl", "--peak-target-mib", "1000", "--child-env", "STANDIN_TOOLARGE_ALLOC_MIB=30", *g)
+        check("50 MB scenario without the 5 MiB reference -> INCOMPLETE, exit 2, not a pass",
+              rc == 2 and r[-1]["verdict"] == "INCOMPLETE" and r[-1]["incomplete"], f"rc={rc} {r[-1]['verdict']}")
+    # nonexistent binary and test-support-only marker
+    p = subprocess.run([sys.executable, os.path.join(HERE, "measure.py"), "--binary", "/nonexistent/x", "--binary-kind", "shipped",
+                        "--scenario", "idle", *F], capture_output=True, text=True)
+    check("nonexistent binary -> refused, exit 2, no traceback", p.returncode == 2 and "Traceback" not in p.stderr, f"rc={p.returncode}")
+    rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--child-env", "STANDIN_TESTSUPPORT=1", "--idle-target-mib", "1000")
+    check("shipped kind refuses a test-support-only marker, exit 2", rc == 2, f"rc={rc}")
     # tampered fixture refused
     with open(os.path.join(d, "html_5mib.html"), "r+b") as f: f.seek(100); f.write(b"Z")
     rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle")

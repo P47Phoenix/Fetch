@@ -34,6 +34,7 @@ jobs:
           persist-credentials: false
       - run: rustup show active-toolchain
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --features bench-loopback -- -D warnings
 
   test:
     runs-on: ubuntu-latest

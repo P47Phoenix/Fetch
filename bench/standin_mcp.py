@@ -10,7 +10,8 @@ import http.client, json, os, sys, urllib.parse
 MIB = 1024 * 1024
 CAP = 5 * MIB
 if "--version" in sys.argv:
-    print("standin-mcp 0.0.0 commit=selftest lock=selftest" + (" bench-loopback" if os.environ.get("STANDIN_BENCH") else ""))
+    print("standin-mcp 0.0.0 commit=selftest lock=selftest" + (" bench-loopback" if os.environ.get("STANDIN_BENCH") else "")
+          + (" FETCH_MCP_MARKER_TEST_SUPPORT_V1:test-support" if os.environ.get("STANDIN_TESTSUPPORT") else ""))
     sys.exit(0)
 hold = [b"\x01" * (int(os.environ.get("STANDIN_IDLE_ALLOC_MIB", "0")) * MIB)]
 

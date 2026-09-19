@@ -11,7 +11,7 @@ The owner configures these in GitHub (Settings, Branches, rule for `main`, "Requ
 | Check | Command |
 |---|---|
 | `fmt` | `cargo fmt --check` |
-| `clippy` | `cargo clippy --locked --all-targets -- -D warnings` |
+| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback` |
 | `test` | `cargo test --locked` |
 | `deny` | `cargo deny --locked check` (`deny.toml`) |
 | `release-guard` | `scripts/check-release-features.sh` and `--self-test` |
@@ -27,7 +27,7 @@ Also enable "Require branches to be up to date" and "Require a pull request befo
 
 ## Release-feature guard
 
-`scripts/check-release-features.sh` builds `-p fetch-mcp --release --locked`, asserts via `cargo tree -e features` that the root package enables only allowlisted features (`default`; anything else, including a renamed or new feature, fails), and greps the binary for the `FETCH_MCP_MARKER_` prefix (any marker fails). `--self-test` builds each forbidden feature and requires the guard to fail for both reasons, and checks a renamed feature and an unknown marker (positive controls). `--binary PATH` greps an existing artifact (used by D-2).
+`scripts/check-release-features.sh` builds `-p fetch-mcp --release --locked`, asserts via `cargo tree -e features` that the root package enables only allowlisted features (`default`; anything else, including a renamed or new feature, fails), and greps the binary for the `FETCH_MCP_MARKER_` prefix (any marker fails). `--self-test` builds each forbidden feature and requires the guard to fail for both reasons, and checks a renamed feature and an unknown marker (positive controls). `--features CSV` runs the same tree and marker checks on a release build with those features (the mode the self-test uses to prove the guard fails on `test-support` and `bench-loopback`; it is expected to exit non-zero for them, and CI never passes it). `--binary PATH` greps an existing artifact (used by D-2).
 
 ## Dependencies and advisories
 
@@ -35,4 +35,4 @@ Also enable "Require branches to be up to date" and "Require a pull request befo
 
 ## Licence
 
-`Cargo.toml` `license = "Apache-2.0"` mirrors the repo `LICENSE` file only; the project licence is OQ-7 (open) and `publish = false` blocks publishing until it is decided.
+`Cargo.toml` carries no `license` field and `publish = false` blocks publishing. The project licence is OQ-7 (open) and is not decided here; nothing in CI, `deny.toml` or the benchmark docs depends on it (`deny.toml` `[licenses]` covers dependencies only).

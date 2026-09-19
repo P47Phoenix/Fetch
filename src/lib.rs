@@ -6,13 +6,14 @@
 /// `--version` on a bench build contains the literal `bench-loopback` (what the harness checks).
 #[must_use]
 pub fn build_markers() -> Vec<&'static str> {
-    #[allow(unused_mut)]
-    let mut markers = Vec::new();
-    #[cfg(feature = "test-support")]
-    markers.push("FETCH_MCP_MARKER_TEST_SUPPORT_V1:test-support");
-    #[cfg(feature = "bench-loopback")]
-    markers.push("FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback");
-    markers
+    // Each literal is cfg-gated, so a disabled feature's marker string is not compiled in at all.
+    [
+        #[cfg(feature = "test-support")]
+        "FETCH_MCP_MARKER_TEST_SUPPORT_V1:test-support",
+        #[cfg(feature = "bench-loopback")]
+        "FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback",
+    ]
+    .to_vec()
 }
 
 /// The `--version` line: crate name and version, then one marker per forbidden feature compiled in
