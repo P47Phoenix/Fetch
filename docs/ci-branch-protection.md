@@ -4,7 +4,9 @@ Workflow: `.github/workflows/ci.yml` (hosted `ubuntu-latest` only; no self-hoste
 
 ## Required status checks on `main`
 
-Status: NOT YET CONFIGURED. The workflow exists on the sprint branch; the rule on `main` must be set by the owner after the first CI run (the check names appear in GitHub only once they have run). The `test` check runs only `cargo test --locked` (default features); the `bench-loopback` tests are added by E-8 and do not run yet.
+Status: NOT YET CONFIGURED. The workflow exists on the sprint branch; the rule on `main` must be set by the owner after the first CI run (the check names appear in GitHub only once they have run). The `test` check runs `cargo test --locked` for default, `bench-loopback` and `test-support` features, then `python3 bench/selftest.py` (see the table below).
+
+Never executed: the workflow has never run on hosted GitHub Actions, and `cargo-deny` (the `deny` job) and `cargo-audit` have never been run anywhere (not installed on the dev host). Every check above has been verified only by running its commands locally plus `actionlint`.
 
 The owner configures these in GitHub (Settings, Branches, rule for `main`, "Require status checks to pass before merging") and records it in the sprint PR (template: "Configured DD-MM-YYYY: checks fmt, clippy, test, deny, release-guard; up-to-date and PR required"). The check names are the job ids:
 

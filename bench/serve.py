@@ -19,7 +19,7 @@ ROUTES = {  # path -> (fixture name, mode, extra headers)
 
 class FixtureServer:
     def __init__(self, fixture_dir, manifest, port=0):
-        self.counters, self._lock = {}, threading.Lock()
+        self.counters, self._lock, self._gen = {}, threading.Lock(), 0
         outer = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -31,6 +31,7 @@ class FixtureServer:
                     self.send_error(404); return
                 name, mode, extra = route
                 self.close_connection = True
+                gen = outer._gen   # a straggler from a previous sample must not count into the next one
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 for k, v in extra.items(): self.send_header(k, v)
@@ -45,11 +46,11 @@ class FixtureServer:
                 try:
                     if mode == "slow":
                         for _ in range(120):
-                            outer._send(self, path, b"x" * 64, True); time.sleep(1)
+                            outer._send(self, path, b"x" * 64, True, gen); time.sleep(1)
                     else:
                         with open(os.path.join(fixture_dir, m["file"]), "rb") as f:
                             for blk in iter(lambda: f.read(64 * 1024), b""):
-                                outer._send(self, path, blk, mode == "chunked")
+                                outer._send(self, path, blk, mode == "chunked", gen)
                     if mode != "cl":
                         self.wfile.write(b"0\r\n\r\n")
                 except (BrokenPipeError, ConnectionResetError):
@@ -59,16 +60,16 @@ class FixtureServer:
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
 
-    def _send(self, h, path, data, chunked):
+    def _send(self, h, path, data, chunked, gen):
         with self._lock:   # count before the write: a client that aborts mid-write must not race the counter to zero
-            self.counters[path] = self.counters.get(path, 0) + len(data)
+            if gen == self._gen: self.counters[path] = self.counters.get(path, 0) + len(data)
         h.wfile.write(b"%x\r\n%s\r\n" % (len(data), data) if chunked else data)
         h.wfile.flush()
 
     def bytes_sent(self, path):
         with self._lock: return self.counters.get(path, 0)
     def reset(self):
-        with self._lock: self.counters.clear()
+        with self._lock: self.counters.clear(); self._gen += 1
     def start(self):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start(); return self
     def stop(self):

@@ -207,7 +207,7 @@ def main(argv=None):
             with open(a.out, "a") as f: f.write("\n".join(lines) + "\n")
         return code
     def refuse(msg, code=2):
-        emit({"kind": "summary", "verdict": "REFUSED" if code != 1 else "FAIL", "reason": msg}); return finish(code)
+        emit({"kind": "summary", "verdict": "REFUSED", "reason": msg}); return finish(code)
 
     names = [n for s in a.scenario for n in GROUPS.get(s, [s])]
     unknown = [n for n in names if n not in SCENARIOS]

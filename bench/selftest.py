@@ -75,7 +75,6 @@ with tempfile.TemporaryDirectory() as d:
     rc, _ = run(*F, *bk, "--scenario", "g4b-raw")
     check("unimplemented scenario refused", rc == 2)
     rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", settle=False)
-    import platform
     check("--gate complete set refused off native aarch64 (exit 3)" if platform.machine() != "aarch64" else "--gate host is aarch64 (skip)",
           rc == 3 or platform.machine() == "aarch64", f"rc={rc}")
     for flag, val in (("--settle", "1"), ("--parallel-idle", "2")):

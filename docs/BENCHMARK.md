@@ -2,6 +2,8 @@
 
 Status: E-1 result, Sprint 0. Other documents (PRD, EPICS, architecture, config defaults, reports) refer to this file for the unit, targets, scenarios and method. Harness skeleton: `bench/` (self-test: `python3 bench/selftest.py`). E-2 builds the full fixture set and CI on top of it.
 
+Verification status: hosted GitHub Actions has never run this repository's workflow, and `cargo-deny` and `cargo-audit` have never been run (not installed on the dev host). The harness has only been exercised against the stand-in and the skeleton binary, never against a real MCP server.
+
 ## Quickstart (contributors)
 
 Prerequisites: Linux, Python 3.8+ (standard library only), a Rust toolchain only if you build the real binary. macOS is not supported yet (E-2).
@@ -74,7 +76,7 @@ Scenarios (`bench/scenarios.py`). G0/G4a/G4b are gates; G1..G7 are scenario IDs 
 | `g6-concurrent10` | 10 concurrent (G1/G2 mix), recorded not gating | none | defined, E-4 |
 | `g4b-window-start`, `g4b-window-end` (G1), `g4b-raw` (G3), `g4b-chunked-window-in-cap` (G7b), `g4b-window-beyond-cap` (G5, G7c) | need A-5 / A-6; same 40 MB target; 50 MB cases <= 1.10x | G4b | defined, args/windows are E-2 |
 
-`g4a-50mib-cl` early-stop floor is 1 byte by design: architecture 11.2 sets `expected_min_bytes` for G7a to zero (the abort happens on the header), so its valid-run check only confirms the request reached the server.
+`g4a-50mib-cl` early-stop floor is ZERO bytes (`min_bytes` = 0), as architecture 11.2 sets `expected_min_bytes` for G7a to zero (a correct client aborts on the Content-Length header, before any body write). Nothing per-scenario confirms the request reached the server: a fetch-less or error-only stub that returns `too_large` for every call passes this scenario line (reproduced). The gate is still not falsely passed, because the same server fails `g4a-5mib-full` and `g4a-5mib-gz` (byte floors above zero), and the handshake requires a real `fetch` tool. Treat the `g4a-50mib-cl` line as meaningful only alongside the passing 5 MiB scenarios.
 
 Boundedness: a scenario with a `bounded_vs` reference (the 50 MB ones vs `g4a-5mib-full`) whose reference has no valid result in the same run yields verdict `INCOMPLETE` (exit 2), never `PASS`/`ADVISORY_PASS`.
 
