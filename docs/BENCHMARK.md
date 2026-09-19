@@ -49,7 +49,7 @@ Each term is explained here once. Later sections use the short form.
 | ADVISORY_PASS | The summary word for a passing advisory run. It is NOT a result. Only a `--gate` run with summary `PASS` counts. |
 | PASS / FAIL | PASS: the numbers are within the target. FAIL: a target was missed. |
 | INVALID | The run does not count. Usually fewer than 10 valid samples, or the fixtures did not match. |
-| INCOMPLETE | A needed comparison run is missing (see "Boundedness" in section 5). Also used when a gating run leaves out part of the required set of scenarios. Never a pass. |
+| INCOMPLETE | A 50 MB scenario has no valid 5 MB reference run in the same run (see "Boundedness" in section 5). Exit 2. Never a pass. A `--gate` run that leaves out required scenarios is different: it is refused (exit 2, reason `incomplete`) before any measuring. |
 | REFUSED | The script declined to start, for example because you asked `--gate` on the wrong machine. |
 | Handshake | The opening exchange: the client sends `initialize`, then `tools/list`, and the server must answer with real results, including a tool named `fetch`. |
 | JSON-RPC, stdio | The message format (JSON-RPC) and the pipe (the program's standard input and output) the client and server use to talk. |
