@@ -1,6 +1,6 @@
 # Epics and Stories: Fetch MCP Server (Rust, low-memory, ARM)
 
-Source: `docs/PRD.md` v0.4 (33 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19; D-7 and E-7 added in plan revision 1). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
+Source: `docs/PRD.md` v0.4 (34 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19; D-7 and E-7 added in plan revision 1; E-8 added in plan revision 2, PROPOSED, needs user confirmation). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
 
 Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment capped at 80% (8 points).
 
@@ -16,6 +16,8 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 
 - No tagged or distributed build before M3 (Safety complete). Pre-M3 builds are not registered in a real MCP client (PRD Risk 2 mitigation).
 - A-3a (SSRF core) lands before A-3b (fetch client) and A-3b merges only if A-3a is on the branch (merge gate). A-3b is not Done until an integration test through the real client proves `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are refused. No fetch-capable build may exist without the range table and fail-closed default policy.
+- Bench loopback (PROPOSED, needs user confirmation; plan revision 2): the shipped release binary keeps the fail-closed policy and cannot reach the loopback fixture server. Peak-RSS scenarios (E-2, E-4, G4) therefore run on a separate `bench-loopback` build of the same commit, made by the same pinned pipeline; idle RSS is gated on the shipped release binary. The feature is off by default, is never enabled in a release, tag or distributed artifact, and is asserted absent by the D-7 guard. See E-8. This does not decide OQ-4.
+- Required architecture change (not made here; architecture and ADR files are not edited in Stage 5): architecture section 11 item 7 (bench-only fixture-CA feature) and section 9 R12 / ADR-003 (`test-support` as the only loopback route) must be extended to name a second compile-time-only route, `bench-loopback` (loopback ranges only), and the D-7 guard and section 11.2 must state which binary each gate measures.
 - Memory gate: E-3/E-5 use the strict absolute targets. E-6 is a regression tripwire (see E-6).
 
 ## Epic-to-Requirement Map
@@ -40,17 +42,18 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 
 ### Story Map
 
-| # | Story | Value | Effort | Priority | Dependencies |
-|---|---|---|---|---|---|
-| E-1 | Spike: define benchmark harness and absolute targets | Critical (go/no-go) | 3 | 1 | None (OQ-9 resolved) |
-| E-2 | Benchmark harness and fixtures | High | 5 | 5 | E-1, A-3b |
-| E-3 | Idle RSS measurement and target check | High | 2 | 6 | E-1, E-2, A-2 |
-| E-4 | Peak RSS and boundedness checks | High | 3 | 6 | E-1, E-2, A-3b, A-4 |
-| E-5 | Benchmark report and release decision | High | 2 | 10 | E-3, E-4, A-7 |
-| E-6 | CI regression gate on aarch64 | Medium | 3 | 11 | E-2, D-2 |
-| E-7 | Offline 50-URL snapshot set | High | 2 | 5 | E-1, A-3b |
+| # | Story | Value | Effort | Dependencies |
+|---|---|---|---|---|
+| E-1 | Spike: define benchmark harness and absolute targets | Critical (go/no-go) | 3 | None (OQ-9 resolved) |
+| E-2 | Benchmark harness and fixtures | High | 5 | E-1, A-3b, E-8 |
+| E-3 | Idle RSS measurement and target check | High | 2 | E-1, E-2, A-2 |
+| E-4 | Peak RSS and boundedness checks | High | 3 | E-1, E-2, E-8, A-3b, A-4 |
+| E-5 | Benchmark report and release decision | High | 2 | E-3, E-4, A-7 |
+| E-6 | CI regression gate on aarch64 | Medium | 3 | E-2, D-2 |
+| E-7 | Offline 50-URL snapshot set | High | 2 | E-1, A-3b |
+| E-8 | Bench-only loopback policy build (PROPOSED) | High | 1 | A-3a, D-7 |
 
-**MVP Slice:** E-1, E-2, E-3, E-4, E-5, E-7. Rationale: these prove or disprove the primary claim. E-6 protects it after release and can follow.
+**MVP Slice:** E-1, E-2, E-3, E-4, E-5, E-7, E-8. Rationale: these prove or disprove the primary claim. E-6 protects it after release and can follow.
 
 ### E-1: Spike - define benchmark harness and absolute targets (3 pts) [SPIKE, time-box 2 days]
 Maps to: NFR-10, NFR-11, NFR-14, Goals 1a, 1b, 2, 3.
@@ -60,6 +63,9 @@ As a solo developer, I want the measurement method and absolute memory targets f
 - Given the measurement protocol, when written, then it defines the handshake and 30 s idle procedure, the 5 MB, 50 MB (with and without `Content-Length`) and slow-drip fixtures, the MCP client script, and the `/proc/<pid>/status` read method.
 - Given plain-HTTP fixtures under-measure TLS, when the spike ends, then it decides the TLS benchmark approach (bench-only fixture-CA build feature absent from release builds, or a one-off manual run against real hosts); until decided, reports carry the caveat "NFR-11 measured over plain HTTP only".
 - Given the 50-URL curated set, when defined, then it lists the URLs as offline snapshots used for conversion success rate and token reduction (Goals 2 and 3); the success metric is conversion success, not live fetch success, and a small non-gating live smoke run (10 URLs) covers network, TLS and redirect behaviour.
+- Given the shipped binary blocks loopback (A-3a fail-closed default) and the fixture server is on 127.0.0.1, when the spike ends, then it records the proposed loopback path (E-8 `bench-loopback` compile-time feature, see E-8) or the owner's alternative, and states which binary each gate measures; this is PROPOSED and needs user confirmation before Sprint 2 starts (E-8 is built in Sprint 2). It does not decide OQ-4.
+- Given Goals 2, 3 and 5, when the spike ends, then it defines the tokenizer and count method for token reduction, the baseline (raw HTML body, no conversion), what "converts successfully" means (no error and non-empty markdown), and the overhead measurement for Goal 5 (conversion time of a 1 MB page, excluding network), so A-4 checks are reproducible.
+- Given G0 uses A-1 measurements taken before this protocol existed, when the spike ends, then it either re-runs the A-1 binary under this protocol (median of 10 valid runs, MB definition above) or records the deviation.
 - Given the protocol and A-1 results, when the spike ends, then it states a go/no-go recommendation on whether the targets look achievable.
 
 ### E-2: Benchmark harness and fixtures (5 pts)
@@ -73,6 +79,8 @@ As the project owner, I want a one-command harness so that memory measurements a
 - Given the gating scenarios G1-G7 (5 MB HTML window at end; same gzip; `raw=true`; late-landmark holdback-full HTML; window beyond the 5 MiB cap expecting `too_large`; 10 concurrent calls; 50 MB with Content-Length, chunked window inside cap, chunked window beyond cap), when the harness runs, then the gating peak is the maximum of the per-scenario medians, excluding the 10-concurrent scenario, which is recorded and reported (see E-4) and does not gate.
 - Given the validity rule, when a run early-stops before reading the expected amount (fixture server byte counter below the manifest `expected_min_bytes`), then that sample is invalid, and fewer than 10 valid samples for any scenario makes the whole report INVALID.
 - Given Sprint 3 precedes the D-2 pipeline, when the harness builds the gnu and musl binaries, then it uses a documented interim build script derived from the A-1 spike with `cargo-zigbuild` and `ziglang` versions pinned from the start (D-2 later adopts the same pins), and the native aarch64 runner is provisioned per architecture 9.2 (isolated, no fork PRs, no secrets) with OS and RAM recorded.
+- Given the shipped binary blocks loopback, when the harness runs peak-RSS scenarios, then it targets the `bench-loopback` build from E-8 (built from the same commit by the same interim pinned script), refuses a peak run against a binary lacking the bench marker, refuses a bench-marked binary for the shipped-binary idle check, and labels every figure with the binary used; idle RSS is also run on the shipped release binary (no fetch needed).
+- Given Sprints 3-8 have no D-2 pipeline, when this story closes, then it creates the minimal self-hosted workflow (nightly and manual dispatch; main and tag triggers are added by D-2) restricted per architecture 9.2, or documents that runs are manual until D-2.
 - Given the determinism list (fresh process per sample, pinned child environment, recorded page size, THP, governor and load average, native-ARM preflight refusing QEMU, both gnu and musl binaries), when the harness runs, then it applies and records each item; idle samples may run in parallel processes; the full matrix runs nightly and on main and tag builds.
 
 ### E-3: Idle RSS measurement and target check (2 pts)
@@ -84,7 +92,8 @@ As a developer on ARM, I want idle memory verified against target so that a resi
 ### E-4: Peak RSS and boundedness checks (3 pts)
 Maps to: NFR-11, NFR-12, FR-16, US-7.
 As a developer on ARM, I want peak memory verified during fetches so that large pages cannot exhaust RAM.
-- Given the 5 MB HTML fixture, when `fetch` runs, then peak RSS is at or below 40 MB.
+- Given the 5 MB HTML fixture, when `fetch` runs on the `bench-loopback` build, then peak RSS is at or below 40 MB; the shipped-binary cross-check (idle delta versus bench build, binary size delta, and one manual 5 MB fetch of a public host on the shipped binary, non-gating) is recorded.
+- Given Sprint 4 precedes A-5 and A-6, when G4a is evaluated, then it covers only scenarios needing A-3b and A-4 (window at start of the 5 MB page, same gzip, late-landmark holdback-full, window beyond the cap, 50 MB Content-Length, chunked in-cap, chunked beyond cap; 10 concurrent recorded); the scenarios needing A-5 (window at end, G1) and A-6 (`raw=true`, G3) are gated as G4b at the end of Sprint 5 against the same targets.
 - Given the 50 MB fixture served with `Content-Length` and max size 5 MB, when `fetch` runs, then the call returns a `too_large` error and peak RSS is within 10% of the 5 MB-page peak.
 - Given the 50 MB fixture served chunked (no `Content-Length`) and a requested window that completes inside the 5 MB cap, when `fetch` runs, then the call succeeds and peak RSS is within 10% of the 5 MB-page peak.
 - Given the 50 MB fixture served chunked and a requested window that extends beyond the cap, when `fetch` runs, then the call returns a `too_large` error and peak RSS is within 10% of the 5 MB-page peak.
@@ -95,6 +104,7 @@ As a developer on ARM, I want peak memory verified during fetches so that large 
 Maps to: Goals 1a-1d, US-9.
 As the project owner, I want a written report so that I can decide to release and register the server in my Claude Code config.
 - Given E-3 and E-4 results, when the report is generated, then it lists idle RSS, peak RSS, and 50 MB boundedness against their absolute targets.
+- Given the Goal 2 wording (offline conversion success), when the report is generated, then it includes the 10-URL live smoke result (network, TLS, redirects, JSON and plain text; non-gating) and the Goal 5 overhead figure defined in E-1.
 - Given the report shows every target met, when it is published to `docs/`, then it states "release" and lists the config change needed.
 - Given any target missed, when it is published, then it states the gap and the follow-up actions.
 
@@ -114,6 +124,17 @@ As the project owner, I want the 50 curated pages captured once as offline snaps
 - Given the set, when the 10-URL live smoke list is defined, then it is stored as a separate non-gating list.
 - The 95% conversion success and 50% median token reduction checks run in A-4 (Sprint 4); this story only supplies the set.
 
+### E-8: Bench-only loopback policy build (1 pt) [PROPOSED, needs user confirmation; added in plan revision 2]
+Maps to: NFR-14, NFR-11, Goal 1d, Risk 2.
+As the project owner, I want the memory benchmark to reach its loopback fixture server without weakening the shipped binary's SSRF policy, so that peak RSS is measured on code identical to what ships except the address policy.
+Options evaluated: (A, recommended) compile-time Cargo feature `bench-loopback`, off by default, same pinned pipeline, a second binary; (B) runtime env/config switch, rejected because it ships a bypass in the release binary and overlaps OQ-4 (private-host allowlist, OPEN); (C) in-process harness (does not measure the server process), network namespace or non-loopback fixture address (RFC 1918 addresses are also blocked, so a test resolver or public host is still needed), or a public-IP fixture (not reproducible), rejected as the primary path (one public-host fetch is kept as the non-gating cross-check).
+- Given the feature `bench-loopback` is enabled, when the policy is constructed, then only 127.0.0.0/8 and ::1 additionally pass; every other blocked range (private, link-local, metadata, CGNAT, ULA, unspecified) still refuses, resolver filter, per-hop revalidation and dial-once behaviour are unchanged, and a unit test proves each still refuses under the feature.
+- Given the feature is absent (default and every release, tag or distributed build), when the binary is built, then loopback is refused; the D-7 release guard fails the build if `bench-loopback` or `test-support` appears in `cargo tree -e features` for the release profile, or if the marker string `bench-loopback` appears in the binary; the A-3b four-refusal integration test runs against the shipped-profile build.
+- Given a `bench-loopback` build, when it starts, then it logs a marker to stderr and reports it in the harness handshake, and the harness and E-5 report label every figure taken with it as "bench build".
+- Given both binaries built from one commit, when compared, then the only source difference is the cfg'd policy constructor; the size delta and idle RSS delta are recorded, and an idle delta above 0.5 MB (proposed threshold) is investigated before G4.
+- Given the release workflow (D-2), when it runs, then it never sets the feature and never uploads the bench binary.
+Effect on "what is measured is what ships": idle RSS is gated on the shipped binary; peak RSS is gated on the bench build, identical code except the address-range check, backed by the delta record and one shipped-binary public-host fetch. This is a stated approximation; the owner confirms it or chooses another path.
+
 ---
 
 # Epic A: Core fetch and conversion
@@ -126,18 +147,18 @@ As the project owner, I want the 50 curated pages captured once as offline snaps
 
 ### Story Map
 
-| # | Story | Value | Effort | Priority | Dependencies |
-|---|---|---|---|---|---|
-| A-1 | Spike: `rmcp`, HTTP, and HTML-to-markdown crate choice | Critical (risk) | 3 | 2 | E-1 in parallel |
-| A-2 | Walking skeleton: stdio server with `fetch` schema | High | 3 | 3 | A-1 |
-| A-3a | SSRF core: range table, resolver filter, fail-closed policy | Critical | 5 | 4 | A-2 |
-| A-3b | Streaming, size-bounded HTTP fetch client | High | 5 | 4 | A-2, A-3a |
-| A-4 | HTML to markdown conversion | High | 5 | 7 | A-3b |
-| A-5 | Pagination with `max_length` and `start_index` | High | 3 | 7 | A-4 |
-| A-6 | Content-type handling and `raw` mode | High | 3 | 8 | A-3b |
-| A-7 | Cause-specific structured errors | High | 3 | 9 | A-3b |
-| A-8 | Charset decoding and User-Agent | Medium | 2 | 12 | A-3b |
-| A-9 | Final URL and status header | Low | 1 | 12 | A-3b |
+| # | Story | Value | Effort | Dependencies |
+|---|---|---|---|---|
+| A-1 | Spike: `rmcp`, HTTP, and HTML-to-markdown crate choice | Critical (risk) | 3 | E-1 in parallel |
+| A-2 | Walking skeleton: stdio server with `fetch` schema | High | 3 | A-1 |
+| A-3a | SSRF core: range table, resolver filter, fail-closed policy | Critical | 5 | A-2 |
+| A-3b | Streaming, size-bounded HTTP fetch client | High | 5 | A-2, A-3a |
+| A-4 | HTML to markdown conversion | High | 5 | A-3b |
+| A-5 | Pagination with `max_length` and `start_index` | High | 3 | A-4 |
+| A-6 | Content-type handling and `raw` mode | High | 3 | A-3b |
+| A-7 | Cause-specific structured errors | High | 3 | A-3b |
+| A-8 | Charset decoding and User-Agent | Medium | 2 | A-3b |
+| A-9 | Final URL and status header | Low | 1 | A-3b |
 
 **MVP Slice:** A-1 to A-7 (A-3 as A-3a and A-3b). Rationale: this is the minimum core behavior (fetch, convert, paginate, raw, errors). A-8 (charset, UA) and A-9 (header) are refinements; UTF-8 default covers most pages.
 
@@ -180,8 +201,9 @@ As a developer on ARM, I want the body read as a stream and capped so that memor
 - Given a response with a `Content-Length` above the limit, when `fetch` is called, then it aborts before reading the body.
 - Given 10 concurrent calls to different URLs, when they complete, then each result matches its own URL with no cross-contamination.
 - Given a request, when it is sent, then no cookies, credentials or auth headers are included (NFR-07).
-- Given more calls than `FETCH_MAX_CONCURRENCY` (default 3), when 10 calls are issued, then 3 run, 7 queue for at most `FETCH_TIMEOUT_MS` and all complete without errors; the fetch deadline starts at permit acquisition.
+- Given more calls than the concurrency default of 3 (compiled defaults until C-1 adds `FETCH_MAX_CONCURRENCY` parsing), when 10 calls are issued, then 3 run, 7 queue for at most the timeout default of 15 s (`FETCH_TIMEOUT_MS` parsing arrives in C-1) and all complete without errors; the fetch deadline starts at permit acquisition.
 - Given the manual redirect loop, when a request and each redirect hop are made, then every URL passes A-3a `check_url`, the resolver filter and per-hop revalidation, and the client dials only the validated IP set (the redirect limit and its tests are B-3).
+- Given an injectable resolver that returns a public answer on the first lookup and a private answer on a second lookup, when `fetch` runs, then the client dials only the validated IP set from the first lookup and never re-resolves (dial-once test).
 - Given the integration tests through the real client, when run, then they prove `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are each refused; A-3b is not Done until they pass.
 - Given a gzip response, when decoded with `flate2` (pinned when added), then only identity or a single gzip is accepted (checked from the header before decode), stacked, unknown, multi-member and trailing-garbage fixtures behave per ADR-004, and the decompressed-byte cap applies with output steps of at most 64 KiB (bomb fixture asserts it).
 - Given explicit header size and count limits, when a header-bomb fixture is served, then the call fails cleanly.
@@ -195,7 +217,7 @@ Maps to: FR-03, NFR-02.
 As an LLM agent, I want clean markdown so that I spend fewer tokens.
 - Given an HTML page with headings, links, lists and code blocks, when `fetch` is called, then those elements are preserved in markdown.
 - Given `<script>`, `<style>` and hidden navigation chrome, when converted, then their text is absent.
-- Given the E-7 offline snapshot set, when converted, then at least 95% of the 50 pages convert successfully, median token reduction is at least 50% and no output contains `<script>` text (Goals 2 and 3; both checks are part of the Sprint 4 exit).
+- Given the E-7 offline snapshot set (E-7 merged is a Sprint 4 entry condition) and the E-1 definitions of tokenizer, baseline and successful conversion, when converted, then at least 95% of the 50 pages convert successfully, median token reduction is at least 50% and no output contains `<script>` text (Goals 2 and 3; both checks are part of the Sprint 4 exit).
 - Given a 1 MB HTML page, when converted, then overhead is at most 500 ms p95 on aarch64.
 - Given the converter, when used, then it sits behind a trait so it can be swapped.
 
@@ -248,14 +270,14 @@ As an LLM agent, I want to know the final URL so that I can cite it.
 
 ### Story Map
 
-| # | Story | Value | Effort | Priority | Dependencies |
-|---|---|---|---|---|---|
-| B-1 | Block private, loopback, link-local on resolved IP | Critical | 5 | 8 | A-3a |
-| B-2 | Encoded and IPv6 address forms | High | 3 | 9 | B-1 |
-| B-3 | Redirect limit and per-hop revalidation | High | 3 | 8 | A-3b, B-1 |
-| B-4 | robots.txt enforcement | Low | 3 | 13 | A-3b, OQ-3 |
-| B-5 | SSRF suite and coverage gate | High | 3 | 9 | B-1, B-2, B-3 |
-| B-6 | Untrusted-content labelling | Medium | 2 | 13 | A-4, OQ-5 |
+| # | Story | Value | Effort | Dependencies |
+|---|---|---|---|---|
+| B-1 | Block private, loopback, link-local on resolved IP | Critical | 5 | A-3a |
+| B-2 | Encoded and IPv6 address forms | High | 3 | B-1 |
+| B-3 | Redirect limit and per-hop revalidation | High | 3 | A-3b, B-1 |
+| B-4 | robots.txt enforcement | Low | 3 | A-3b, OQ-3 |
+| B-5 | SSRF suite and coverage gate | High | 3 | B-1, B-2, B-3 |
+| B-6 | Untrusted-content labelling | Medium | 2 | A-4, OQ-5 |
 
 **MVP Slice:** B-1, B-2, B-3, B-5. Rationale: an unguarded fetcher is not acceptable. B-4 and B-6 are policy items awaiting OQ-3 and OQ-5, so they follow.
 
@@ -318,11 +340,11 @@ As a developer, I want fetched content marked as untrusted so that the model tre
 
 ### Story Map
 
-| # | Story | Value | Effort | Priority | Dependencies |
-|---|---|---|---|---|---|
-| C-1 | Environment variable parsing and validation | Medium | 3 | 11 | A-3b |
-| C-2 | Private host allowlist | Medium | 2 | 10 | B-1, C-1, OQ-4 |
-| C-3 | Configurable timeout and max size | Medium | 2 | 11 | C-1 |
+| # | Story | Value | Effort | Dependencies |
+|---|---|---|---|---|
+| C-1 | Environment variable parsing and validation | Medium | 3 | A-3b |
+| C-2 | Private host allowlist | Medium | 2 | B-1, C-1, OQ-4 |
+| C-3 | Configurable timeout and max size | Medium | 2 | C-1 |
 
 **MVP Slice:** None required; defaults (15 s, 5 MB, block all private) suffice for the first release. C-2 is promoted if OQ-4 says home-lab access is needed at v1.0.
 
@@ -362,15 +384,15 @@ As a developer, I want to tune limits so that I can trade completeness against m
 
 ### Story Map
 
-| # | Story | Value | Effort | Priority | Dependencies |
-|---|---|---|---|---|---|
-| D-1 | Size- and memory-optimized release profile | High | 2 | 12 | A-3b |
-| D-2 | ARM release pipeline (aarch64-linux, macOS arm64) | High | 5 | 12 | A-1, D-1, D-7, OQ-7 |
-| D-3 | Test suite on aarch64 | High | 3 | 14 | D-2 |
-| D-4 | README, install and migration guide | High | 2 | 14 | D-2, OQ-7 |
-| D-5 | Tool description within 150 words | Low | 1 | 14 | A-5 |
-| D-6 | Licensing, dependency audit and release tag | Medium | 2 | 15 | D-3, OQ-7 |
-| D-7 | Hosted PR CI baseline (x86_64) | High | 2 | 1 | None |
+| # | Story | Value | Effort | Dependencies |
+|---|---|---|---|---|
+| D-1 | Size- and memory-optimized release profile | High | 2 | A-3b |
+| D-2 | ARM release pipeline (aarch64-linux, macOS arm64) | High | 5 | A-1, D-1, D-7, OQ-7 |
+| D-3 | Test suite on aarch64 | High | 3 | D-2 |
+| D-4 | README, install and migration guide | High | 2 | D-2, OQ-7 |
+| D-5 | Tool description within 150 words | Low | 1 | A-5 |
+| D-6 | Licensing, dependency audit and release tag | Medium | 2 | D-3, OQ-7 |
+| D-7 | Hosted PR CI baseline (x86_64) | High | 2 | None |
 
 **MVP Slice:** D-7, D-1, D-2, D-4. Rationale: a release needs a buildable ARM binary and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
 
@@ -427,7 +449,8 @@ As a solo developer, I want hosted PR checks from Sprint 0 so that "CI green" in
 - Given a pull request, when hosted CI runs on x86_64, then `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` run and are required status checks.
 - Given the repo, when committed, then `rust-toolchain.toml` pins the exact channel, `Cargo.lock` is committed, all CI commands use `--locked`, and every GitHub Action is pinned by full commit SHA.
 - Given `deny.toml` (sections `advisories`, `bans` denying `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`, `sources` crates.io only, `licenses` permissive allow-list), when CI runs, then `cargo deny` passes.
-- Given the crate, when CI runs, then a job skeleton builds the release profile and asserts absence of the `test-support` and bench fixture-CA features (fails if present; becomes meaningful once A-3a adds `test-support`).
+- Given the crate, when CI runs, then a job skeleton builds the release profile and asserts absence of the `test-support`, `bench-loopback` (E-8) and bench fixture-CA features and of their marker strings in the binary (fails if present; becomes meaningful once A-3a adds `test-support`).
+- Given the repository settings, when this story closes, then branch protection on `main` requires the fmt, clippy, test, deny and release-guard checks (configured by the owner and recorded in the PR), so 'required check' is real from Sprint 0.
 - Given fork pull requests, when CI runs, then only hosted jobs run; no self-hosted runner is used here (that is D-2/D-3/E-6).
 - Note: pushing the branch and opening the sprint PR is covered by the owner's sprint-start instruction; native aarch64 per-story benchmarks are manual on PRs because self-hosted jobs run only on main, tags, nightly and dispatch.
 
@@ -437,13 +460,13 @@ As a solo developer, I want hosted PR checks from Sprint 0 so that "CI green" in
 
 **Definition:** "Safe to run on my ARM machines, with the memory targets proven."
 
-Included (72 points; was 68 before plan revision 1 added D-7 (2) and E-7 (2), and 63 before the A-3 split): E-1, A-1, D-7, A-2, A-3a, A-3b, E-7, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
+Included (73 points; was 72 before plan revision 2 added E-8 (1), 68 before plan revision 1 added D-7 (2) and E-7 (2), and 63 before the A-3 split): E-1, A-1, D-7, A-2, A-3a, A-3b, E-7, E-8, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
 
 Deferred to post-MVP (v1.0 completion, 24 points): A-8, A-9, C-1, C-2, C-3, B-4, B-6, D-3, D-5, D-6, E-6.
 
 Rationale: the MVP contains every story needed to (a) prove the memory case, (b) deliver the core fetch behavior, (c) refuse internal addresses, and (d) install on ARM. Charset handling, config knobs, robots.txt and labelling do not affect the release decision. Trade-off: MVP ships with fixed defaults and UTF-8-only decoding; acceptable for personal use. Cost of adding A-8 early is low (2 pts) and it can be pulled forward if the test set shows encoding failures.
 
-**Decision gates:** (1) End of Sprint 0: go/no-go on the absolute memory targets from E-1 and A-1. (2) End of Sprint 4: E-3 and E-4 confirm targets before investing in safety and packaging.
+**Decision gates:** (1) End of Sprint 0: go/no-go on the absolute memory targets from E-1 and A-1. (2) End of Sprint 4 (G4a): idle RSS and the peak/boundedness scenarios that need only A-3b and A-4 confirm the targets before investing in safety and packaging; (3) End of Sprint 5 (G4b): the scenarios needing A-5 (window at end) and A-6 (`raw=true`) complete the memory gate against the same 10 MB idle and 40 MB peak targets. A fail at G4b stops feature work before Sprint 6. Idle is gated on the shipped binary; peak on the `bench-loopback` build (E-8, PROPOSED).
 
 # Suggested Sprint Order
 
@@ -453,10 +476,10 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 |---|---|---|---|
 | 0 | De-risk and CI baseline: targets, crate stack, hosted CI; go/no-go | E-1, A-1, D-7 | 8 |
 | 1 | Walking skeleton and SSRF core (no network code yet) | A-2, A-3a | 8 |
-| 2 | Bounded streaming fetch, SSRF-guarded; 50-URL snapshots captured | A-3b, E-7 | 7 |
+| 2 | Bounded streaming fetch, SSRF-guarded; 50-URL snapshots captured; bench loopback build | A-3b, E-7, E-8 | 8 |
 | 3 | Benchmark harness and idle RSS | E-2, E-3, A-9 | 8 |
-| 4 | Convert (95%/50% checks), and memory gate | A-4, E-4 | 8 |
-| 5 | Paginate and content types | A-5, A-6 | 6 |
+| 4 | Convert (95%/50% checks), and memory gate G4a | A-4, E-4 | 8 |
+| 5 | Paginate and content types; memory gate G4b | A-5, A-6 | 6 |
 | 6 | Clear errors and private-IP test depth | A-7, B-1 | 8 |
 | 7 | Redirect limit, encoded forms, benchmark report | B-3, B-2, E-5 | 8 |
 | 8 | SSRF suite, coverage gate, release profile | B-5, D-1, D-5 | 6 |
@@ -465,9 +488,9 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 | 11 | robots.txt, charset, ARM tests | B-4, A-8, D-3 | 8 |
 | 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 |
 
-Total 96 points over 13 sprints (0-12) (was 92; plan revision 1 added D-7 and E-7). Overall MVP (72 points) is reached at the end of Sprint 9 (D-2, D-4 land there; E-5 landed in Sprint 7), still Sprint 9. Non-MVP A-9 (Sprint 3) and D-5 (Sprint 8) fill slack; C-2 (Sprint 10) needs C-1. v1.0 moves from Sprint 11 to Sprint 12 because the re-estimate added 5 points. To reach MVP sooner, move D-1 into Sprint 7 and D-2 into Sprint 8, at the cost of delaying B-5.
+Total 97 points over 13 sprints (0-12) (was 96; plan revision 2 added E-8, 1 pt; 92 before revision 1). Overall MVP (73 points) is reached at the end of Sprint 9 (D-2, D-4 land there, D-2 first; E-5 landed in Sprint 7), still Sprint 9. Non-MVP A-9 (Sprint 3) and D-5 (Sprint 8) fill slack; C-2 (Sprint 10) needs C-1. v1.0 moves from Sprint 11 to Sprint 12 because the re-estimate added 5 points. To reach MVP sooner, move D-1 into Sprint 7 and D-2 into Sprint 8, at the cost of delaying B-5.
 
-**Split decision (2026-09-19, user):** A-3 is split into A-3a (SSRF core, Sprint 1, 5 pts) and A-3b (fetch client, Sprint 2, 5 pts). The original 5 pts under-estimated the absorbed scope; the two halves are re-estimated at 5 each (+5 total). Sprint 1 stays at the 8-point ceiling (A-2 + A-3a) and A-3b moves to Sprint 2, so no fetch-capable build exists before A-3a is in place, and A-3b has a merge gate requiring A-3a's checks. The following stories moved one to two sprints later as a result: A-4 (Sprint 2 to 4), A-5 (2 to 5), A-6 (3 to 5), A-7 (4 to 6); E-2, E-3 and E-4 keep Sprints 3, 3 and 4. The memory gate stays at the end of Sprint 4 (E-3 in Sprint 3, E-4 in Sprint 4).
+**Split decision (2026-09-19, user):** A-3 is split into A-3a (SSRF core, Sprint 1, 5 pts) and A-3b (fetch client, Sprint 2, 5 pts). The original 5 pts under-estimated the absorbed scope; the two halves are re-estimated at 5 each (+5 total). Sprint 1 stays at the 8-point ceiling (A-2 + A-3a) and A-3b moves to Sprint 2, so no fetch-capable build exists before A-3a is in place, and A-3b has a merge gate requiring A-3a's checks. The following stories moved one to two sprints later as a result: A-4 (Sprint 2 to 4), A-5 (2 to 5), A-6 (3 to 5), A-7 (4 to 6); E-2, E-3 and E-4 keep Sprints 3, 3 and 4. The memory gate decision point stays at the end of Sprint 4 (E-3 in Sprint 3, E-4 in Sprint 4) for the scenarios available then (G4a); the two scenarios that need A-5 and A-6 are gated at the end of Sprint 5 (G4b), so the complete gate lands one sprint after the previously told date (plan revision 2). MVP (Sprint 9) and v1.0 (Sprint 12) do not move.
 
 **OQ-5 deadline:** OQ-5 (untrusted-content labelling) must be decided before Sprint 2 starts, because it can change the shape of the `fetch` result envelope that A-3b and A-4 produce. OQ-3, OQ-4 and OQ-7 stay open.
 
@@ -504,7 +527,7 @@ Trade-off: Sprint 10 is 7 points with C-2 and 5 if OQ-4 is "no" (C-2 dropped).
 | NFR-10 | E-1, E-3 |
 | NFR-11, NFR-12 | E-1, E-4 |
 | NFR-13 | D-1 |
-| NFR-14 | E-2, E-6 |
+| NFR-14 | E-2, E-6, E-8 |
 
 # Open Items Affecting This Plan
 

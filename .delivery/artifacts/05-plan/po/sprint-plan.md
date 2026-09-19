@@ -1,12 +1,13 @@
 # Sprint Plan (Stage 5): Fetch MCP Server
 
-Inputs: `docs/PRD.md` v0.4, `docs/EPICS.md` (33 stories after the A-3 split and plan revision 1), architecture sections 11, 14.1, 15 and ADR-001..006. Roles: Product Owner + Scrum Bag. Date: 2026-09-19.
+Inputs: `docs/PRD.md` v0.4, `docs/EPICS.md` (34 stories after the A-3 split and plan revisions 1 and 2), architecture sections 11, 14.1, 15 and ADR-001..006. Roles: Product Owner + Scrum Bag. Date: 2026-09-19.
 
 ## Top of plan: flags
 
 1. **Open questions and due sprints (all still OPEN, undecided).** OQ-5 due before Sprint 2 starts (envelope of A-3b/A-4; B-6 is Sprint 12; any default assumption is not a decision). OQ-4 before Sprint 10 (C-2). OQ-3 before Sprint 11 (B-4). **OQ-7 now due before Sprint 9 starts** (was Sprint 12): D-2 artifact naming and publication, D-4 install guide and the LICENSE need it; D-6 (Sprint 12) still uses it.
-2. **Scope and dates (after revision 1).** Total scope is 96 points (was 92; 87 before the A-3 split). MVP is 72 points (was 68; 63 before the split), still reached at the end of Sprint 9. v1.0 is still Sprint 12. Plan revision 1 added D-7 (2 pts) and E-7 (2 pts) and moved A-9 to Sprint 3. Told numbers that moved: total 92 to 96, MVP 68 to 72 points; told sprints did not move.
-3. **ARM runner access** is a hard dependency for the Sprint 0 handshake check, the Sprint 1 readiness check (250 ms), the Sprint 2 RSS smoke, the Sprint 3 and Sprint 4 measurements, and the Sprint 4 memory gate. Runner availability is checked at the start of Sprints 3, 4, 9 and 12.
+2. **Scope and dates (after revision 2).** Total scope is 97 points (was 96 in revision 1; 92 before; 87 before the A-3 split), 34 stories (was 33). MVP is 73 points (was 72), still reached at the end of Sprint 9. v1.0 is still Sprint 12. Revision 2 adds E-8 (1 pt, Sprint 2, PROPOSED). **The memory gate is now split:** G4a (idle plus every scenario that needs only A-3b and A-4) stays at the end of Sprint 4; G4b (window-at-end and `raw=true`, which need A-5 and A-6) is at the end of Sprint 5. The complete gate therefore lands one sprint later than previously told; the go/no-go stop point (S4) and MVP and v1.0 sprints do not move. The 10 MB idle and 40 MB peak targets are unchanged.
+3. **ARM runner access** is a hard dependency for the Sprint 0 handshake check, the Sprint 1 readiness check (250 ms), the Sprint 2 RSS smoke, the Sprint 3 and Sprint 4 measurements, the Sprint 4 gate G4a and the Sprint 5 gate G4b. Runner availability is checked at the start of Sprints 3, 4, 5, 7 (E-5 report), 9, 10 (C-3), 11 (D-3, A-8) and 12. Sprints 6 and 8 need no runner.
+4. **PROPOSED, needs user confirmation: bench loopback path (E-8).** The shipped binary's fail-closed policy blocks the loopback fixture server. Recommended: a compile-time Cargo feature `bench-loopback` (off by default, permits only 127.0.0.0/8 and ::1, every other blocked range still refuses), built as a second binary from the same commit by the same pinned pipeline; D-7 asserts it and `test-support` are absent from release builds. Idle RSS is gated on the shipped binary; peak RSS on the bench build. Details, alternatives and the fidelity trade-off are in the E-8 section below. OQ-4 is not decided by this.
 
 ## The A-3 split and why this cut
 
@@ -21,17 +22,17 @@ Justification for the cut: it follows the module seam in architecture 15 (`ssrf:
 
 ## Capacity and ceiling
 
-Solo part-time, ~10 pts per 2-week sprint, commitment at most 8 (80%). Planned commitments: 8, 8, 7, 8, 8, 6, 8, 8, 6, 7, 7, 8, 7 = 96. No sprint exceeds 8. Stories moved by the split: A-4 (Sprint 2 to 4), A-5 (2 to 5), A-6 (3 to 5), A-7 (4 to 6), and downstream B/D/C/A-8 stories shifted; E-2, E-3 (Sprint 3) and E-4 (Sprint 4) keep exactly Sprints 3, 3 and 4 so the memory gate stays at the end of Sprint 4. Revision 1: D-7 added to Sprint 0, E-7 to Sprint 2, A-9 moved from Sprint 2 to Sprint 3. Sprint 0 has only 5 pts of remaining work because A-1 is already delivered.
+Solo part-time, ~10 pts per 2-week sprint, commitment at most 8 (80%). Planned commitments: 8, 8, 8, 8, 8, 6, 8, 8, 6, 7, 7, 8, 7 = 97. No sprint exceeds 8. Stories moved by the split: A-4 (Sprint 2 to 4), A-5 (2 to 5), A-6 (3 to 5), A-7 (4 to 6), and downstream B/D/C/A-8 stories shifted; E-2, E-3 (Sprint 3) and E-4 (Sprint 4) keep exactly Sprints 3, 3 and 4; G4a stays at the end of Sprint 4 and G4b is at the end of Sprint 5 (revision 2). Revision 1: D-7 added to Sprint 0, E-7 to Sprint 2, A-9 moved from Sprint 2 to Sprint 3. Revision 2: E-8 (1 pt) added to Sprint 2, now at the 8-pt ceiling with no in-plan slack. Sprint 0 has only 5 pts of remaining work because A-1 is already delivered.
 
 ## Sprints 0-4 (detailed)
 
 ### Sprint 0: De-risk and CI baseline (8 pts)
 **Goal:** Fix the memory targets and measurement method, and confirm the crate stack builds and runs on ARM, so a go/no-go can be made.
-Stories: E-1 (3, spike 2 days), A-1 (3, spike 3 days; already delivered on this branch, close out formally), D-7 (2, hosted PR CI: fmt, clippy, test, deny, SHA-pinned actions, toolchain pin, release-feature-guard skeleton).
-Dependencies: none. ARM runner for A-1 handshake and E-1 host record. Owner's sprint-start instruction covers pushing the branch and opening the PR (needed for CI).
+Stories: E-1 (3, spike 2 days), A-1 (3, spike 3 days; already delivered on this branch, close out formally), D-7 (2, hosted PR CI: fmt, clippy, test, deny, SHA-pinned actions, toolchain pin, release-feature-guard skeleton; branch protection requires these checks).
+Dependencies: none. ARM runner for A-1 handshake and E-1 host record. Owner's sprint-start instruction covers pushing the branch and opening the PR (needed for CI). E-1 also records the proposed loopback path (E-8) for user confirmation before Sprint 2.
 Entry: PRD v0.4, epics accepted, benchmark host identified.
 Exit: native aarch64 host access confirmed and OS/RAM recorded; hosted CI green on the Sprint 0 PR (D-7); E-1 one-page result committed (targets, MB definition, fixtures, TLS approach, 50-URL list, host OS/RAM); A-1 result lists chosen crates and dependency count vs NFR-05 (<= 15); PRD assumption changes recorded.
-**Gate G0 (go/no-go):** measurable rule: A-1 measured idle RSS <= 10 MB and 5 MB-fetch peak <= 40 MB on the native aarch64 host (glibc), or a written gap analysis with a credible path; ARM host recorded. No-go: re-scope PRD Goal 1 before any feature work.
+**Gate G0 (go/no-go):** measurable rule: A-1 measured idle RSS <= 10 MB and 5 MB-fetch peak <= 40 MB (MB as defined by E-1, each the median of 10 valid runs under the E-1 protocol; A-1 predates the protocol, so its binary is re-run under it or the deviation is recorded) on the native aarch64 host (glibc), or a written gap analysis with a credible path; ARM host recorded. No-go: re-scope PRD Goal 1 before any feature work.
 
 ### Sprint 1: Skeleton and SSRF core (8 pts)
 **Goal:** A registered `fetch` tool that validates input, and a tested address-blocking core, with no network-capable code yet.
@@ -41,46 +42,47 @@ Entry: G0 = go; branch `sprint-1/skeleton-ssrf` and draft PR opened.
 Exit: `tools/list` shows exactly `fetch`; stdout-purity test passes; ready within 250 ms on ARM; A-3a table-driven tests pass for every range; default policy fail-closed; the CI release-build check (no `test-support`, via `cargo tree -e features` and symbol grep) is a required check and passes; hosted CI green. Claude Code check for A-2 uses a throwaway config only.
 Gate: no HTTP client dependency is present in the crate at end of Sprint 1 (or it is unreachable from `fetch`).
 
-### Sprint 2: Guarded streaming fetch and snapshots (7 pts)
-**Goal:** Claude Code can fetch a public page through a size-bounded stream that refuses internal addresses.
-Stories: A-3b (5), E-7 (2: capture the 50-URL offline snapshots with committed sha256 manifest).
-Dependencies: A-3a (merge gate above), A-2, D-7, E-1 (URL list). ARM runner for the RSS smoke. **OQ-5 decided before start.**
-Entry: A-3a merged; OQ-5 decision recorded; flate2 version chosen for pinning.
-Exit: all A-3b AC pass, including four-refusal integration test, gzip/bomb/header-bomb fixtures, semaphore test; flate2 pinned exact; verify hyper buffer defaults (architecture row a); UTF-8 decoder in place; non-gating manual RSS smoke (one 5 MB fetch, VmHWM) on native aarch64 recorded; E-7 snapshot set and manifest committed.
-DoD scoping: the per-story native-aarch64 benchmark rule does not apply to A-3b beyond this smoke, because the harness lands in Sprint 3; the full memory gate is E-3/E-4 (Sprints 3-4). E-1 and A-1 (spikes) are exempt.
-Gate: A-3b merge gate. Sprint is 7 pts; if A-3b overruns, E-7 slips first (to Sprint 3 in place of A-9, which moves to Sprint 5).
+### Sprint 2: Guarded streaming fetch, snapshots and bench build (8 pts)
+**Goal:** Claude Code can fetch a public page through a size-bounded stream that refuses internal addresses, and a bench-only build can reach the loopback fixture server.
+Stories: A-3b (5), E-7 (2: capture the 50-URL offline snapshots with committed sha256 manifest), E-8 (1, PROPOSED: `bench-loopback` feature).
+Dependencies: A-3a (merge gate above), A-2, D-7, E-1 (URL list, loopback path confirmed by the owner). ARM runner for the RSS smoke. **OQ-5 decided before start.**
+Entry: A-3a merged; OQ-5 decision recorded; flate2 version chosen for pinning; owner has confirmed or replaced the E-8 loopback path.
+Exit: all A-3b AC pass, including the four-refusal integration test (run on the shipped-profile build), the dial-once test, gzip/bomb/header-bomb fixtures, semaphore test; flate2 pinned exact; verify hyper buffer defaults (architecture row a); UTF-8 decoder in place; non-gating manual RSS smoke (one 5 MB fetch, VmHWM) on native aarch64 recorded; E-7 snapshot set and manifest committed; E-8 unit tests and the D-7 guard prove the feature is absent from release builds.
+DoD scoping: the per-story native-aarch64 benchmark rule does not apply to A-3b beyond this smoke, because the harness lands in Sprint 3; the full memory gate is E-3/E-4 (Sprints 3-4). E-1, A-1, E-7 and E-8 are exempt.
+Gate: A-3b merge gate. Sprint is exactly 8 pts (ceiling). Overflow rule: A-3b and E-8 are protected (E-2 needs E-8). If either overruns, E-7 slips to Sprint 5 (6 + 2 = 8 pts, no other sprint changes) and A-4's 95%/50% AC waits for it (A-4 not Done until then; Goals 2 and 3 evidence one sprint later; G4a unaffected). This is flagged to the owner at the time; nothing moves into Sprint 3, which stays at 8.
 Note: pre-M3 builds are not registered in a real MCP client (release rule); Claude Code check uses a throwaway config on the author's machine only against public URLs.
 
 ### Sprint 3: Harness and idle RSS (8 pts)
 **Goal:** A one-command harness on native ARM that reports idle RSS against the 10 MB target.
 Stories: E-2 (5), E-3 (2), A-9 (1, moved from Sprint 2; first to drop if E-2 overruns).
-Dependencies: E-1, A-3b, A-2. ARM runner required (native preflight refuses QEMU); runner provisioned and isolated per architecture 9.2 as part of E-2; interim gnu+musl build script with pinned `cargo-zigbuild`/`ziglang` versions (D-2 adopts the same pins).
-Exit: fixtures with committed sha256 manifest; G1-G7 scenarios defined; idle RSS median of 10 recorded; harness exits non-zero when over target.
-Gate: idle RSS <= 10 MB (strict), native aarch64 only; QEMU or non-native figures never count. Miss triggers an investigation item before Sprint 4 starts.
+Dependencies: E-1, A-3b, E-8, A-2. ARM runner required (native preflight refuses QEMU); runner provisioned and isolated per architecture 9.2 as part of E-2; interim gnu+musl build script with pinned `cargo-zigbuild`/`ziglang` versions (D-2 adopts the same pins).
+Exit: fixtures with committed sha256 manifest; G1-G7 scenarios defined; harness targets the bench build for peak and the shipped binary for idle; minimal self-hosted nightly/dispatch workflow (or documented manual runs until D-2); idle RSS median of 10 recorded; harness exits non-zero when over target.
+Gate: idle RSS <= 10 MB (strict) on the shipped release binary (also recorded on the bench build), native aarch64 only; QEMU or non-native figures never count. Miss triggers an investigation item before Sprint 4 starts.
 
 ### Sprint 4: Convert and memory gate (8 pts)
 **Goal:** HTML converts to markdown within budget and peak memory is proven bounded.
 Stories: A-4 (5), E-4 (3).
-Dependencies: A-3b, E-2, E-7. A-4 lands first in the sprint (E-4 is first priority if A-4 slips); E-4 needs it (`lol_html` limits, architecture rows f/g).
+Dependencies: A-3b, E-2, E-8, E-7. Entry: E-7 merged (else the Sprint 2 fallback applies and is flagged); ARM runner checked. A-4 lands first in the sprint (E-4 is first priority if A-4 slips); E-4 needs it (`lol_html` limits, architecture rows f/g).
 Exit: A-4 AC (on the E-7 snapshot set: >= 95% conversion success and median token reduction >= 50%, no `<script>` text; 1 MB in <= 500 ms p95 on aarch64, converter behind a trait); E-4 fixtures: 5 MB peak <= 40 MB; 50 MB with Content-Length -> `too_large` within 10% of 5 MB peak; chunked in-cap -> success; chunked beyond cap -> `too_large`; 10 concurrent recorded; allocator recorded.
-**Gate G4 (memory gate, end of Sprint 4):** idle RSS <= 10 MB and 5 MB peak (VmHWM, max of per-scenario medians, MB as defined in E-1) <= 40 MB on native aarch64, each median of 10 valid runs, for both gnu and musl binaries, plus the E-4 boundedness checks (50 MB Content-Length and chunked cases within 10% of the 5 MB peak). The 10-concurrent scenario is recorded and reported, not gating. QEMU or non-native figures never count. Pass: continue to safety and packaging. Fail: stop feature work and run a memory-reduction sprint (allocator, buffer sizes, converter swap via trait) before Sprint 5. Requires ARM runner access; without it the gate cannot be evaluated and Sprint 5 does not start.
+**Gate G4a (memory gate part 1, end of Sprint 4):** idle RSS <= 10 MB (shipped binary) and 5 MB peak (VmHWM, max of per-scenario medians, MB as defined in E-1) <= 40 MB (bench-loopback build, PROPOSED) on native aarch64, each median of 10 valid runs, for both gnu and musl, over the scenarios that need only A-3b and A-4: window at start of the 5 MB page, the same page gzipped, late-landmark holdback-full HTML, window beyond the cap (`too_large`), plus the E-4 boundedness checks (50 MB Content-Length, chunked in-cap, chunked beyond cap, each within 10% of the 5 MB peak). The 10-concurrent scenario is recorded and reported, not gating. The shipped-vs-bench delta record (E-8, E-4) is part of the pass. QEMU or non-native figures never count. Pass: continue. Fail: stop feature work and run a memory-reduction sprint (allocator, buffer sizes, converter swap via trait) before Sprint 5.
+**Gate G4b (memory gate part 2, end of Sprint 5):** the two gating scenarios that cannot exist earlier, G1 window at end of the 5 MB page (needs A-5) and G3 `raw=true` (needs A-6), meet the same 40 MB peak (and idle re-checked at 10 MB) under the same rules. Fail: stop before Sprint 6 (raw is expected lower-memory than the converted path, so the risk is judged small; the windowed path is stream-bounded by design). The 10 MB idle and 40 MB peak targets are not lowered. Sprint 4 pass therefore means 'go on to Sprint 5', not 'memory gate fully closed'. Requires ARM runner access; without it G4a cannot be evaluated and Sprint 5 does not start.
 
 ## Sprints 5-12 summary (12 for v1.0)
 
 | Sprint | Goal | Stories | Pts | Notes |
 |---|---|---|---|---|
-| 5 | Paginate and content types | A-5, A-6 | 6 | Re-run idle/peak at sprint end (cheap, non-gating) |
+| 5 | Paginate and content types; memory gate G4b | A-5, A-6 | 6 | Entry: G4a passed; runner checked. Exit: G4b (G1 window-at-end, G3 raw) gating at sprint end, idle re-run |
 | 6 | Clear errors, private-IP test depth | A-7, B-1 | 8 | B-1 hardens A-3a code |
 | 7 | Redirect limit, encoded forms, report | B-3, B-2, E-5 | 8 | E-5 needs E-3, E-4, A-7 |
 | 8 | SSRF suite, coverage gate, release profile | B-5, D-1, D-5 | 6 | M3 (Safety complete) reached when B-5 done |
-| 9 | ARM release pipeline and docs | D-2, D-4 | 7 | MVP complete (72 pts); needs OQ-7 decided before start; no aarch64 test or memory-gate required check yet (manual bench run + E-5 stand in) |
+| 9 | ARM release pipeline and docs | D-2, D-4 | 7 | D-2 first, then D-4; MVP complete (73 pts); needs OQ-7 decided before start; no aarch64 test or memory-gate required check yet (manual bench run + E-5 stand in) |
 | 10 | Config and allowlist | C-1, C-2, C-3 | 7 | C-2 needs OQ-4; drop = 5 pts; re-check D-4 config text |
 | 11 | robots, charset, ARM tests | B-4, A-8, D-3 | 8 | B-4 needs OQ-3 |
 | 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 | needs OQ-5, ARM CI runner; E-6/D-3 become required checks for the release workflow |
 
-MVP = 72 pts, end of Sprint 9. Tagging/distribution only after M3 (Sprint 8) and the E-5 release decision; the MVP release relies on the documented manual bench run until E-6 (Sprint 12), and D-6 is the v1.0 tagger.
+MVP = 73 pts, end of Sprint 9 (sprints 0-9 sum to 75, less non-MVP A-9 and D-5). Tagging/distribution only after M3 (Sprint 8) and the E-5 release decision; the MVP release relies on the documented manual bench run until E-6 (Sprint 12), and D-6 is the v1.0 tagger.
 
-Milestones M0-M5 map to sprints in PRD section 9: M0 S0, M1 S1-2, M2 S3-6, M3 S6-8 (reached end of S8), M4 S9-11, M5 S11-12.
+Milestones M0-M5 map to sprints in PRD section 9: M0 S0, M1 S1-2, M2 S3-6 (memory gate complete at end of S5), M3 S6-8 (reached end of S8), M4 S9-11, M5 S11-12.
 
 ## Definition of Done (per story)
 
@@ -88,13 +90,13 @@ Milestones M0-M5 map to sprints in PRD section 9: M0 S0, M1 S1-2, M2 S3-6, M3 S6
 - `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` pass on the hosted CI from D-7 (required checks from Sprint 0).
 - No new direct dependency without recording it against the NFR-05 count; high-churn deps use exact `=` pins (architecture 8).
 - stdout carries only MCP messages; logs to stderr.
-- Stories touching fetch, decode, convert or concurrency (A-4, A-5, A-6, C-3, E-2 to E-6): benchmark run on native aarch64 with results recorded (manual on PRs); no regression against the absolute targets. A-3b: non-gating manual RSS smoke only (harness arrives in Sprint 3). Spikes E-1 and A-1 and E-7 are exempt.
-- SSRF-touching stories (A-3a, A-3b, B-*, C-2): table-driven cases; release build asserted free of `test-support`.
+- Stories touching fetch, decode, convert or concurrency (A-4, A-5, A-6, C-3, E-2 to E-6): benchmark run on native aarch64 with results recorded (manual on PRs); no regression against the absolute targets. A-3b: non-gating manual RSS smoke only (harness arrives in Sprint 3). Spikes E-1 and A-1, E-7 and E-8 are exempt.
+- SSRF-touching stories (A-3a, A-3b, E-8, B-*, C-2): table-driven cases; release build asserted free of `test-support` and `bench-loopback`.
 - Docs touched where behaviour is user-visible; PR reviewed (self-review checklist for a solo project) and CI green.
 
 ## Branch and PR convention
 
-One branch per sprint, `sprint-N/<slug>` (Sprint 0: `sprint-0/spikes`), created from main. One draft PR per sprint targeting `main`, opened at sprint start, titled `Sprint N: <goal>`, body listing stories and gates. Commits reference the story ID (`A-3a: ...`). PR marked ready and merged only when the sprint exit criteria and gates hold. No pushes without the owner's instruction. Tagged builds are prohibited before M3.
+One branch per sprint, `sprint-N/<slug>` (Sprint 0: `sprint-0/spikes`), created from main after the previous sprint PR is merged (Sprint 0's branch already carries A-1). If a gate (G0, G4a, G4b) blocks the merge, the next sprint does not start; a memory-reduction sprint branches from the unmerged tip only with the owner's instruction. One draft PR per sprint targeting `main`, opened at sprint start, titled `Sprint N: <goal>`, body listing stories and gates. Commits reference the story ID (`A-3a: ...`). PR marked ready and merged only when the sprint exit criteria and gates hold. No pushes without the owner's instruction. Tagged builds are prohibited before M3.
 
 ## Traceability (Sprints 0-4 stories)
 
@@ -108,10 +110,13 @@ One branch per sprint, `sprint-N/<slug>` (Sprint 0: `sprint-0/spikes`), created 
 | A-3b | FR-07, FR-16, NFR-07, NFR-08 | `fetch` (client, redirect loop, body, deadline), `config`, flate2; ADR-001, 003, 004 |
 | A-9 | FR-14 | `server::render` |
 | E-7 | Goals 2, 3 | test fixtures |
+| E-8 | NFR-14, NFR-11, Risk 2 | `ssrf::policy` (cfg feature), sec 11 item 7, sec 9 R12; ADR-003 |
 | E-2 | NFR-14 | `bench/`, sec 11 |
 | E-3 | NFR-10 | `bench/` |
 | A-4 | FR-03, NFR-02 | `convert::html`, `boilerplate`; ADR-002 |
 | E-4 | NFR-11, 12, FR-16 | `bench/`, ADR-004 |
+
+**Required architecture change (not made here; architecture and ADR files are not edited in Stage 5):** section 11 item 7 and section 11.2 must add the compile-time `bench-loopback` policy route and state which binary each gate measures (idle: shipped; peak: bench build); section 9 R12 and ADR-003 must name it beside `test-support` and require the D-7 guard to assert both absent; PROPOSED, pending user confirmation.
 
 Later stories follow `docs/EPICS.md` (traceability table) and architecture section 15 unchanged; FR-06 maps to A-3a, B-1, B-2, C-2; FR-07 to A-3b, C-3.
 
@@ -119,12 +124,14 @@ Later stories follow `docs/EPICS.md` (traceability table) and architecture secti
 
 | Item | Impact | Mitigation / owner |
 |---|---|---|
-| ARM runner access (author's aarch64 cluster) | Blocks G0 handshake, Sprint 1 readiness, Sprint 2 smoke, Sprint 3-4 measurements, G4 gate, E-6, D-3; a runner outage in Sprint 12 leaves no slack | Confirm access and record OS/RAM before Sprint 0 exit; no native runner means G4 not evaluated and no release; QEMU never used for RSS (Michael) |
+| ARM runner access (author's aarch64 cluster) | Blocks G0 handshake, Sprint 1 readiness, Sprint 2 smoke, Sprint 3-5 measurements, G4a/G4b gates, E-5, C-3, A-8, E-6, D-3; a runner outage in Sprint 12 leaves no slack | Confirm access and record OS/RAM before Sprint 0 exit; no native runner means G4a/G4b not evaluated and no release; QEMU never used for RSS (Michael) |
 | OQ-5 (labelling) due before Sprint 2 | Result envelope rework in A-3b/A-4 | Decide before Sprint 2 (Michael); a "label, prefix not shifting `start_index`" working assumption is NOT a decision |
 | OQ-3, OQ-4, OQ-7 open | B-4, C-2, D-2/D-4/D-6 blocked at their sprints | Decide OQ-4 before Sprint 10, OQ-3 before Sprint 11, OQ-7 before Sprint 9 |
-| A-3b estimate (5 pts, high scope) | Sprint 2 overrun | Sprint 2 committed at 6; overflow takes A-9 out first |
+| A-3b estimate (5 pts, high scope) | Sprint 2 overrun | Sprint 2 is committed at 8 (ceiling); if A-3b or E-8 overruns, E-7 slips to Sprint 5 and A-4's 95%/50% check waits for it (A-9 is in Sprint 3 and unaffected) |
+| Loopback path (E-8) not confirmed, or bench build diverges from shipped | Peak RSS not measured on the shipped binary; report could mislead | Owner confirms E-8 before Sprint 2; delta record, marker checks and one shipped-binary public-host fetch; report labels figures by binary; OQ-4 untouched |
+| G4b after G4a | Full gate closes one sprint later than first told | Stated in top flags and PRD M2; raw and window-at-end are low-risk scenarios; fail stops Sprint 6 |
 | Interim unsafe window | LAN probing by pre-M3 builds | A-3a first, merge gate, no tags or client registration before M3 |
-| Memory gate miss at G4 | Re-plan | Memory-reduction sprint inserted, later sprints shift |
+| Memory gate miss at G4a or G4b | Re-plan | Memory-reduction sprint inserted, later sprints shift |
 | Pinned dependency drift (flate2 etc.) | Benchmark validity | Pin on add; bump PR re-runs benchmark |
 
 ## Revision log (round 1)
@@ -144,3 +151,21 @@ Later stories follow `docs/EPICS.md` (traceability table) and architecture secti
 | SM NB | D-2 CI job clarification as above; ARM gaps in S1/S2 fixed; memory re-run at S5 end added; per-sprint entry/exit for Sprints 5-12 remains to refine before Sprint 5. |
 
 Told numbers changed: total 92 to 96 points; MVP 68 to 72 points. Unchanged: MVP in Sprint 9, v1.0 in Sprint 12, memory gate at end of Sprint 4. OQ-3, OQ-4, OQ-5 and OQ-7 remain open; only OQ-7's due sprint moved (12 to 9).
+
+## Revision log (round 2)
+
+| Finding | Resolution |
+|---|---|
+| QA B1: gating binary cannot reach loopback fixture; D-7 forbids `test-support` | New story E-8 (1 pt, Sprint 2, PROPOSED, needs user confirmation): compile-time `bench-loopback` feature (loopback ranges only, off by default, second binary from the same commit and pinned pipeline). Runtime switch rejected (ships a bypass, overlaps OQ-4); in-process, netns or non-loopback fixture rejected as primary (RSS not of the server process, or private addresses still blocked). D-7 guard extended to `bench-loopback` and marker string; E-1 records and E-2/E-4 use it; idle gated on the shipped binary, peak on the bench build, delta record and a shipped-binary public-host fetch. "Required architecture change" note added; architecture and ADR files not edited. OQ-4 undecided. |
+| PO B1: G4 at S4 needs A-5/A-6 (S5) | Not moved (S3 and S4 are full). G4a (end S4) covers scenarios needing only A-3b/A-4; G4b (end S5) gates window-at-end and `raw=true` at the same targets. Complete gate lands one sprint later than told; flagged in top flags; PRD M2, decision rule and EPICS decision gates updated. Targets unchanged. |
+| PO B2, QA NB1, SM 1 (stale Sprint 2 risk) | Risk row rewritten: Sprint 2 is 8 pts; overflow moves E-7 to Sprint 5 (not 9 pts in Sprint 3); Sprint 2 gate text matches. |
+| QA NB2 | Sprint 4 entry requires E-7 merged; fallback defined. |
+| QA NB3, DevOps 1 | Runner checks added for Sprints 5, 7, 10, 11 (with 3, 4, 9, 12). |
+| QA NB4 | G0 states median of 10 valid runs and the E-1 MB definition; A-1 re-run under the protocol or deviation recorded. |
+| QA NB5 | A-3b dial-once test with a resolver that changes its answer on a second lookup. |
+| PO N1-N3 | PRD Goal 2 and 5 reworded; E-1 defines tokenizer, baseline, success and overhead; E-5 owns the 10-URL live smoke and overhead figure. |
+| PO N4, N5, N6 | FR-11 default per OQ-3 (open); A-3b concurrency/timeout are compiled defaults until C-1; stale Priority columns dropped from EPICS story maps. |
+| SM 3, 2 | Sprint 9 order D-2 then D-4; Sprint 5 entry/exit added; Sprints 6-12 detail still to refine before each. |
+| DevOps 2-4 | Branch protection AC in D-7; E-2 creates the minimal nightly/dispatch workflow (main/tag triggers in D-2) or runs are manual; sprint branch sequencing rule added. |
+
+Told numbers changed: total 96 to 97 points; MVP 72 to 73; stories 33 to 34; complete memory gate end of Sprint 4 to end of Sprint 5 (G4a stays end of Sprint 4). Unchanged: MVP Sprint 9, v1.0 Sprint 12, every sprint <= 8. OQ-3, OQ-4, OQ-5 and OQ-7 remain open.

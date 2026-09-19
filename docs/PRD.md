@@ -42,13 +42,13 @@ Goal 1 is the primary goal. Goals 2-6 are guardrails that the server must meet t
 | 1b | **Lower peak memory while fetching** | Peak RSS (VmHWM) fetching a 5 MB HTML page on aarch64-linux | <= 40 MB VmHWM, median of 10 runs | none - new |
 | 1c | **Memory capped by max size** | Peak RSS growth when the server returns a 50 MB body with max size 5 MB | Within 10% of the 5 MB-page peak (no unbounded buffering) | none - new |
 | 1d | **Claim proven, not asserted** | Reproducible benchmark against the absolute targets, published in repo | Report exists; run in CI on aarch64 | none - new |
-| 2 | Reliable page retrieval | Success rate on a 50-URL curated test set (static HTML, JSON, plain text, redirects) | >= 95% | none - new |
+| 2 | Reliable page retrieval | Offline HTML conversion success on a 50-URL curated snapshot set (checked in A-4, Sprint 4), plus a non-gating 10-URL live smoke of network, TLS, redirect, JSON and plain-text behaviour (owner E-5) | >= 95% | none - new |
 | 3 | Token-efficient output | Median token reduction, HTML to markdown, on the test set | >= 50% | none - new |
 | 4 | Safe by default | Private/loopback/link-local targets blocked in SSRF test suite | 100% of cases | none - new |
-| 5 | Responsive | p95 overhead for pages under 1 MB, excluding remote server time | <= 500 ms | none - new |
+| 5 | Responsive | p95 conversion overhead for a 1 MB page, excluding remote server time (method defined in E-1, checked in A-4) | <= 500 ms | none - new |
 | 6 | Works in real clients | Server registers and tool call succeeds in Claude Code on aarch64-linux and macOS arm64, by v1.0 | Yes | none - new |
 
-Decision rule: if the spikes show the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped at the go/no-go gate G0 (end of Sprint 0) or the memory gate G4 (end of Sprint 4), before safety and packaging work (see Section 9).
+Decision rule: if the spikes show the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped at the go/no-go gate G0 (end of Sprint 0) or the memory gate G4 (G4a end of Sprint 4; G4b, the window-at-end and `raw=true` scenarios, end of Sprint 5), before safety and packaging work (see Section 9).
 
 ## 3. User Personas
 
@@ -129,7 +129,7 @@ As the project owner, I want a reproducible benchmark so that I can release base
 | FR-08 | The server must handle content types: convert `text/html`; return `text/*`, `application/json` and `application/xml` as text; reject other binary types with an error naming the type. | Must | A PNG and a PDF return `isError: true` with the content type; JSON returns as text. |
 | FR-09 | The server must send a descriptive `User-Agent` and decode responses by charset from headers or meta tags, defaulting to UTF-8. | Should | A test page in ISO-8859-1 renders correctly; the request carries the configured UA. |
 | FR-10 | The server must return errors as tool results with `isError: true` and a cause-specific message (HTTP status, DNS, timeout, blocked, too large, unsupported type). | Must | Each cause in the list has a test asserting the message and flag. |
-| FR-11 | The server must support an optional robots.txt check, enabled by default, that refuses disallowed URLs with an explanatory error. | Should | With a robots.txt disallowing `/private`, a fetch of `/private` is refused; `FETCH_IGNORE_ROBOTS=1` allows it. |
+| FR-11 | The server must support an optional robots.txt check (default on or off per OQ-3, open) that refuses disallowed URLs with an explanatory error. | Should | With a robots.txt disallowing `/private`, a fetch of `/private` is refused; the documented opt-out allows it (variable name per OQ-3 and C-1). |
 | FR-12 | The server must read settings from environment variables: timeout, max size, `max_length` cap, concurrency, user agent, allowed private hosts, robots toggle. | Should | Each variable changes behavior in a test; invalid values fail startup with a clear message naming the variable. |
 | FR-13 | The server must write logs to stderr only and must never write non-protocol output to stdout. | Must | A stdio test client receives no malformed messages while requests are logged. |
 | FR-14 | The server must include the final URL (after redirects) and HTTP status in the result header. | Could | Result text begins with the final URL and status when redirects occurred. |
@@ -195,8 +195,8 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 | Milestone | Target | Exit Criteria |
 |---|---|---|
 | M0: Decisions and spikes | Sprint 0 (Weeks 1-2) | OQ-1, OQ-2, OQ-8 and OQ-9 resolved (done). Benchmark harness and absolute memory targets defined (E-1). `rmcp` and crate choices validated, aarch64 cross-build proven (A-1). Hosted PR CI baseline live (D-7). Go/no-go on memory target recorded (G0). |
-| M1: Walking skeleton | Sprints 1-2 (Weeks 3-6) | FR-01, FR-02, FR-13 pass (Sprint 1); SSRF core tested (A-3a); streaming bounded, SSRF-guarded fetch (FR-16, A-3b, Sprint 2); text returned in Claude Code via a throwaway config; 50-URL snapshots captured (E-7). |
-| M2: Core fetch + memory gate | Sprints 3-6 (Weeks 7-14) | Harness live and idle RSS checked (Sprint 3); FR-03 and the memory gate G4, NFR-10 to NFR-12, at the end of Sprint 4 (decision gate: if not met, stop or re-scope); FR-04, FR-08 (Sprint 5); FR-10 (Sprint 6). |
+| M1: Walking skeleton | Sprints 1-2 (Weeks 3-6) | FR-01, FR-02, FR-13 pass (Sprint 1); SSRF core tested (A-3a); streaming bounded, SSRF-guarded fetch (FR-16, A-3b, Sprint 2); text returned in Claude Code via a throwaway config; 50-URL snapshots captured (E-7); bench-only loopback build for the memory benchmark (E-8, PROPOSED, needs user confirmation; OQ-4 unaffected). |
+| M2: Core fetch + memory gate | Sprints 3-6 (Weeks 7-14) | Harness live and idle RSS checked (Sprint 3); FR-03 and the memory gate G4a, NFR-10 to NFR-12, at the end of Sprint 4 (decision gate: if not met, stop or re-scope; peak measured on the E-8 bench build, PROPOSED); FR-04, FR-08 (Sprint 5) and the G4b scenarios that need them (window at end, `raw=true`) at the end of Sprint 5; FR-10 (Sprint 6). |
 | M3: Safety | Sprints 6-8 (Weeks 13-18) | FR-05 (B-3, Sprint 7), FR-06 (B-1/B-2, Sprints 6-7) pass; SSRF suite 100% and coverage gate (B-5) at the end of Sprint 8; NFR-04 met. Reached at the end of Sprint 8; no tagged build before it. |
 | M4: Config, packaging, ARM | Sprints 9-11 (Weeks 19-24) | FR-15 (D-2, Sprint 9, MVP complete), FR-12 (Sprint 10), FR-09 (Sprint 11) pass; hosted CI green since Sprint 0, aarch64 test job (Sprint 11); README with ARM install steps (Sprint 9). |
 | M5: v1.0 | Sprints 11-12 (Weeks 23-26) | FR-11 (B-4, Sprint 11), labelling per OQ-5 (Sprint 12), memory-gate CI (E-6), all Goals in Section 2 met; benchmark report published (E-5); NFR targets verified; tagged release (D-6, Sprint 12). |
