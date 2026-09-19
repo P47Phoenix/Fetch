@@ -1,7 +1,7 @@
 # Architecture: Fetch MCP Server (Rust, stdio, low-memory ARM)
 
 Stage 4 (Architect). Roles: Solution Architect + Security Architect (SSRF). Inputs: `docs/PRD.md` v0.3, `docs/EPICS.md`, A-1 spike report, `spikes/a1/src/main.rs`.
-Status: Revision 1 (self-correction round 1 of 3) after DoD review findings; see Revision log at the end. Scope note: EPICS has 30 stories (A-1..A-9, B-1..B-6, C-1..C-3, D-1..D-6, E-1..E-6), not 32.
+Status: Revision 2 (post-plan, 2026-09-19) on top of Revision 1 (self-correction round 1 of 3); see Revision log at the end. Revision 2 aligns this document with the user-approved Sprint Plan (`.delivery/artifacts/05-plan/po/sprint-plan.md`, 34 stories): bench-loopback build, G4a/G4b split of the memory gate, release profile pin. No open question is decided. Scope note: EPICS has 30 stories (A-1..A-9, B-1..B-6, C-1..C-3, D-1..D-6, E-1..E-6), not 32.
 
 Measurement labels: "spike" = x86_64 measurement from the A-1 report (Intel, glibc, plain HTTP, one synthetic 5,243,433 B fixture). "budget" = design allocation, NOT a measurement. No aarch64 RSS exists yet. Every ARM-dependent choice is listed in section 14 and in the ADRs.
 
@@ -81,7 +81,7 @@ src/
 
 Dependency rule: `server -> fetch -> {ssrf, convert, config, error}`. `convert` and `ssrf::ranges` are pure (no I/O, no tokio) and unit-testable without a runtime. `convert` never imports `fetch`. `error` is a leaf.
 
-Direct dependency budget (NFR-05 <= 15, provisional): rmcp, tokio, reqwest, rustls (ring), lol_html, encoding_rs, serde, schemars, url, futures-util, an HTML entity decoder (crate TBD at A-4), webpki-roots (if ADR-001 root choice holds), one error helper (thiserror or hand-rolled). plus `flate2` (pure-Rust backend, push-style bounded gzip decode; reqwest's own `gzip` feature is OFF, see ADR-004). That is 14, leaving 1 spare. serde_json only if rmcp requires it directly. No direct `tracing`, no `anyhow`, no `regex`, no `ipnet` (own tables). rmcp may pull `tracing` transitively: not counted as direct, but A-2 must confirm with `cargo tree -i tracing` and record its idle-RSS and binary-size effect; if it is pulled in, no subscriber is installed so it is inert. Dev-deps are not counted.
+Direct dependency budget (NFR-05 <= 15, provisional): rmcp, tokio, reqwest, rustls (ring), lol_html, encoding_rs, serde, schemars, url, futures-util, an HTML entity decoder (crate TBD at A-4), webpki-roots (if ADR-001 root choice holds), one error helper (thiserror or hand-rolled). plus `flate2` (pure-Rust backend, push-style bounded gzip decode; reqwest's own `gzip` feature is OFF, see ADR-004). That is 14, leaving 1 spare. `ring` and `webpki-roots` pins in 9.1: `ring` is a transitive dependency of `rustls` (not a direct dependency; it is pinned through the committed `Cargo.lock` and `--locked` builds, not as a Cargo.toml direct requirement), so it does not change the count; `rustls` is the counted entry. If a direct `ring` line is ever added, the count becomes 15 of 15 and needs an ADR note. serde_json only if rmcp requires it directly. No direct `tracing`, no `anyhow`, no `regex`, no `ipnet` (own tables). rmcp may pull `tracing` transitively: not counted as direct, but A-2 must confirm with `cargo tree -i tracing` and record its idle-RSS and binary-size effect; if it is pulled in, no subscriber is installed so it is inert. Dev-deps are not counted.
 
 ## 4. Data Flow
 
@@ -117,13 +117,13 @@ Runtime: `tokio` `current_thread`, features `rt,macros,io-std,io-util,net,time` 
 
 ### 5.1 Memory budget (design allocations tied to the 40 MB peak)
 
-Budget, not measurement. Unit is MiB (1 MiB = 1,048,576 B); the 40 MB gate is read as 40 MiB-equivalent VmHWM in the benchmark (E-1 fixes the unit; using MB = 10^6 only makes the gate stricter by 4.6%, and the headroom below covers that). Idle budget uses the NFR ceiling (10) even though spike idle is 4.6 MB, so a bad ARM idle result still leaves the peak budget intact.
+Budget, not measurement. Unit is MiB (1 MiB = 1,048,576 B); the 40 MB gate is read as 40 MiB-equivalent VmHWM in the benchmark (E-1 defines MB once (10^6 or 2^20, stated in one place) and that single definition is used for every target, fixture and cap; using MB = 10^6 only makes the gate stricter by 4.6%, and the headroom below covers that. All gate figures are the median of 10 valid runs). Idle budget uses the NFR ceiling (10) even though spike idle is 4.6 MB, so a bad ARM idle result still leaves the peak budget intact.
 
 Per-fetch items (all budgets, worst case per item):
 
 | # | Item | Budget MiB | How enforced |
 |---|---|---|---|
-| a | Network read buffers + TLS records | 1.0 | HTTP/1.1 only, no pooling; verify hyper buffer defaults in A-3 |
+| a | Network read buffers + TLS records | 1.0 | HTTP/1.1 only, no pooling; verify hyper buffer defaults in A-3b (Sprint 2) |
 | b | Wire chunk in flight | 0.0625 (64 KiB) | re-slice larger chunks; never `collect()` |
 | c | gzip inflate state + step buffer (flate2) | 0.094 (32 KiB + 64 KiB) | bounded output steps |
 | d | Charset prescan hold | 0.004 | prefix hold until decoder chosen |
@@ -231,7 +231,7 @@ Fixed constants (not configurable): max redirects 5, robots cap 512 KB, HTTP/1.1
 
 ## 9. Build and Release (aarch64)
 
-- Profile: `opt-level="s"` (spike; revisit `3` vs `s` against NFR-02 in D-1), `lto=true`, `codegen-units=1`, `panic="abort"`, `strip=true`. Install a panic hook that writes to stderr before abort; confirm rmcp itself never logs to stdout (A-2).
+- Profile: `opt-level="s"` (spike), `lto=true`, `codegen-units=1`, `panic="abort"`, `strip=true`. **Pinned early:** D-7 (Sprint 0) fixes these five settings in `Cargo.toml` so G0, G4a, G4b and E-5 measure what ships. D-1 (Sprint 8) finalises the profile (`opt-level` `3` vs `s` against NFR-02) and MUST re-measure idle and peak on the shipped build on the native aarch64 runner (gnu and musl) against 10 MB idle and 40 MB peak; a miss blocks MVP tagging (a failure re-plans Sprint 9). E-5 (Sprint 7) reports on the pinned profile and states that the D-1 re-measure still governs the tag. Install a panic hook that writes to stderr before abort; confirm rmcp itself never logs to stdout (A-2).
 - Targets: `aarch64-unknown-linux-gnu.2.17` (glibc floor 2.17, dynamic), `aarch64-unknown-linux-musl` (static), `aarch64-apple-darwin` (native macOS runner, no zig needed), x86_64-linux best-effort. Release artifact names contain the target triple (`fetch-mcp-<version>-<triple>`), fixed now so D-4 docs do not churn. macOS arm64 binaries get ad-hoc codesign; notarization is out of scope (decide with OQ-7).
 - Cross-build method proven in spike: `cargo-zigbuild` with `ziglang` pip package, ~35 s per target on x86 host, both exit 0. ring provider avoids the aws-lc C build; zig cc supplies the C compiler for ring.
 - Runtime QEMU caveat: the gnu.2.17 binary cannot run under qemu-user without a loader (spike). QEMU functional tests therefore cover the musl binary only, or use `QEMU_LD_PREFIX` with an aarch64 sysroot. Spike showed qemu RSS is invalid (13.0/19.5 MB vs 4.7/6.1 MB native x86), so NEVER gate or publish memory from QEMU.
@@ -267,7 +267,8 @@ Availability: if the self-hosted runner is offline, jobs queue and time out, and
 - Supply chain: `cargo audit` per-PR and nightly. `deny.toml` sections: `advisories`; `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs` to enforce FR-15 and the ring decision); `sources` (crates.io only, no git deps); `licenses` (permissive allow-list now; the project's own licence waits on OQ-7). webpki-roots staleness (R11) is owned by Dependabot plus a release-checklist item.
 - Release integrity: SHA256 checksums per tag; provenance attestations and an SBOM (`cargo cyclonedx`) recommended, decide with OQ-7. Distribution channel is OQ-7: `cargo install` builds from source on the user's machine (no zig; the RSS claim covers released binaries only); crates.io needs metadata and a licence. UA string embeds a repo URL that must be a build-time constant, not a TBD in code.
 - Roots: see ADR-001 (webpki-roots embedded). Unmeasured on ARM.
-- Feature-guard CI (R12): `cargo tree -e features` on the release build asserts BOTH `test-support` and the bench-only fixture-CA feature (section 11 item 7) are absent.
+- Feature-guard CI (R12): D-7 (Sprint 0, skeleton with a self-test positive control, `-p <crate>` release build) and D-2 (every release artifact) assert that `test-support`, `bench-loopback` and the bench-only fixture-CA feature (section 11 item 7) are all absent: `cargo tree -e features` on the release build PLUS a marker-string grep on the actual artifact (the `bench-loopback` build embeds a fixed marker string, so the grep is reliable). Cargo features are additive, so the guard is also a required CI check from Sprint 1. E-8 unit tests run WITH the feature in hosted CI.
+- Bench build (`bench-loopback`, E-8, user-confirmed 2026-09-19): a second binary built from the same commit and Cargo.lock by the same pinned pipeline as the shipped binary; never a release artifact. Both binaries report the same commit and Cargo.lock hash (`--version` and startup line). It is off by default and permits only 127.0.0.0/8 and ::1 (ADR-003).
 
 ## 10. Testing Strategy
 
@@ -277,7 +278,7 @@ Availability: if the self-hosted runner is offline, jobs queue and time out, and
 | Property | pagination: for random text and random `max_length`, concatenating sequential windows equals full text (FR-04); converter chunk-boundary invariance: splitting the body at every offset yields identical output (required by ADR-006 determinism) |
 | Converter goldens | fixture pages for headings/links/lists/code/tables/entities/script/style/nav; snapshot files reviewed in PR; plus quality set (below) |
 | Integration | in-process test HTTP server(s); fake `Resolve` implementation injected to simulate DNS-to-private, mixed public/private, rebinding (first answer public, second private; assert connection used the first) |
-| Loopback fixtures | production policy blocks loopback, so tests use a test-only policy constructor behind `#[cfg(any(test, feature = "test-support"))]`. It must NOT be reachable from env vars or default features (Security review item) |
+| Loopback fixtures | production policy blocks loopback, so tests use a test-only policy constructor behind `#[cfg(any(test, feature = "test-support"))]`; benchmarks use the `bench-loopback` build (11 item 7). It must NOT be reachable from env vars or default features (Security review item) |
 | MCP e2e | stdio client script (rmcp client or Python): handshake, `tools/list` has exactly one tool, call, stdout contains only JSON-RPC while stderr logs (FR-13) |
 | Security additions | each redirect hop builds a fresh request with no inherited headers; test asserts no Authorization/Cookie/Referer is sent on a cross-origin hop; gzip fixtures: stacked/unknown Content-Encoding rejected before decode, multi-member and trailing garbage; `168.63.129.16` blocked; https->http redirect surfaced in the Final URL header; error/log text contains no full URL query |
 | Resource abuse | 50 MB with and without Content-Length; slow-drip; gzip bomb (small wire, huge output); 100k-deep nesting; single 10 MB attribute; header bomb; 6-hop redirect; redirect to `127.0.0.1` and to `file:` |
@@ -296,12 +297,26 @@ Promote the spike harness (`bench/gen_fixture.py`, `serve.py`, `measure.py`) int
 4. Scenarios, split into gating and non-gating (below).
 5. Record per report: host CPU, kernel, `getconf PAGESIZE`, RAM, cgroup limits / container flag, load average before and after, CPU governor, libc (gnu/musl), allocator, binary sha, commit, cargo profile, toolchain version, fixture sha256s. macOS uses `/usr/bin/time -l` (not comparable to VmHWM; reported separately).
 6. Gate decision uses the MEDIAN exactly as the PRD defines it (idle <= 10 MB, peak <= 40 MB, 50 MB run <= 1.10 x the 5 MB run). Exit non-zero on failure. E-3/E-5 release gate is the strict absolute target. E-6 CI is a regression tripwire with two conditions: fail if the median exceeds the absolute target at all, AND fail if the median regresses more than 10% versus the stored last-main baseline (baseline stored as a CI artifact / dedicated branch by the main-push job). The 10% is relative to the stored baseline, never a licence to exceed 40 MB; the two gates are not contradictory.
-7. HTTPS coverage: plain-HTTP fixtures under-measure TLS. Recommendation for E-1: a bench-only build feature that trusts a fixture CA from an env var, never enabled in release (CI asserts absence, 9.2), with one comparison run showing the feature costs no measurable RSS. Alternative: measure TLS against real hosts once, manually. Decision left to E-1. Until decided, the E-5 report template carries the caveat "NFR-11 measured over plain HTTP only".
-8. Baseline note: PRD has no incumbent (OQ-8); the spike report's "E-1 incumbent baseline" item is obsolete.
+7. Bench harness reach and binaries (E-8, CONFIRMED by the user 2026-09-19): the shipped binary's fail-closed policy blocks the loopback fixture server, so the harness uses a second binary built with the compile-time Cargo feature `bench-loopback` (ADR-003; off by default; permits only 127.0.0.0/8 and ::1; every other blocked range still refuses; no runtime switch). Which binary each gate measures: IDLE RSS is gated on the SHIPPED binary (also recorded on the bench build); PEAK RSS (VmHWM) is gated on the BENCH build. To bound fidelity loss the record carries numeric bounds: idle delta bench vs shipped <= 0.5 MB; binary size delta recorded and explained; one public-host 5 MB fetch on the shipped binary within 10% of the bench peak and <= 40 MB; both binaries report the same commit and Cargo.lock hash. Exceeding a bound fails G4a. Figures in reports are labelled by binary. This does not decide OQ-4 (the shipped allowlist question is separate).
+8. HTTPS coverage: plain-HTTP fixtures under-measure TLS. Recommendation for E-1: a bench-only build feature that trusts a fixture CA from an env var, never enabled in release (CI asserts absence, 9.2), with one comparison run showing the feature costs no measurable RSS. Alternative: measure TLS against real hosts once, manually. Decision left to E-1. Until decided, the E-5 report template carries the caveat "NFR-11 measured over plain HTTP only".
+9. Release profile: the profile of section 9 (opt-level, lto, panic=abort, strip, codegen-units) is pinned in Sprint 0 (D-7) and every gate and benchmark uses it (with MB defined once in E-1 and the median of 10 valid runs; the harness rejects fewer). D-1 (Sprint 8) re-measures the finalised profile on the shipped build on aarch64 (gnu and musl) within 10 MB idle and 40 MB peak; a miss blocks MVP tagging.
+10. Baseline note: PRD has no incumbent (OQ-8); the spike report's "E-1 incumbent baseline" item is obsolete.
+
+### 11.0 Memory gate split: G0, G4a, G4b
+
+Naming: the memory GATES are G0, G4a and G4b; the scenario IDs G1..G7 in 11.1 are a separate list (the plan's "G4" gate is not the G4 scenario below). Targets are unchanged and not lowered: idle <= 10 MB, peak <= 40 MB, gnu and musl, native aarch64 only, median of 10 valid runs, on the D-7 profile.
+
+| Gate | When | Content |
+|---|---|---|
+| G0 | end Sprint 0 | A-1 idle <= 10 MB and 5 MB-fetch peak <= 40 MB on native aarch64 (glibc), or a written gap analysis; A-1 re-run under the E-1 protocol or the deviation recorded |
+| G4a | end Sprint 4 | idle (shipped binary) plus the scenarios that need only A-3b and A-4 (full consumption, no window or early stop): (1) 5 MB HTML fully read and converted (G1/G2 read-in-full form), (2) same gzipped, (3) late-landmark holdback-full HTML (G4), (4) 50 MB with Content-Length -> `too_large` (G7a), (5) 50 MB chunked read beyond the cap without a window -> `too_large`; (4) and (5) within 10% of the 5 MB peak. 10-concurrent (G6) recorded, not gating. Includes the shipped-vs-bench record of item 7. Pass: continue to Sprint 5. Fail: stop feature work, memory-reduction sprint (allocator, buffer sizes, converter swap via trait) |
+| G4b | end Sprint 5 (owned by A-5 and A-6; A-6 records the combined result) | scenarios that need A-5 (window at start with early stop, window at end, chunked window inside the cap succeeding (G7b), window beyond cap -> `too_large` (G5, G7c)) and A-6 (`raw=true`, G3), same 40 MB peak, idle re-checked at 10 MB on the shipped binary, the two 50 MB chunked window cases within 10% of the 5 MB peak. Fail: stop before Sprint 6 |
+
+A G4a pass does not close the memory gate: the complete gate closes at the end of Sprint 5 (one sprint later than first told). Both need ARM runner access; without it they cannot be evaluated and the next sprint does not start. The G1..G7 definitions in 11.1 are the scenario definitions for both parts; where a scenario's window-at-end form needs A-5, its full-read form is used in G4a.
 
 ### 11.1 Gating scenarios (resolves QA B1)
 
-Early stop makes a default call read only the first chunks, so the NFR-11 peak MUST come from scenarios that force near-full consumption. The gating peak is the MAXIMUM of the per-scenario medians over the scenarios below (each the median of >= 10 fresh processes); the 40 MB check applies to that maximum.
+Early stop makes a default call read only the first chunks, so the NFR-11 peak MUST come from scenarios that force near-full consumption. Which scenarios are evaluated at G4a versus G4b is set in 11.0. The gating peak is the MAXIMUM of the per-scenario medians over the scenarios below (measured on the bench build, 11 item 7) (each the median of >= 10 fresh processes); the 40 MB check applies to that maximum.
 
 | ID | Scenario | Forces consumption because |
 |---|---|---|
@@ -311,7 +326,7 @@ Early stop makes a default call read only the first chunks, so the NFR-11 peak M
 | G4 | HTML fixture whose main-content landmark appears late so the ADR-002 holdback fills to its 256 KiB limit, `max_length` = cap | worst emitter/holdback state (S2) |
 | G5 | 5 MB body with requested window beyond the 5 MiB cap (expects `too_large`) | reads to the cap |
 | G6 | 10 concurrent calls (each a G1/G2 mix) | worst concurrent state with semaphore 3 |
-| G7 | 50 MB body: (a) with Content-Length (header abort), (b) chunked, window inside cap, (c) chunked, window beyond cap | boundedness check vs the 5 MB run (proposed rule 6.4) |
+| G7 | 50 MB body: (a) with Content-Length (header abort), (b) chunked, window inside cap, (c) chunked, window beyond cap | boundedness check vs the 5 MB run (rule 6.4, ACCEPTED); G7b/G7c compare with the G1/G5 medians; G7a is trivially small |
 
 Non-gating (reported, not part of the peak gate): default-parameter call (`max_length` 5000, start 0), slow-drip (deadline behaviour; timing tolerance +-20% of FETCH_TIMEOUT_MS), TLS comparison run.
 
@@ -325,6 +340,7 @@ Validity rule: a run that early-stops before reading the expected amount of the 
 - Runner state: CPU governor recorded (performance preferred), no concurrent load (load average recorded before and after; > 0.5 above idle baseline marks the run suspect and it is repeated once), fixture server and harness on the same host over loopback.
 - Run-count rule: a scenario needs >= 10 valid runs; if fewer succeed, the report is invalid; no run is discarded as an outlier; report min/median/max, the decision uses the median.
 - Native-ARM preflight (refuse to emit gating numbers otherwise): `uname -m` = aarch64; `file <binary>` shows ARM aarch64; no qemu binfmt handler registered for aarch64 in `/proc/sys/fs/binfmt_misc`; `getconf PAGESIZE` recorded and only same-page-size runs compared (16K/64K hosts inflate RSS).
+- Binaries: idle uses the shipped release binary, peak uses the `bench-loopback` build from the same commit and Cargo.lock hash (11 item 7); both are built by the same pinned pipeline with the D-7 profile.
 - Matrix: the harness runs BOTH the gnu.2.17 and musl binaries (and any allocator candidates per ADR-005); report rows carry libc and allocator columns so ADR-005 and E-4 AC 4 can be decided from one report.
 - Duration: full matrix nightly and on main/tag; PR-label smoke runs 3 scenarios x 3 runs (non-gating, never valid for NFR claims).
 
@@ -362,9 +378,9 @@ Attack paths and controls:
 6. Proxy environment variables (`HTTP_PROXY`) would bypass IP validation: `no_proxy()` explicit.
 7. Connection reuse: pooling disabled (`pool_max_idle_per_host(0)`), so no connection validated for one call is reused under a different policy context.
 8. Port scanning of public hosts: not blocked by default (see ADR-003; residual risk accepted; Security NB-5 suggests defaulting to deny the WHATWG Fetch 'bad ports' list, left for the human/Security to decide), optionally restricted by `FETCH_ALLOWED_PORTS`.
+9. IPv6 transition addresses embedding IPv4 (6to4 2002::/16, NAT64 64:ff9b::/96, Teredo): embedded address extracted and checked; ranges blocked where they cannot be safely interpreted.
 10. Cloud metadata: always blocked and never allowlistable: 169.254.169.254, fd00:ec2::254, Azure wire server 168.63.129.16 (public-range, so listed explicitly); Alibaba 100.100.100.200 is covered by CGNAT 100.64.0.0/10. NAT64 64:ff9b::/96 and 6to4 with public embedded IPv4 are allowed by default; hosts behind a local NAT64 gateway should note this (config note in D-4, test in B-2).
 11. Redirect hygiene: every hop builds a fresh request; no headers, cookies or Referer are inherited. https->http downgrade is permitted but shown in the Final URL header (A-9).
-9. IPv6 transition addresses embedding IPv4 (6to4 2002::/16, NAT64 64:ff9b::/96, Teredo): embedded address extracted and checked; ranges blocked where they cannot be safely interpreted.
 
 ### 13.2 Prompt injection
 
@@ -381,7 +397,7 @@ Cannot be eliminated. Server-side measures: text-only output, no active content,
 | Many concurrent calls | semaphore (default 3), queue wait <= FETCH_TIMEOUT_MS, blocking pool capped |
 | HTML pathologies (deep nesting, huge attributes/text nodes, tag soup) | lol_html memory limit 2 MiB, emitter depth 256, buffer caps; failure -> `converter_limit` |
 | Huge `max_length` | hard cap 100,000 chars (default) |
-| Header bomb | A-3 sets explicit header size/count limits (acceptance: a header bomb fixture fails cleanly), not merely 'verify defaults' |
+| Header bomb | A-3b sets explicit header size/count limits (acceptance: a header bomb fixture fails cleanly), not merely 'verify defaults' |
 | Log flooding | one line per call; no body logging |
 
 ## 14. Risks (architecture level)
@@ -399,29 +415,30 @@ Cannot be eliminated. Server-side measures: text-only output, no active content,
 | R9 | Brotli window up to 16 MiB would break the budget | Medium | brotli not advertised (ADR-004) |
 | R10 | HTTP/1.1-only fails for the rare h2-only origin | Low | ADR-001 revisit trigger |
 | R11 | webpki-roots embeds roots in binary; staleness and RSS effect unmeasured | Low | ARM measure; release cadence |
-| R12 | Test-only policy hook could leak into release | High (security) | cfg/feature guard, CI check that release build has no `test-support` feature |
+| R12 | Test-only or bench-only policy hooks (`test-support`, `bench-loopback`) could leak into release | High (security) | cfg/feature guards; D-7 and D-2 guard asserts both features and the `bench-loopback` marker string absent (cargo tree plus marker grep on every release artifact, self-tested); default `Policy` fail-closed; E-8 |
 | R13 | Dependency count near NFR-05 ceiling | Low | 14 of 15 (flate2 added); add nothing without an ADR note |
 | R14 | rmcp clone count for result copies unverified; transitive `tracing` | Low-Medium | A-2 allocation-count test and `cargo tree -i tracing`; revise 5.1 row j |
 
 ### 14.1 Binding interim mitigation for R6 (resolves Security B-1)
 
-Decision (binding on architecture and story map): the pure `ssrf::ranges` table and the checks that enforce it are pulled into A-3. A-3 acceptance is extended so that, from the first build that can fetch, the binary applies the FULL blocked-range table (IPv4 and IPv6 incl. IPv4-mapped/compatible, ULA, link-local, loopback, CGNAT, metadata addresses 169.254.169.254, fd00:ec2::254, 168.63.129.16), the IP-literal pre-check, the resolver filter (resolve once, refuse if any answer is blocked, dial only the validated set) and per-hop revalidation in the redirect loop. The default `Policy` is fail-closed: it blocks everything non-public, and the only way to reach loopback is the cfg/feature-gated test constructor (R12). B-1/B-2/B-3 then own encodings, mixed-answer and rebinding test depth, coverage gate and hardening, not the first implementation.
+Decision (binding on architecture and story map): the pure `ssrf::ranges` table and the checks that enforce it are pulled forward into A-3 (since split by the plan into A-3a SSRF core, Sprint 1, and A-3b fetch client, Sprint 2). A-3 acceptance is extended so that, from the first build that can fetch, the binary applies the FULL blocked-range table (IPv4 and IPv6 incl. IPv4-mapped/compatible, ULA, link-local, loopback, CGNAT, metadata addresses 169.254.169.254, fd00:ec2::254, 168.63.129.16), the IP-literal pre-check, the resolver filter (resolve once, refuse if any answer is blocked, dial only the validated set) and per-hop revalidation in the redirect loop. The default `Policy` is fail-closed: it blocks everything non-public, and the only way to reach loopback is the cfg/feature-gated test constructor (R12). B-1/B-2/B-3 then own encodings, mixed-answer and rebinding test depth, coverage gate and hardening, not the first implementation.
 
-Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-gating: no tagged or distributed build before M3, and pre-M3 builds are not registered in a real MCP client; (2) A-3 is not Done until an integration test proves `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are refused. The table is small, pure data, so the A-3 cost is modest; if the PO judges A-3 too large it may split, but the split may not leave any fetch-capable build without the table.
+Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-gating: no tagged or distributed build before M3, and pre-M3 builds are not registered in a real MCP client; (2) A-3b (which carries the four-refusal integration test; A-3a covers the same cases at unit level) is not Done until an integration test proves `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are refused. The table is small, pure data, so the A-3 cost is modest; if the PO judges A-3 too large it may split, but the split may not leave any fetch-capable build without the table.
 
 ## 15. Story-to-Module Mapping
 
 | Story | Modules / ADR | Notes |
 |---|---|---|
-| E-1 | bench design, section 11 | uses this doc's budgets and scenario list |
+| E-1 | bench design, section 11 | uses this doc's budgets and scenario list; defines MB once |
 | A-1 | done (spike) | inputs to ADR-001, 002, 005 |
 | A-2 | `main`, `server`, `config` (skeleton), `error`, `obs` | schema per ADR-006; stdout purity test |
-| A-3 | `fetch` (client, redirect loop, body, deadline), `ssrf::ranges` full table + `ssrf::resolver` + `check_url` (14.1), `config`, flate2 gzip | ADR-001, 003, 004; include semaphore, header limits |
+| A-3a (SSRF core, 5 pts, Sprint 1) | `ssrf::ranges` full table, `ssrf::resolver` (resolve once, refuse on any blocked answer, return validated set), `ssrf::check_url` and per-hop revalidation function, `ssrf::Policy` fail-closed default plus test-only constructor (14.1) | ADR-003; no HTTP client dependency yet; unit tests with injectable resolver |
+| A-3b (fetch client, 5 pts, Sprint 2) | `fetch` (client, redirect loop wired to A-3a, body, deadline), `config`, flate2 gzip, UTF-8 decoder, semaphore, header limits | ADR-001, 003, 004; merge gate: non-defaulted `Policy` in client constructor, required check `a3b_merge_gate` plus four-refusal integration tests |
 | A-4 | `convert::html`, `boilerplate`, `mod` | ADR-002; entity decoder crate chosen here |
-| A-5 | `convert::window`, `server::render` | ADR-006 |
-| A-6 | `fetch::ctype`, `convert::text` | raw path streamed (ADR-004) |
+| A-5 | `convert::window`, `server::render` | ADR-006; owns G4b window scenarios |
+| A-6 | `fetch::ctype`, `convert::text` | raw path streamed (ADR-004); records combined G4b result |
 | A-7 | `error`, `server::render` | error table section 6 |
-| A-8 | `fetch::charset` | prescan + streaming decode (ADR-004); note the decoder is needed earlier than A-8's sprint for correct char counting, at least UTF-8 with replacement; pull the UTF-8 part into A-3/A-4 |
+| A-8 | `fetch::charset` | prescan + streaming decode (ADR-004); the UTF-8 decoder with replacement already lands in A-3b (plan), A-8 adds the prescan and other charsets |
 | A-9 | `server::render` | header only when a redirect occurred |
 | B-1 | `ssrf::ranges`, `ssrf::resolver`, `ssrf::check_url` | ADR-003; first implementation lands in A-3 (14.1), B-1 owns test depth and hardening |
 | B-2 | `ssrf::mod` (URL host handling), `ranges` | encodings, mapped IPv6 |
@@ -432,19 +449,24 @@ Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-g
 | C-1 | `config` | |
 | C-2 | `ssrf::Policy` allowlist | blocked by OQ-4 |
 | C-3 | `config`, `fetch::body` | |
-| D-1 | Cargo profile | ADR-005 |
+| D-1 | Cargo profile (finalise, re-measure on shipped build, blocks MVP tag on miss) | ADR-005, sec 9 |
+| D-7 | hosted PR CI, release profile pin, release-feature guard (`test-support`, `bench-loopback`), `publish = false` | sec 9, 9.1 |
+| E-7 | 50-URL offline snapshots with sha256 manifest | sec 10 quality set |
+| E-8 | `ssrf::policy` cfg feature `bench-loopback`, bench build | sec 11 item 7, sec 9 R12, ADR-003 |
 | D-2 | CI workflows | section 9 |
 | D-3 | CI, tests | |
 | D-4, D-5 | docs, tool description (ADR-006 text budget <= 150 words) | |
 | D-6 | supply chain, licence | OQ-7 |
-| E-2..E-6 | `bench/`, CI | section 11 |
+| E-2..E-6 | `bench/`, CI | section 11 (E-4: G4a; G4b owned by A-5/A-6) |
 
-Ordering suggestion from the architecture: A-3 needs the resolver seam and manual redirect loop from day one (cheap now, costly to retrofit); the UTF-8 streaming decoder is part of the window contract, so land it with A-3/A-4 rather than A-8.
+Story count: 34 (A-1..A-9 with A-3 split into A-3a/A-3b, B-1..B-6, C-1..C-3, D-1..D-7, E-1..E-8). D-4 and D-5 share a row; A-3 rows above replace the former single A-3.
+
+Ordering (as adopted by the plan): A-3a lands first with no HTTP client, A-3b follows in Sprint 2, so no fetch-capable build exists without the table. Original suggestion: A-3 needs the resolver seam and manual redirect loop from day one (cheap now, costly to retrofit); the UTF-8 streaming decoder is part of the window contract, so land it with A-3/A-4 rather than A-8.
 
 ## 16. Next Steps / Assumptions
 
 Assumptions: single user, trusted local operator; one client; no persistence; HTTP/1.1 acceptable; gzip-only acceptable; character-based pagination acceptable.
-Next: (1) run the ARM measurements in ADR-005/ADR-001 on the native runner as part of E-1; (2) PO confirms 6.4 (PROPOSED rule) and the Required doc changes below; (3) human answers OQ-3/4/5/7 before B-4/C-2/B-6/D-6; (4) A-4 spike-in-story: converter quality on 10 real pages before committing to landmark thresholds.
+Next: (1) run the ARM measurements in ADR-005/ADR-001 on the native runner as part of E-1; (2) 6.4 is ACCEPTED (PO, 2026-09-19); the Required doc changes below are historical (applied via the plan); (3) human answers OQ-3/4/5/7 before B-4/C-2/B-6/D-6; (4) A-4 spike-in-story: converter quality on 10 real pages before committing to landmark thresholds.
 
 
 ## Required doc changes (for the orchestrator/PO; docs/ not edited here)
@@ -487,3 +509,16 @@ Next: (1) run the ARM measurements in ADR-005/ADR-001 on the native runner as pa
 | Security B-1 | 14.1 binding interim mitigation: full range table pulled into A-3, fail-closed default policy, release gate before M3, story change list (doc changes 1-2). |
 | Security NB-1..NB-10 | Azure wire server always-blocked (13.1 item 10); fresh-request/no-header test (section 10); flate2 header check before decode; queue wait bound, blocking-pool cap, explicit header limits; bad-ports deferred as a human/Security decision (accepted residual); OQ-5 label-ON-if-unanswered recorded as recommendation; NAT64 note; host-only logging; https->http shown in Final URL header; fake-Resolve tests authoritative on both libcs (already in ADR-003). |
 | Deferred | OQ-3/4/5/7 left open. E-4 vs early-stop rule left PROPOSED. Exact flate2 version and ARM-dependent choices await A-3 / native runs. |
+
+## Revision 2 (post-plan, 2026-09-19)
+
+Applies the user-approved Sprint Plan and the plan's "Required architecture change" note. No decision not approved by the plan or user was changed; OQ-3, OQ-4, OQ-5 and OQ-7 remain OPEN.
+
+| Change | Where |
+|---|---|
+| `bench-loopback` Cargo feature (E-8, user-confirmed): off by default, only 127.0.0.0/8 and ::1, second binary from same commit and pinned pipeline, no runtime switch; idle gated on shipped binary, peak on bench build, numeric bounds (idle delta <= 0.5 MB, public-host peak within 10% and <= 40 MB, same commit and Cargo.lock hash) | sec 9, sec 11 item 7, sec 11.2, R12, ADR-003 |
+| Release guard (D-7, D-2) forbids `test-support`, `bench-loopback` and fixture-CA feature and marker string in release artifacts | sec 9, R12, ADR-003 |
+| Memory gate split G0 / G4a (end S4) / G4b (end S5); complete gate closes end of Sprint 5; scenario IDs G1..G7 kept, gate and scenario naming clarified | sec 11.0, 11.1, ADR-004, ADR-005 |
+| Release profile pinned in D-7 (Sprint 0), D-1 (Sprint 8) re-measures on shipped build, miss blocks MVP tag | sec 9, sec 11 item 9, ADR-005 |
+| Stale wording: ADR-006 200,000 -> 100,000 char cap; MB defined once in E-1, median of 10 valid runs; `ring` is transitive (count 14 unchanged); ADR-001 "~1 MB" -> ~1.3 MB; G7 pairing stated; 13.1 item order | sec 3, 5.1, 11.1, 13.1, ADR-001, ADR-006 |
+| Story map: 34 stories, A-3a/A-3b split, D-7, E-7, E-8 added; A-8 decoder note aligned | sec 15, 14.1 |

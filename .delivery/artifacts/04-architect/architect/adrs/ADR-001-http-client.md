@@ -25,7 +25,7 @@ Option 1 with these settings:
 ## Consequences
 + Less code to own (timeouts, gzip, TLS glue); resolver hook exists.
 + ring builds with zig cc (proven).
-- ~1 MB more peak and ~0.4 MB more binary than raw hyper (spike). Inside budget (worst-case per-fetch delta 6.3 MiB, architecture.md 5.1).
+- ~1.3 MB more peak and ~0.4 MB more binary than raw hyper (spike). Inside budget (worst-case per-fetch delta 6.3 MiB, architecture.md 5.1).
 - reqwest pulls more transitive crates (audit surface); direct-crate count is unaffected.
 - HTTP/1.1-only fails on rare h2-only origins.
 - webpki-roots freezes trust anchors at build time (release cadence needed).

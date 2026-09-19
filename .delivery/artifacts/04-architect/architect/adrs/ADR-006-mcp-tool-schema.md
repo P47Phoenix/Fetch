@@ -17,7 +17,7 @@ Schema:
 | Field | Type | Required | Default | Constraints |
 |---|---|---|---|---|
 | `url` | string | yes | - | absolute `http`/`https` only, no userinfo |
-| `max_length` | integer | no | 5000 | >= 1; values above `FETCH_MAX_LENGTH_CAP` (default 100,000; was 200,000 before the memory-budget recompute) are clamped and the response says so |
+| `max_length` | integer | no | 5000 | >= 1; values above `FETCH_MAX_LENGTH_CAP` (default 100,000) are clamped and the response says so |
 | `start_index` | integer | no | 0 | >= 0 |
 | `raw` | boolean | no | false | |
 
@@ -49,4 +49,4 @@ Tool description (draft, <= 150 words): "Fetches a URL and returns its main cont
 - Clamping `max_length` silently changes behavior; mitigated by stating the clamp in the result.
 
 ## What ARM data would flip it
-The schema is not ARM-dependent. Two indirect triggers: (a) if native ARM time for deep-page calls exceeds the 15 s default deadline on realistic 5 MB pages (CPU-bound conversion on slow ARM cores), consider a byte-offset hint or bounded cache; (b) if ARM peak for large `max_length` (200,000 chars) with JSON serialisation copies exceeds the budget in architecture.md 5.1, lower the `max_length` cap default (e.g. to 100,000). Revisit character units only if the E-1 token analysis shows the model-side mismatch causes context overflow in practice.
+The schema is not ARM-dependent. Two indirect triggers: (a) if native ARM time for deep-page calls exceeds the 15 s default deadline on realistic 5 MB pages (CPU-bound conversion on slow ARM cores), consider a byte-offset hint or bounded cache; (b) if ARM peak for large `max_length` (the 100,000-char cap) with JSON serialisation copies exceeds the budget in architecture.md 5.1, lower the `max_length` cap default further (e.g. to 50,000). Revisit character units only if the E-1 token analysis shows the model-side mismatch causes context overflow in practice.
