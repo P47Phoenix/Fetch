@@ -8,6 +8,7 @@ use serde::Deserialize;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg_attr(not(any(feature = "http-reqwest", feature = "http-hyper", feature = "http-ureq")), allow(dead_code))]
 const BODY_CAP: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -88,6 +89,8 @@ async fn stream_md(url: &str, start: usize, max: usize) -> Result<String, String
     Ok(r)
 }
 
+// The cfg-selected blocks are mutually exclusive alternatives; `return` keeps each one valid on its own.
+#[allow(clippy::needless_return)]
 fn convert(html: String) -> String {
     #[cfg(feature = "conv-htmd")]
     { return htmd::convert(&html).unwrap_or(html); }
@@ -97,6 +100,12 @@ fn convert(html: String) -> String {
     { return html2text::from_read(html.as_bytes(), 100).unwrap_or(html); }
     #[cfg(not(any(feature = "conv-htmd", feature = "conv-html2md", feature = "conv-html2text")))]
     { html }
+}
+
+/// No HTTP backend selected (default features): the spike still type-checks and lints; fetch reports the misconfiguration.
+#[cfg(not(any(feature = "http-reqwest", feature = "http-hyper", feature = "http-ureq")))]
+async fn get_body(_url: &str) -> Result<Vec<u8>, String> {
+    Err("no http-* backend feature enabled".into())
 }
 
 #[cfg(feature = "http-reqwest")]

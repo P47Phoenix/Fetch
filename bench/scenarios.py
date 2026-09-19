@@ -14,7 +14,7 @@ SCENARIOS = {
     "g4a-late-landmark": dict(kind="peak", gate="G4a", route="/late-landmark.html", args={"max_length": 5 * MIB}, expect="ok",
                             implemented=False, ref="G4; fixture is E-2"),
     "g4a-50mib-cl":    dict(kind="peak", gate="G4a", route="/50mb-cl.html", args={"max_length": 5 * MIB}, expect="too_large",
-                            min_bytes=lambda m: 1,  # architecture 11.2: expected_min_bytes for G7a is zero (header abort); 1 = request reached the server
+                            min_bytes=lambda m: 0,  # architecture 11.2: expected_min_bytes for G7a is zero (a correct client aborts on the Content-Length header, before any body write)
                             bounded_vs="g4a-5mib-full", implemented=True, ref="G7a"),
     "g4a-50mib-chunked": dict(kind="peak", gate="G4a", route="/50mb-chunked.html", args={"max_length": 5 * MIB}, expect="too_large",
                             min_bytes=lambda m: CAP, bounded_vs="g4a-5mib-full", implemented=True, ref="chunked, no window"),

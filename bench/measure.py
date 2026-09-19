@@ -60,6 +60,33 @@ def host_record():
             "runner": "PLACEHOLDER: author's native aarch64 runner (name/OS/RAM recorded in docs/BENCHMARK.md when known)"}
 
 
+ELF_MACHINE = {"x86_64": 62, "aarch64": 183}   # e_machine per platform.machine()
+VERSION_PREFIX = "fetch-mcp "                    # the shipped/bench crate's --version starts with this
+MARKER_PREFIX = b"FETCH_MCP_MARKER_"
+
+
+def check_identity(binary, ver, kind, machine=None):
+    """--gate binary identity (QA B2): an ELF of the host architecture whose --version starts `fetch-mcp `, and whose bytes
+    agree with the claimed kind (shipped: no FETCH_MCP_MARKER_ token; bench: the bench-loopback marker). Returns None if OK
+    else the refusal reason. A stand-in script, a wrong-arch ELF or a stripped-marker bench build is never a gate figure."""
+    machine = machine or platform.machine()
+    want = ELF_MACHINE.get(machine)
+    if want is None: return f"no ELF machine mapping for host {machine}"
+    try:
+        with open(binary, "rb") as f: data = f.read()
+    except OSError as e:
+        return f"cannot read binary: {e}"
+    if data[:4] != b"\x7fELF" or len(data) < 20: return "not an ELF executable (stand-in script or other file)"
+    if data[5] not in (1, 2): return "ELF has an invalid byte-order field"   # EI_DATA: 1 little-endian, 2 big-endian
+    got = int.from_bytes(data[18:20], "little" if data[5] == 1 else "big")
+    if got != want: return f"ELF e_machine {got} is not the host architecture {machine} ({want})"
+    if not ver.startswith(VERSION_PREFIX): return f"--version does not start with {VERSION_PREFIX!r} (stand-in or wrong program): {ver[:60]!r}"
+    has_marker = MARKER_PREFIX in data
+    if kind == "shipped" and has_marker: return "binary contains a FETCH_MCP_MARKER_ token: not a shipped build"
+    if kind == "bench" and b"FETCH_MCP_MARKER_BENCH_LOOPBACK_V1" not in data: return "bench binary lacks the FETCH_MCP_MARKER_BENCH_LOOPBACK_V1 marker"
+    return None
+
+
 def native_aarch64():
     """Preflight (architecture 11.2): aarch64, no qemu binfmt handler for aarch64. Returns (ok, reason)."""
     if platform.machine() != "aarch64": return False, f"machine is {platform.machine()}, not aarch64"
@@ -77,8 +104,12 @@ class Server:
         env = {"PATH": os.environ.get("PATH", ""), **PINNED_ENV, **env_extra}
         self.p = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         self.q = queue.Queue()
-        threading.Thread(target=lambda: [self.q.put(l) for l in self.p.stdout] or self.q.put(None), daemon=True).start()
+        threading.Thread(target=self._read, daemon=True).start()
         self._id = 0
+
+    def _read(self):
+        for l in self.p.stdout: self.q.put(l)
+        self.q.put(None)   # EOF sentinel: a crashed server fails the sample immediately, not after the call timeout
 
     def send(self, method, params=None, notify=False):
         m = {"jsonrpc": "2.0", "method": method, **({"params": params} if params is not None else {})}
@@ -93,13 +124,22 @@ class Server:
         while True:
             line = self.q.get(timeout=max(0.1, end - time.time()))
             if line is None: raise RuntimeError("server closed stdout")
-            m = json.loads(line)
-            if m.get("id") == want: return m
+            try: m = json.loads(line)
+            except ValueError: continue   # non-JSON stdout line: ignore, the timeout still bounds the wait
+            if isinstance(m, dict) and m.get("id") == want: return m
+
+    def call_ok(self, method, params=None, timeout=120):
+        """call() that requires a JSON-RPC result: an error reply (or no result) is a protocol failure."""
+        m = self.call(method, params, timeout)
+        if "error" in m or not isinstance(m.get("result"), dict): raise RuntimeError(f"{method} returned a JSON-RPC error or no result: {json.dumps(m)[:200]}")
+        return m["result"]
 
     def handshake(self):
-        self.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "bench", "version": "0"}}, 30)
+        self.call_ok("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "bench", "version": "0"}}, 30)
         self.send("notifications/initialized", notify=True)
-        self.call("tools/list", timeout=30)
+        tools = self.call_ok("tools/list", timeout=30).get("tools")
+        if not isinstance(tools, list) or not any(isinstance(t, dict) and t.get("name") == "fetch" for t in tools):
+            raise RuntimeError("tools/list has no `fetch` tool")
 
     def close(self):
         try: self.p.stdin.close(); self.p.wait(timeout=5)
@@ -119,12 +159,12 @@ def sample(binary, env_extra, scen, srv, base_url, settle):
         srv.reset()
         r = s.call("tools/call", {"name": "fetch", "arguments": {"url": base_url + scen["route"], **scen.get("args", {})}})
         st = proc_status(s.p.pid)  # VmHWM read after the call returned, before exit
-        res = r.get("result", {})
-        text = json.dumps(res)
+        if "error" in r or not isinstance(r.get("result"), dict): raise RuntimeError(f"tools/call returned a JSON-RPC error: {json.dumps(r)[:200]}")
+        res = r["result"]
         got_err = bool(res.get("isError"))
         # too_large must be a tool error whose content text (not any field) says so.
         err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
-        outcome_ok = (got_err and "too_large" in err_text) if scen["expect"] == "too_large" else (not got_err and "result" in r)
+        outcome_ok = (got_err and "too_large" in err_text) if scen["expect"] == "too_large" else (not got_err)
         sent, need = srv.bytes_sent(scen["route"]), scen["min_bytes_v"]
         reason = None if outcome_ok else f"unexpected outcome (expected {scen['expect']})"
         reason = reason or (None if sent >= need else f"early stop: server wrote {sent} < expected_min_bytes {need}")
@@ -189,7 +229,7 @@ def main(argv=None):
     env_extra = dict(kv.split("=", 1) for kv in a.child_env)
 
     bad = fixtures.verify(a.fixtures_dir)
-    if bad: return refuse("fixture hash mismatch: " + "; ".join(bad))
+    if bad: return refuse("fixture hash mismatch or missing (fresh checkout? run `python3 bench/fixtures.py generate`; the gzip fixture hash depends on the zlib build, so an aarch64 zlib difference is a fixture-generation issue, not a server one): " + "; ".join(bad))
     manifest = fixtures.load_manifest()
 
     if not (os.path.isfile(a.binary) and os.access(a.binary, os.X_OK)): return refuse(f"binary not found or not executable: {a.binary}")
@@ -198,6 +238,9 @@ def main(argv=None):
     if a.binary_kind == "bench" and not marker: return refuse("--binary-kind bench but --version lacks the bench-loopback marker")
     carried = [m for m in SHIPPED_FORBIDDEN_MARKERS if m in ver]
     if a.binary_kind == "shipped" and carried: return refuse(f"--binary-kind shipped but --version carries a forbidden-feature marker: {carried}")
+    if a.gate:
+        why = check_identity(a.binary, ver, a.binary_kind)
+        if why: return refuse(f"--gate binary identity: {why}")
     for n in names:
         need = SCENARIOS[n].get("binary", "bench")
         if need != a.binary_kind: return refuse(f"scenario {n} is gated on the {need} binary, got {a.binary_kind}")
@@ -231,8 +274,7 @@ def main(argv=None):
                 med = statistics.median(vals); medians[n] = med
                 rec.update(median_kB=med, min_kB=min(vals), max_kB=max(vals), median_MiB=round(med / MIB_KB, 2),
                            verdict="PASS" if med <= target_kb else "FAIL")
-                if scen.get("kind") == "peak" and rec["verdict"] == "FAIL": missed.append(n)
-                if scen["kind"] == "idle" and rec["verdict"] == "FAIL": missed.append(n)
+                if rec["verdict"] == "FAIL": missed.append(n)
             else:
                 rec["verdict"] = "INVALID"; invalid.append(n)
             emit(rec)

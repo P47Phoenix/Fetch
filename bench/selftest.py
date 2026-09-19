@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Harness self-test on the stand-in binary (standin_mcp.py). Proves: deterministic fixtures, known-memory
 measurement, pass/fail vs targets, INVALID on early stop, refusals. Run: python3 bench/selftest.py"""
-import json, os, subprocess, sys, tempfile
+import json, os, platform, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import fixtures
@@ -101,6 +101,53 @@ with tempfile.TemporaryDirectory() as d:
     with open(os.path.join(d, "html_5mib.html"), "r+b") as f: f.seek(100); f.write(b"Z")
     rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle")
     check("fixture hash mismatch refused, exit 2", rc == 2)
+
+
+# --- handshake must require JSON-RPC results (QA B1), EOF must fail fast (Dev N1), binary identity (QA B2)
+import stat, time, struct
+with tempfile.TemporaryDirectory() as d2:
+    fixtures.generate(d2)
+    F = ["--fixtures-dir", d2]
+    def script(name, body):
+        p = os.path.join(d2, name)
+        with open(p, "w") as f: f.write("#!" + sys.executable + "\n" + body)
+        os.chmod(p, 0o755); return p
+    HDR = 'import sys, json\nif "--version" in sys.argv: print("fetch-mcp 0.0.0"); sys.exit(0)\n'
+    errsrv = script("errsrv.py", HDR + 'for l in sys.stdin:\n    m = json.loads(l)\n    if "id" in m: print(json.dumps({"jsonrpc":"2.0","id":m["id"],"error":{"code":-32603,"message":"x"}}), flush=True)\n')
+    notool = script("notool.py", HDR + 'for l in sys.stdin:\n    m = json.loads(l)\n    if "id" in m: print(json.dumps({"jsonrpc":"2.0","id":m["id"],"result":{"tools":[]}}), flush=True)\n')
+    crash = script("crash.py", 'import sys, json\nif "--version" in sys.argv: print("fetch-mcp 0.0.0 bench-loopback"); sys.exit(0)\nfor l in sys.stdin:\n    m = json.loads(l)\n    if m.get("method") == "tools/call": sys.exit(1)\n    if "id" in m: print(json.dumps({"jsonrpc":"2.0","id":m["id"],"result":{"tools":[{"name":"fetch"}]}}), flush=True)\n')
+    for nm, b in (("error-only server", errsrv), ("server without a fetch tool", notool)):
+        p = subprocess.run([sys.executable, os.path.join(HERE, "measure.py"), "--binary", b, "--binary-kind", "shipped", "--scenario", "idle",
+                            "--settle", "0.2", "--smoke", *F], capture_output=True, text=True)
+        recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+        sc = next((r for r in recs if r.get("scenario") == "idle"), {})
+        check(f"{nm}: INVALID, 0 valid runs, exit 2", p.returncode == 2 and sc.get("valid_runs") == 0 and recs[-1]["verdict"] == "INVALID", f"rc={p.returncode} {sc.get('invalid_reasons')}")
+    t0 = time.time()
+    p = subprocess.run([sys.executable, os.path.join(HERE, "measure.py"), "--binary", crash, "--binary-kind", "bench", "--scenario", "g4a-5mib-full",
+                        "--smoke", "--runs", "2", *F], capture_output=True, text=True)
+    recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+    sc = next((r for r in recs if r.get("scenario") == "g4a-5mib-full"), {})
+    check("server that exits mid-fetch fails fast with 'server closed stdout' (EOF sentinel), not a 120 s hang",
+          time.time() - t0 < 30 and any("server closed stdout" in x for x in sc.get("invalid_reasons", [])), f"{time.time() - t0:.1f}s {sc.get('invalid_reasons')}")
+    # identity: a real-looking ELF header is needed for the positive case
+    import measure
+    def elf(name, machine, data_byte=1, extra=b""):
+        e = bytearray(64); e[:4] = b"\x7fELF"; e[4] = 2; e[5] = data_byte
+        e[18:20] = machine.to_bytes(2, "little" if data_byte == 1 else "big")
+        p = os.path.join(d2, name)
+        with open(p, "wb") as f: f.write(bytes(e) + extra)
+        return p
+    host = platform.machine(); em = measure.ELF_MACHINE[host]; other = 183 if em != 183 else 62
+    V = "fetch-mcp 0.0.0"
+    check("identity: host-arch ELF with fetch-mcp version passes as shipped", measure.check_identity(elf("ok", em), V, "shipped") is None)
+    check("identity: stand-in script refused", measure.check_identity(STANDIN, "standin-mcp 0.0.0", "shipped") is not None)
+    check("identity: script printing a fetch-mcp version still refused (not ELF)", measure.check_identity(errsrv, V, "shipped") is not None)
+    check("identity: wrong-arch ELF refused", "e_machine" in (measure.check_identity(elf("wa", other), V, "shipped") or ""))
+    check("identity: ELF with a foreign --version refused", measure.check_identity(elf("fv", em), "standin-mcp 0.0.0", "shipped") is not None)
+    check("identity: shipped ELF carrying a marker token refused", measure.check_identity(elf("mk", em, extra=b"FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback"), V, "shipped") is not None)
+    check("identity: bench ELF without the marker refused", measure.check_identity(elf("bn", em), V + " bench-loopback", "bench") is not None)
+    check("identity: bench ELF with the marker passes", measure.check_identity(elf("bm", em, extra=b"FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback"), V + " bench-loopback", "bench") is None)
+    check("identity: big-endian byte order decoded", measure.check_identity(elf("be", em, 2), V, "shipped") is None)
 
 print("SELFTEST", "FAILED: " + ", ".join(fails) if fails else "PASSED")
 sys.exit(1 if fails else 0)

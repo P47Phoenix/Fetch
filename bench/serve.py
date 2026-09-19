@@ -3,7 +3,7 @@
 
 Routes: /5mb.html, /5mb.html.gz (Content-Encoding: gzip), /50mb-cl.html (Content-Length),
 /50mb-chunked.html (chunked, no Content-Length), /slow (slow drip). Loopback only.
-The counter is an upper bound on what the client consumed (kernel buffers); it backs the
+The counter (incremented just before each write) is an upper bound on what the client consumed (kernel buffers); it backs the
 valid-run rule (early-stop detection) in docs/BENCHMARK.md section 6.
 """
 import http.server, os, sys, threading, time
@@ -60,10 +60,10 @@ class FixtureServer:
         self.port = self.httpd.server_address[1]
 
     def _send(self, h, path, data, chunked):
+        with self._lock:   # count before the write: a client that aborts mid-write must not race the counter to zero
+            self.counters[path] = self.counters.get(path, 0) + len(data)
         h.wfile.write(b"%x\r\n%s\r\n" % (len(data), data) if chunked else data)
         h.wfile.flush()
-        with self._lock:
-            self.counters[path] = self.counters.get(path, 0) + len(data)
 
     def bytes_sent(self, path):
         with self._lock: return self.counters.get(path, 0)

@@ -35,6 +35,15 @@ jobs:
       - run: rustup show active-toolchain
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo clippy --locked --all-targets --features bench-loopback -- -D warnings
+      # D-7 AC: the A-1 spike code passes clippy -D warnings. spikes/a1 is a separate crate, so root clippy never covers it.
+      - name: Clippy the A-1 spike (default and one feature set per HTTP backend)
+        working-directory: spikes/a1
+        run: |
+          set -eu
+          for f in "" http-reqwest,conv-htmd http-reqwest,conv-lolhtml http-hyper,conv-html2md http-ureq,conv-html2text; do
+            echo "== spikes/a1 features: '$f'"
+            cargo clippy --locked --all-targets --features "$f" -- -D warnings
+          done
 
   test:
     runs-on: ubuntu-latest
@@ -44,7 +53,10 @@ jobs:
           persist-credentials: false
       - run: rustup show active-toolchain
       - run: cargo test --locked
-      # E-8 will add: cargo test --locked --features bench-loopback
+      - run: cargo test --locked --features bench-loopback
+      - run: cargo test --locked --features test-support
+      - name: Bench harness self-test (proves the harness can fail)
+        run: python3 bench/selftest.py
 
   deny:
     runs-on: ubuntu-latest

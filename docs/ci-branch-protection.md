@@ -11,8 +11,8 @@ The owner configures these in GitHub (Settings, Branches, rule for `main`, "Requ
 | Check | Command |
 |---|---|
 | `fmt` | `cargo fmt --check` |
-| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback` |
-| `test` | `cargo test --locked` |
+| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the A-1 spike crate (`spikes/a1`, separate crate) with the same flags for the default and four HTTP-backend feature sets |
+| `test` | `cargo test --locked`, then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` |
 | `deny` | `cargo deny --locked check` (`deny.toml`) |
 | `release-guard` | `scripts/check-release-features.sh` and `--self-test` |
 
