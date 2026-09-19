@@ -3,7 +3,7 @@
 Speaks minimal MCP over stdio. `fetch` streams the URL body (discarding it), refusing above a 5 MiB
 cap with a too_large error, then holds STANDIN_ALLOC_MIB of touched memory so peak RSS is known.
 Env: STANDIN_IDLE_ALLOC_MIB (at start), STANDIN_ALLOC_MIB (on successful fetch),
-STANDIN_EARLY_STOP=<bytes> (read only that many bytes: must be flagged invalid), STANDIN_BENCH=1 (--version marker).
+STANDIN_EARLY_STOP=<bytes> (read only that many bytes: must be flagged invalid), STANDIN_TOOLARGE_ALLOC_MIB (on too_large, to test boundedness FAIL), STANDIN_BENCH=1 (--version marker).
 """
 import http.client, json, os, sys, urllib.parse
 
@@ -43,6 +43,7 @@ for line in sys.stdin:
     else:
         err = fetch(m["params"]["arguments"]["url"])
         if err:
+            hold.append(b"\x01" * (int(os.environ.get("STANDIN_TOOLARGE_ALLOC_MIB", "0")) * MIB))
             res = {"isError": True, "content": [{"type": "text", "text": err}]}
         else:
             hold.append(b"\x01" * (int(os.environ.get("STANDIN_ALLOC_MIB", "0")) * MIB))

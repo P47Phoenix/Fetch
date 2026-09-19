@@ -50,6 +50,16 @@ with tempfile.TemporaryDirectory() as d:
                 "--scenario", "g4a-50mib-chunked", "--peak-target-mib", "1000")
     check("50 MiB CL/chunked -> too_large valid, boundedness <= 1.10", rc == 0 and all(v <= 1.10 for v in r[-1].get("boundedness", {"x": 9}).values()),
           f"rc={rc} bounded={r[-1].get('boundedness')} peak={r[-1].get('gating_peak_MiB')} MiB")
+    # peak target missed -> FAIL (exit 1), and non-gate passes are labelled advisory
+    rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--child-env", "STANDIN_ALLOC_MIB=20", "--peak-target-mib", "1")
+    check("peak target missed -> exit 1 with FAIL verdict", rc == 1 and r[-1]["verdict"] == "FAIL" and "g4a-5mib-full" in r[-1]["missed"], f"rc={rc}")
+    # boundedness broken: too_large path holds 30 MiB more than the 5 MiB run -> FAIL on boundedness
+    rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--scenario", "g4a-50mib-cl", "--peak-target-mib", "1000",
+                "--child-env", "STANDIN_TOOLARGE_ALLOC_MIB=30")
+    check("boundedness > 1.10 -> exit 1 with FAIL verdict", rc == 1 and r[-1]["verdict"] == "FAIL"
+          and any("boundedness" in m for m in r[-1]["missed"]), f"rc={rc} {r[-1].get('boundedness')}")
+    rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--idle-target-mib", "1000")
+    check("non-gate pass is ADVISORY_PASS, never PASS", r[-1]["verdict"] == "ADVISORY_PASS", r[-1]["verdict"])
     # early-stop sample must be INVALID
     rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--child-env", "STANDIN_EARLY_STOP=1000")
     check("early stop -> INVALID, exit 2", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc} {scen(r, 'g4a-5mib-full')['invalid_reasons']}")
@@ -68,6 +78,9 @@ with tempfile.TemporaryDirectory() as d:
     import platform
     check("--gate refused off native aarch64 (exit 3)" if platform.machine() != "aarch64" else "--gate host is aarch64 (skip)",
           rc == 3 or platform.machine() == "aarch64", f"rc={rc}")
+    for flag, val in (("--settle", "1"), ("--parallel-idle", "2")):
+        rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", flag, val)
+        check(f"--gate with {flag} refused (non-native hosts exit 3, native exit 2)", rc in (2, 3), f"rc={rc}")
     # tampered fixture refused
     with open(os.path.join(d, "html_5mib.html"), "r+b") as f: f.seek(100); f.write(b"Z")
     rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle")

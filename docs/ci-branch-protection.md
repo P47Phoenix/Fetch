@@ -4,7 +4,9 @@ Workflow: `.github/workflows/ci.yml` (hosted `ubuntu-latest` only; no self-hoste
 
 ## Required status checks on `main`
 
-The owner configures these in GitHub (Settings, Branches, rule for `main`, "Require status checks to pass before merging") and records it in the sprint PR. The check names are the job ids:
+Status: NOT YET CONFIGURED. The workflow exists on the sprint branch; the rule on `main` must be set by the owner after the first CI run (the check names appear in GitHub only once they have run). The `test` check runs only `cargo test --locked` (default features); the `bench-loopback` tests are added by E-8 and do not run yet.
+
+The owner configures these in GitHub (Settings, Branches, rule for `main`, "Require status checks to pass before merging") and records it in the sprint PR (template: "Configured DD-MM-YYYY: checks fmt, clippy, test, deny, release-guard; up-to-date and PR required"). The check names are the job ids:
 
 | Check | Command |
 |---|---|
@@ -25,4 +27,12 @@ Also enable "Require branches to be up to date" and "Require a pull request befo
 
 ## Release-feature guard
 
-`scripts/check-release-features.sh` builds `-p fetch-mcp --release --locked`, asserts via `cargo tree -e features` that `test-support`, `bench-loopback` and `fixture-ca` are not enabled, and greps the binary for their marker strings. `--self-test` builds each forbidden feature and requires the guard to fail (positive control). `--binary PATH` greps an existing artifact (used by D-2).
+`scripts/check-release-features.sh` builds `-p fetch-mcp --release --locked`, asserts via `cargo tree -e features` that the root package enables only allowlisted features (`default`; anything else, including a renamed or new feature, fails), and greps the binary for the `FETCH_MCP_MARKER_` prefix (any marker fails). `--self-test` builds each forbidden feature and requires the guard to fail for both reasons, and checks a renamed feature and an unknown marker (positive controls). `--binary PATH` greps an existing artifact (used by D-2).
+
+## Dependencies and advisories
+
+`deny` runs `cargo deny check` including RustSec advisories (`deny.toml` `[advisories]`, yanked = deny). A scheduled advisory audit (nightly, on the default branch) is D-3. `.github/dependabot.yml` opens weekly update PRs for Cargo and GitHub Actions (action pins stay full-SHA; Dependabot updates the SHA and comment). `cargo audit` is not installed here; `cargo deny check advisories` covers the same database.
+
+## Licence
+
+`Cargo.toml` `license = "Apache-2.0"` mirrors the repo `LICENSE` file only; the project licence is OQ-7 (open) and `publish = false` blocks publishing until it is decided.

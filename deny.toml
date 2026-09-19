@@ -20,6 +20,8 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
+# Dependency license policy only (permissive allow-list). It says nothing about the licence of this
+# crate itself, which is OQ-7 (open).
 [licenses]
 version = 2
 allow = [
@@ -34,6 +36,6 @@ allow = [
     "CC0-1.0",
 ]
 
-# publish = false crate: no license obligation before OQ-7 decides.
+# publish = false crate: its own licence is not checked here (OQ-7 open).
 [licenses.private]
 ignore = true

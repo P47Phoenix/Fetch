@@ -109,7 +109,9 @@ def sample(binary, env_extra, scen, srv, base_url, settle):
         res = r.get("result", {})
         text = json.dumps(res)
         got_err = bool(res.get("isError"))
-        outcome_ok = ("too_large" in text) if scen["expect"] == "too_large" else (not got_err and "result" in r)
+        # too_large must be a tool error whose content text (not any field) says so.
+        err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
+        outcome_ok = (got_err and "too_large" in err_text) if scen["expect"] == "too_large" else (not got_err and "result" in r)
         sent, need = srv.bytes_sent(scen["route"]), scen["min_bytes_v"]
         reason = None if outcome_ok else f"unexpected outcome (expected {scen['expect']})"
         reason = reason or (None if sent >= need else f"early stop: server wrote {sent} < expected_min_bytes {need}")
@@ -162,6 +164,10 @@ def main(argv=None):
         if not ok: return refuse(f"--gate refused: {why} (QEMU/non-native RSS never gates)", 3)
         if a.smoke or (a.idle_target_mib, a.peak_target_mib) != (IDLE_TARGET_MIB, PEAK_TARGET_MIB):
             return refuse("--gate forbids --smoke and target overrides")
+        if a.settle != 30.0 or a.parallel_idle != 1:
+            return refuse("--gate forbids --settle other than 30 and --parallel-idle > 1")
+        forbidden = [kv for kv in a.child_env if kv.split("=", 1)[0] in ("LD_PRELOAD", "RUST_LOG") or kv.startswith("MALLOC_")]
+        if forbidden: return refuse(f"--gate forbids child env overrides of the pinned environment: {forbidden}")
     if a.runs < 10 and not a.smoke: return refuse(f"--runs {a.runs} < 10 valid runs required (use --smoke for a non-gating check)")
     for n in names:
         if not SCENARIOS[n]["implemented"]: return refuse(f"scenario {n} not implemented yet (needs E-2 fixtures/args or A-5/A-6)")
@@ -226,7 +232,8 @@ def main(argv=None):
             ratio = medians[n] / medians[ref]; summ.setdefault("boundedness", {})[n] = round(ratio, 3)
             if ratio > BOUND_RATIO: missed.append(n + " (boundedness)")
     summ["missed"] = missed; summ["invalid"] = invalid
-    summ["verdict"] = "INVALID" if invalid else ("FAIL" if missed else "PASS")
+    # A pass without --gate is advisory and must not read as a gate PASS.
+    summ["verdict"] = "INVALID" if invalid else ("FAIL" if missed else ("PASS" if a.gate else "ADVISORY_PASS"))
     summ["note"] = "" if a.gate else "advisory: not a gating run (no --gate); never valid for NFR claims"
     emit(summ)
     return finish(2 if invalid else 1 if missed else 0)

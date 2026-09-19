@@ -2,6 +2,17 @@
 
 Status: E-1 result, Sprint 0. Other documents (PRD, EPICS, architecture, config defaults, reports) refer to this file for the unit, targets, scenarios and method. Harness skeleton: `bench/` (self-test: `python3 bench/selftest.py`). E-2 builds the full fixture set and CI on top of it.
 
+## Quickstart (contributors)
+
+Prerequisites: Linux, Python 3.8+ (standard library only), a Rust toolchain only if you build the real binary. macOS is not supported yet (E-2).
+
+1. Self-test the harness (about 1 minute, no Rust needed): `python3 bench/selftest.py`. Expected last line: `SELFTEST PASSED`. It regenerates fixtures itself and runs against `bench/standin_mcp.py`, a stand-in that is NOT the product, so its RSS figures are not product measurements.
+2. Before a real run, generate the fixtures once: `python3 bench/fixtures.py generate` (measure.py refuses on a missing or mismatched `bench/manifest.json` hash).
+3. Worked example, advisory smoke on the stand-in (bench kind needs the marker, so set `STANDIN_BENCH=1`): `python3 bench/measure.py --binary bench/standin_mcp.py --binary-kind bench --child-env STANDIN_BENCH=1 --scenario g4a-5mib-full --smoke`. Output is JSON lines, one per scenario and a final `summary`; without `--gate` the summary verdict is `ADVISORY_PASS` or `FAIL`, never `PASS`. Exit codes: 0 pass, 1 target missed, 2 invalid or refused, 3 `--gate` off native aarch64.
+4. Gating run (aarch64 runner only): `python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle --gate`. `--gate` refuses `--smoke`, target overrides, `--settle` other than 30, `--parallel-idle` above 1, and `LD_PRELOAD`, `MALLOC_*` or `RUST_LOG` child env.
+
+Gate names versus scenario IDs: G0, G4a and G4b are gates (points in the plan where a memory verdict is taken). G1 to G7 are the scenario IDs from architecture 11.1. The harness IDs in the table in section 5 (for example `g4a-5mib-full`) name the gate and the scenario together.
+
 ## 1. Unit definition (stated once)
 
 MB in this project means MiB: 1 MB = 2^20 = 1,048,576 bytes, for the targets, the fixtures and the fetch cap alike. The harness reads `/proc` in kB (KiB), so 10 MB = 10,240 kB and 40 MB = 40,960 kB. The 5 MB fetch cap = 5,242,880 bytes. Reports say "MB (MiB)".
@@ -32,7 +43,7 @@ Native aarch64 procedure: (1) preflight: `uname -m` = aarch64, `file <binary>` =
 
 ## 4. Binaries (E-8 loopback path, CONFIRMED by the user 2026-09-19; OQ-4 not decided)
 
-The shipped release binary is fail-closed and cannot reach the loopback fixture server. Idle is gated on the shipped binary. Peak and 50 MB scenarios run on the `bench-loopback` build (compile-time Cargo feature, off by default, permits only 127.0.0.0/8 and `::1`, never in a release, tag or distributed artifact, asserted absent by the D-7 guard). Both come from one commit, one Cargo.lock hash and the D-7 release profile, via the same pinned pipeline, and both report commit and Cargo.lock hash in `--version` (the harness asserts a bench marker string `bench-loopback` in `--version`; it refuses peak runs without it, and refuses a marked binary for shipped-binary idle). Every figure is labelled with its binary (`binary_kind`). Bench-vs-shipped bounds (E-8, part of the G4a pass): idle delta <= 0.5 MB; binary size delta recorded and explained (no bound); one manual 5 MB fetch of a public host on the shipped binary within 10% of the bench peak and <= 40 MB; same commit and Cargo.lock hash. Exceeding a bound fails G4a until explained and re-measured.
+The shipped release binary is fail-closed and cannot reach the loopback fixture server. Idle is gated on the shipped binary. Peak and 50 MB scenarios run on the `bench-loopback` build (compile-time Cargo feature, off by default, permits only 127.0.0.0/8 and `::1`, never in a release, tag or distributed artifact, asserted absent by the D-7 guard). Both come from one commit, one Cargo.lock hash and the D-7 release profile, via the same pinned pipeline, and both report commit and Cargo.lock hash in `--version` (commit and hash are added by E-8/D-3; today `--version` prints the crate version only). Marker contract, one definition: a build with a forbidden feature makes `--version` print a marker `FETCH_MCP_MARKER_<FEATURE>_V1:<feature-name>`, so a bench build prints `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback` and a release build prints no marker. The harness checks for the literal `bench-loopback` in `--version` (it refuses peak runs without it, and refuses a marked binary for shipped-binary idle); the D-7 guard greps the binary for the `FETCH_MCP_MARKER_` prefix, so any marker (including a renamed feature) fails a release build. Every figure is labelled with its binary (`binary_kind`). Bench-vs-shipped bounds (E-8, part of the G4a pass): idle delta <= 0.5 MB; binary size delta recorded and explained (no bound); one manual 5 MB fetch of a public host on the shipped binary within 10% of the bench peak and <= 40 MB; same commit and Cargo.lock hash. Exceeding a bound fails G4a until explained and re-measured.
 
 ## 5. Measurement method
 
@@ -43,7 +54,7 @@ Per sample a fresh child process (cold; no in-process warm-up), spawned with a p
 3. Peak: one `tools/call fetch` per fresh process; on return, before exit, read `VmHWM`.
 4. Fixture server and harness on the same host over loopback (`bench/serve.py`).
 
-Fixtures (`bench/fixtures.py`, fixed seed 1, sha256 and size committed in `bench/manifest.json`, harness refuses to run on mismatch; `bench/fixtures/` is not committed, regenerate with `fixtures.py generate`): 5 MB HTML (5,241,856 B, 1 KiB under the cap so a correct server does not answer `too_large`), the same page gzipped (`Content-Encoding: gzip`; compressed bytes depend on the zlib build, re-commit the manifest deliberately if it changes), 50 MB HTML served with `Content-Length` and served chunked (no `Content-Length`), and a slow-drip route (`/slow`, 64 B/s). Late-landmark HTML and the remaining E-2 fixtures are not in the skeleton.
+Fixtures (`bench/fixtures.py`, fixed seed 1, sha256 and size committed in `bench/manifest.json`, harness refuses to run on mismatch; `bench/fixtures/` is not committed, regenerate with `fixtures.py generate` before the first real run; selftest does this itself): 5 MB HTML (5,241,856 B, 1 KiB under the cap so a correct server does not answer `too_large`), the same page gzipped (`Content-Encoding: gzip`; compressed bytes depend on the zlib build, re-commit the manifest deliberately if it changes), 50 MB HTML served with `Content-Length` and served chunked (no `Content-Length`), and a slow-drip route (`/slow`, 64 B/s). Late-landmark HTML and the remaining E-2 fixtures are not in the skeleton.
 
 Scenarios (`bench/scenarios.py`). G0/G4a/G4b are gates; G1..G7 are scenario IDs (architecture 11.1):
 

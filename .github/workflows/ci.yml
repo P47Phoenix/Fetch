@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - run: rustup show active-toolchain
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   test:
@@ -40,6 +41,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - run: rustup show active-toolchain
       - run: cargo test --locked
       # E-8 will add: cargo test --locked --features bench-loopback
 
@@ -60,6 +62,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - run: rustup show active-toolchain
       - name: Guard the release build (cargo tree + marker grep)
         run: scripts/check-release-features.sh
       - name: Guard self-test (positive controls must fail the guard)
