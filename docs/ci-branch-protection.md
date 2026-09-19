@@ -8,13 +8,13 @@ Workflow file: `.github/workflows/ci.yml`. It uses hosted `ubuntu-latest` runner
 
 | Item | Status |
 |---|---|
-| Rule on `main` (required checks) | NOT YET CONFIGURED. The owner sets it after the first CI run. |
-| The workflow on hosted GitHub Actions | Never run. |
-| `cargo-deny` (the `deny` job) | Never run anywhere. It is not installed on the dev host. |
+| Rule on `main` (required checks) | NOT YET CONFIGURED. The first CI run has now happened, so the owner can set it. |
+| The workflow on hosted GitHub Actions | Run once, on pull request #2. All five checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) passed on commit 740c0fb (run 35470977286). One green run is not a trend. |
+| `cargo-deny` (the `deny` job) | Ran once, in that hosted run, and passed. It is still not installed on the dev host. |
 | `cargo-audit` | Never run anywhere. Not installed on the dev host. |
 | Everything else | Checked only by running its commands locally, plus `actionlint` (a tool that checks workflow files for mistakes). |
 
-Do not read "required checks" as "working checks". Until the first hosted run, the checks are unproven there.
+Do not read "required checks" as "working checks". They passed once on hosted runners, which shows they can work there, not that they are stable.
 
 ## The checks
 
@@ -23,7 +23,7 @@ A "required status check" is a CI job that must pass before a change can be merg
 | Check | Command | Plain meaning |
 |---|---|---|
 | `fmt` | `cargo fmt --check` | Code is formatted the standard way. |
-| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default and four HTTP-backend feature sets | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
+| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default set and four feature sets (spread across three HTTP backends) | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
 | `test` | `cargo test --locked`, then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
 | `deny` | `cargo deny --locked check` (`deny.toml`) | Dependencies have no known security problems and follow our rules. |
 | `release-guard` | `scripts/check-release-features.sh` and `--self-test` | A release build has no test-only features in it. |
@@ -32,7 +32,7 @@ A "required status check" is a CI job that must pass before a change can be merg
 
 ## Owner quickstart: turn on the rule
 
-Do this after the first CI run. The check names only appear in GitHub once they have run.
+Do this now that the first CI run (pull request #2) has happened. The check names only appear in GitHub once they have run.
 
 1. Open the repository on GitHub. Go to Settings, then Branches.
 2. Add a rule for `main`.
@@ -54,7 +54,7 @@ Later stories add more required checks (D-3, E-6). Add them to the rule when the
 | `fmt` fails | Code is not formatted. | Run `cargo fmt`, commit the result. |
 | `clippy` fails | A warning was found. | Run the failing command from the table locally and fix what it prints. |
 | `test` fails | A Rust test or the benchmark self-test failed. | Run the four commands in the table locally, in order. |
-| `deny` fails | A dependency problem. This job has never been run yet, so a first failure may also be a set-up problem. | Read the job log. Do not assume the code is at fault. |
+| `deny` fails | A dependency problem. This job has passed only once so far, so a failure may also be a set-up problem. | Read the job log. Do not assume the code is at fault. |
 | `release-guard` fails | A test-only feature or a `FETCH_MCP_MARKER_` marker ended up in a release build. | See "Release-feature guard" below. |
 | The merge button is not locked | The rule is not configured yet (this is the current state). | Follow the Owner quickstart. |
 

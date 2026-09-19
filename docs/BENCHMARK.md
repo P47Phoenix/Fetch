@@ -10,11 +10,13 @@ Be careful not to read more into this document than it says.
 
 | Item | Status |
 |---|---|
-| Hosted GitHub Actions running this repository's workflow | Never run. |
-| `cargo-deny` and `cargo-audit` | Never run (not installed on the dev host). |
+| Hosted GitHub Actions running this repository's workflow | Run once, on pull request #2. All five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) passed on commit 740c0fb (run 35470977286). One green run is not a trend. |
+| `cargo-deny` (the `deny` job) | Ran once, in that same hosted run, and passed. |
+| `cargo-audit` | Never run (not installed on the dev host). |
 | The benchmark scripts | Only run against the stand-in and the skeleton binary. Never against a real MCP server. |
 | The `fetch-mcp` binary | A skeleton. It has no MCP server yet. |
 | Native aarch64 measurement | Not done. No such host was available. |
+| Branch protection on `main` | Not configured yet (see `docs/ci-branch-protection.md`). |
 
 ## Glossary
 
@@ -48,7 +50,7 @@ Each term is explained here once. Later sections use the short form.
 | Smoke run (`--smoke`) | A quick run that may use fewer than 10 samples. Never valid for a memory claim. |
 | ADVISORY_PASS | The summary word for a passing advisory run. It is NOT a result. Only a `--gate` run with summary `PASS` counts. |
 | PASS / FAIL | PASS: the numbers are within the target. FAIL: a target was missed. |
-| INVALID | The run does not count. Usually fewer than 10 valid samples, or the fixtures did not match. |
+| INVALID | The run does not count. Usually fewer than 10 valid samples, or a failed handshake. (A fixture hash mismatch is not INVALID. It is a refusal, exit 2.) |
 | INCOMPLETE | A 50 MB scenario has no valid 5 MB reference run in the same run (see "Boundedness" in section 5). Exit 2. Never a pass. A `--gate` run that leaves out required scenarios is different: it is refused (exit 2, reason `incomplete`) before any measuring. |
 | REFUSED | The script declined to start, for example because you asked `--gate` on the wrong machine. |
 | Handshake | The opening exchange: the client sends `initialize`, then `tools/list`, and the server must answer with real results, including a tool named `fetch`. |
@@ -101,6 +103,8 @@ Why: `measure.py` refuses to run if `bench/manifest.json` is missing or its hash
 
 Success: the build ends with a `Finished` line and the file `target/release/fetch-mcp` exists. Later steps assume you did this.
 
+**Both builds write the same file**, `target/release/fetch-mcp`. Each build overwrites the last. Rebuild for the kind you are about to measure, or copy or rename the file after each build (for example to `target/release/fetch-mcp-shipped` and `target/release/fetch-mcp-bench`) and pass that path to `--binary`.
+
 ### Step 4. Try a worked example (advisory smoke run on the stand-in)
 
 ```
@@ -113,13 +117,13 @@ Success: it prints three JSON lines (a `host` line, one `scenario` line, then a 
 
 **Important: this success is not a result.**
 
-- Without `--gate`, the summary verdict is `ADVISORY_PASS` or `FAIL`. It is never `PASS`.
+- Without `--gate`, the summary verdict is `ADVISORY_PASS` or `FAIL` (or `INVALID` or `INCOMPLETE`, as in the glossary). It is never `PASS`.
 - Exit 0 with `ADVISORY_PASS` (any run without `--gate`, including every `--smoke` run) never satisfies a target.
 - Only a `--gate` run with summary verdict `PASS` counts.
 - A per-scenario line may say `"verdict": "PASS"` in an advisory run. Ignore it. Only the `summary` verdict is authoritative.
 - The exit codes are in the table in section 6.
 
-**Current limitation.** The `fetch-mcp` binary is a skeleton until later stories (A-2 and A-3a). A real `measure.py` run against it fails the handshake and exits with code 2. Only the self-test and the stand-in are runnable now. Also, story E-8 says a bench build must print its marker to stderr at start-up. That is not built yet. Today the marker is only printed by `--version`.
+**Current limitation.** The `fetch-mcp` binary is a skeleton until story A-2 (the stdio server with the `fetch` tool schema) lands. A real `measure.py` run against it fails the handshake and exits with code 2. Only the self-test and the stand-in are runnable now. Also, story E-8 says a bench build must print its marker to stderr at start-up. That is not built yet. Today the marker is only printed by `--version`.
 
 ### Step 5. Gating run (real aarch64 runner only)
 
@@ -142,7 +146,7 @@ Why it is strict: this is the run that counts, so the script refuses anything th
 - A shipped binary needs `idle`.
 - A bench binary needs every scenario of the G4a group (and/or the G4b group) it touches. A partial run is refused: exit 2, reason `incomplete`.
 
-Those refusals come before the native-aarch64 check (exit 3). So they behave the same on any host. A bench binary under `--gate` needs a real `bench-loopback` build (its `--version` marker). The stand-in with the environment variable trick does not work.
+Those two refusals (override and incomplete set) come before the native-aarch64 check (exit 3). So they behave the same on any host. The binary identity refusal below comes after it, so it is reached only on aarch64. Anywhere else a `--gate` run stops at exit 3 first. A bench binary under `--gate` needs a real `bench-loopback` build (its `--version` marker). The stand-in with the environment variable trick does not work.
 
 **Binary identity check.** With `--gate` only, after the override rules and before any sample, the script checks that the file really is what you say it is:
 
@@ -151,7 +155,7 @@ Those refusals come before the native-aarch64 check (exit 3). So they behave the
 3. A `shipped` binary must contain no `FETCH_MCP_MARKER_` text.
 4. A `bench` binary must contain `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1`.
 
-A stand-in script, a wrong-architecture ELF or a binary with its marker stripped is refused (exit 2, reason `binary identity`). Without `--gate` (advisory and self-test runs) only the `--version` marker rules apply, so the stand-in still works.
+On the aarch64 runner, a stand-in script, a wrong-architecture ELF or a binary with its marker stripped is refused (exit 2, reason `binary identity`). Without `--gate` (advisory and self-test runs) only the `--version` marker rules apply, so the stand-in still works.
 
 **Handshake check.** `initialize` and `tools/list` must both return a JSON-RPC `result`. An `error` reply is an invalid sample, so a server that only sends errors gives INVALID (exit 2). `tools/list` must contain a tool named `fetch`. A server that closes its output part-way through fails that sample at once.
 
@@ -161,8 +165,8 @@ A stand-in script, a wrong-architecture ELF or a binary with its marker stripped
 |---|---|---|
 | Self-test does not end with `SELFTEST PASSED` | A benchmark tool is broken, or Python is older than 3.8. | Read the last failing line above it. Check `python3 --version`. |
 | Refusal about `bench/manifest.json` or a fixture hash (exit 2) | The fixtures are missing or changed. | Run `python3 bench/fixtures.py generate`, then try again. |
-| Exit 2, `INVALID`, `RuntimeError: server closed stdout` when you point it at `target/release/fetch-mcp` | The skeleton has no MCP server yet, so the handshake fails. This is expected today. | Nothing to fix. Use the self-test and the stand-in until A-2 and A-3a land. |
-| Exit 2, refused, reason `binary identity` | The file is not the right kind: a script, a wrong-CPU ELF, or the wrong marker. | Rebuild with the command for the kind you passed (step 3). |
+| Exit 2, `INVALID`, `RuntimeError: server closed stdout` when you point it at `target/release/fetch-mcp` | The skeleton has no MCP server yet, so the handshake fails. This is expected today. | Nothing to fix. Use the self-test and the stand-in until A-2 lands. |
+| Exit 2, refused, reason `binary identity` (only on aarch64; elsewhere you get exit 3 first) | The file is not the right kind: a script, a wrong-CPU ELF, or the wrong marker. | Rebuild with the command for the kind you passed (step 3). |
 | Exit 2, refused, reason `incomplete` | A `--gate` bench run left out scenarios of its group. | Run the whole group (for example every G4a scenario). |
 | Exit 2, `INCOMPLETE` in a 50 MB scenario | Its 5 MB reference scenario has no valid result in the same run. | Include `g4a-5mib-full` in the same run. |
 | Exit 2, refused, `--gate` override | You used `--smoke`, a target override, another `--settle`, `--parallel-idle` above 1, or `--child-env`. | Remove the flag. |
@@ -171,7 +175,9 @@ A stand-in script, a wrong-architecture ELF or a binary with its marker stripped
 | Exit 1 | A target was missed. | The numbers are real. Investigate the memory use; do not change the target. |
 | `--runs` below 10 is refused | Fewer than 10 samples are only allowed with `--smoke`. | Use the default 10, or add `--smoke` for a non-counting test. |
 
-Gate names versus scenario IDs: G0, G4a and G4b are gates (points in the plan where a memory verdict is taken). G1 to G7 are the scenario IDs from architecture 11.1. The harness IDs in the table in section 5 (for example `g4a-5mib-full`) name the gate and the scenario together.
+### Gate names versus scenario IDs
+
+G0, G4a and G4b are gates (points in the plan where a memory verdict is taken). G1 to G7 are the scenario IDs from architecture 11.1. The harness IDs in the table in section 5 (for example `g4a-5mib-full`) name the gate and the scenario together.
 
 ## 1. Unit definition (stated once)
 
