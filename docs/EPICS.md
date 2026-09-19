@@ -1,6 +1,6 @@
 # Epics and Stories: Fetch MCP Server (Rust, low-memory, ARM)
 
-Source: `docs/PRD.md` v0.4 (30 stories in total). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
+Source: `docs/PRD.md` v0.4 (31 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
 
 Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment capped at 80% (8 points).
 
@@ -10,12 +10,12 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 2. **Measure early, not last.** The benchmark harness (E-2 to E-4) lands right after the first streaming fetch, so memory regressions are caught while the code is small. Trade-off: some harness effort is spent before all features exist; accepted.
 3. **Value density.** Core fetch (A) delivers the core value. Network safety (B) is next because an unsafe fetcher is not acceptable. Config (C) and polish stories follow. robots.txt and content labelling are lowest value density and depend on open questions, so they go last.
 4. **Packaging (D) split.** The aarch64 cross-build is proven in A-1 (risk), automated in D-2 mid-project, and docs/release finish at the end.
-5. **Interim safety.** Because A-3 (Sprint 1) is the first fetch-capable build and B-1 lands in Sprint 5, A-3 carries the full SSRF range table and checks (architecture 14.1). B-1/B-2/B-3 own test depth and hardening.
+5. **Interim safety.** Because the first fetch-capable build (A-3b, Sprint 2) precedes B-1 (Sprint 6), the full SSRF range table and checks land first in A-3a (Sprint 1), and A-3b cannot merge without them (architecture 14.1). B-1/B-2/B-3 own test depth and hardening.
 
 ## Release Rules (binding, from Stage 4 architecture)
 
 - No tagged or distributed build before M3 (Safety complete). Pre-M3 builds are not registered in a real MCP client (PRD Risk 2 mitigation).
-- A-3 is not Done until an integration test proves `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are refused. If A-3 is split, no fetch-capable build may exist without the range table.
+- A-3a (SSRF core) lands before A-3b (fetch client) and A-3b merges only if A-3a is on the branch (merge gate). A-3b is not Done until an integration test through the real client proves `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are refused. No fetch-capable build may exist without the range table and fail-closed default policy.
 - Memory gate: E-3/E-5 use the strict absolute targets. E-6 is a regression tripwire (see E-6).
 
 ## Epic-to-Requirement Map
@@ -43,9 +43,9 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 | # | Story | Value | Effort | Priority | Dependencies |
 |---|---|---|---|---|---|
 | E-1 | Spike: define benchmark harness and absolute targets | Critical (go/no-go) | 3 | 1 | None (OQ-9 resolved) |
-| E-2 | Benchmark harness and fixtures | High | 5 | 5 | E-1, A-3 |
+| E-2 | Benchmark harness and fixtures | High | 5 | 5 | E-1, A-3b |
 | E-3 | Idle RSS measurement and target check | High | 2 | 6 | E-1, E-2, A-2 |
-| E-4 | Peak RSS and boundedness checks | High | 3 | 6 | E-1, E-2, A-3, A-4 |
+| E-4 | Peak RSS and boundedness checks | High | 3 | 6 | E-1, E-2, A-3b, A-4 |
 | E-5 | Benchmark report and release decision | High | 2 | 10 | E-3, E-4, A-7 |
 | E-6 | CI regression gate on aarch64 | Medium | 3 | 11 | E-2, D-2 |
 
@@ -119,15 +119,16 @@ As the project owner, I want CI to fail on memory regressions so that the saving
 |---|---|---|---|---|---|
 | A-1 | Spike: `rmcp`, HTTP, and HTML-to-markdown crate choice | Critical (risk) | 3 | 2 | E-1 in parallel |
 | A-2 | Walking skeleton: stdio server with `fetch` schema | High | 3 | 3 | A-1 |
-| A-3 | Streaming, size-bounded HTTP fetch | High | 5 | 4 | A-2 |
-| A-4 | HTML to markdown conversion | High | 5 | 7 | A-3 |
+| A-3a | SSRF core: range table, resolver filter, fail-closed policy | Critical | 5 | 4 | A-2 |
+| A-3b | Streaming, size-bounded HTTP fetch client | High | 5 | 4 | A-2, A-3a |
+| A-4 | HTML to markdown conversion | High | 5 | 7 | A-3b |
 | A-5 | Pagination with `max_length` and `start_index` | High | 3 | 7 | A-4 |
-| A-6 | Content-type handling and `raw` mode | High | 3 | 8 | A-3 |
-| A-7 | Cause-specific structured errors | High | 3 | 9 | A-3 |
-| A-8 | Charset decoding and User-Agent | Medium | 2 | 12 | A-3 |
-| A-9 | Final URL and status header | Low | 1 | 12 | A-3 |
+| A-6 | Content-type handling and `raw` mode | High | 3 | 8 | A-3b |
+| A-7 | Cause-specific structured errors | High | 3 | 9 | A-3b |
+| A-8 | Charset decoding and User-Agent | Medium | 2 | 12 | A-3b |
+| A-9 | Final URL and status header | Low | 1 | 12 | A-3b |
 
-**MVP Slice:** A-1 to A-7. Rationale: this is the minimum core behavior (fetch, convert, paginate, raw, errors). A-8 (charset, UA) and A-9 (header) are refinements; UTF-8 default covers most pages.
+**MVP Slice:** A-1 to A-7 (A-3 as A-3a and A-3b). Rationale: this is the minimum core behavior (fetch, convert, paginate, raw, errors). A-8 (charset, UA) and A-9 (header) are refinements; UTF-8 default covers most pages.
 
 ### A-1: Spike - `rmcp`, HTTP client, and HTML-to-markdown choice (3 pts) [SPIKE, time-box 3 days]
 Maps to: FR-01, FR-15, NFR-05, NFR-15, Risks 1, 3, 9.
@@ -148,9 +149,20 @@ As an MCP client developer, I want a registered `fetch` tool with a validated sc
 - Given an aarch64 host, when the server starts, then it reaches ready within 250 ms.
 - Given Claude Code is configured with the binary path, when it lists tools, then `fetch` appears.
 
-### A-3: Streaming, size-bounded HTTP fetch with interim SSRF safety (5 pts, scope grew; see flag in Sprint Order)
-Maps to: FR-06, FR-07, FR-16, NFR-08, Risk 2.
-As a developer on ARM, I want the body read as a stream and capped so that memory cannot grow past the size limit, and I want the first fetch-capable build to already refuse internal addresses.
+### A-3a: SSRF core - range table, resolver filter, fail-closed policy (5 pts)
+Maps to: FR-06, NFR-04, Risk 2. Split from A-3 on 2026-09-19 (user decision). Architecture modules: `ssrf::ranges`, `ssrf::resolver`, `ssrf::check_url` (14.1).
+As a home-lab operator, I want the address-blocking core to exist and be tested before any code can make a network request, so that no fetch-capable build ever lacks it.
+- Given the `ssrf::ranges` table, when unit-tested table-driven, then it blocks the FULL set: IPv4 and IPv6 including IPv4-mapped/compatible, ULA, link-local, loopback, CGNAT, unspecified, and metadata addresses 169.254.169.254, fd00:ec2::254, 168.63.129.16; public addresses pass.
+- Given a URL whose host is an IP literal, when `check_url` runs, then blocked literals are refused before any resolution or connection.
+- Given a name, when the resolver filter runs (with an injectable test resolver), then it resolves once, refuses if any answer is blocked, and returns only the validated set for dialling (no second lookup).
+- Given a redirect target, when the per-hop revalidation function runs, then it applies the same scheme, IP-literal and resolver checks to the new URL and refuses non-http(s) schemes.
+- Given the default `Policy`, when constructed, then it is fail-closed (blocks everything non-public); the only way to permit loopback is the cfg/feature-gated test constructor (R12), asserted absent from release builds.
+- Given the module, when reviewed, then it has no dependency on the HTTP client, so it is testable without network access.
+- Given the module, when complete, then `cargo test`, clippy and fmt pass and unit tests cover each range and the mixed-answer case; deeper encoding, rebinding and coverage-gate work stays in B-1, B-2, B-5.
+
+### A-3b: Streaming, size-bounded HTTP fetch client (5 pts)
+Maps to: FR-07, FR-16, NFR-07, NFR-08, Risk 2. Split from A-3 on 2026-09-19. Architecture modules: `fetch` (client, redirect loop, body, deadline), `config`, flate2 gzip (ADR-001, 003, 004). Depends on A-3a; merge gate: no client code merges without A-3a's checks wired in.
+As a developer on ARM, I want the body read as a stream and capped so that memory cannot grow past the size limit, and I want every request to pass through the SSRF core.
 - Given a URL returning a 10 MB body with a `Content-Length` header and the default 5 MB limit, when `fetch` is called, then it returns a "too large" error without reading the body.
 - Given a URL returning a 10 MB chunked body (no `Content-Length`) and a requested window that would extend beyond the limit, when `fetch` is called, then reading stops at the limit and the call returns a "too large" error; given a chunked body whose requested window completes under the limit, then the call succeeds.
 - Given a server that never finishes sending, when 15 s elapse, then the call returns a timeout error and the connection is closed.
@@ -158,11 +170,13 @@ As a developer on ARM, I want the body read as a stream and capped so that memor
 - Given 10 concurrent calls to different URLs, when they complete, then each result matches its own URL with no cross-contamination.
 - Given a request, when it is sent, then no cookies, credentials or auth headers are included (NFR-07).
 - Given more calls than `FETCH_MAX_CONCURRENCY` (default 3), when 10 calls are issued, then 3 run, 7 queue for at most `FETCH_TIMEOUT_MS` and all complete without errors; the fetch deadline starts at permit acquisition.
-- Given the first fetch-capable build (interim safety, architecture 14.1), when it runs, then it applies the FULL blocked-range table (IPv4 and IPv6 incl. IPv4-mapped/compatible, ULA, link-local, loopback, CGNAT, metadata addresses 169.254.169.254, fd00:ec2::254, 168.63.129.16), the IP-literal pre-check, a resolver filter (resolve once, refuse if any answer is blocked, dial only the validated set) and per-hop revalidation in the redirect loop; the default policy is fail-closed.
-- Given the integration tests, when run, then they prove `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are each refused; A-3 is not Done until they pass.
-- Given a gzip response, when decoded, then only identity or single gzip is accepted (checked from the header before decode) and the decompressed-byte cap applies.
+- Given the manual redirect loop, when a request and each redirect hop are made, then every URL passes A-3a `check_url`, the resolver filter and per-hop revalidation, and the client dials only the validated IP set (the redirect limit and its tests are B-3).
+- Given the integration tests through the real client, when run, then they prove `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are each refused; A-3b is not Done until they pass.
+- Given a gzip response, when decoded with `flate2` (pinned when added), then only identity or a single gzip is accepted (checked from the header before decode), stacked, unknown, multi-member and trailing-garbage fixtures behave per ADR-004, and the decompressed-byte cap applies with output steps of at most 64 KiB (bomb fixture asserts it).
+- Given explicit header size and count limits, when a header-bomb fixture is served, then the call fails cleanly.
+- Given a byte stream, when decoded, then the UTF-8 streaming decoder with replacement is used (non-UTF-8 charsets complete in A-8).
 
-Note: B-1, B-2 and B-3 own test depth (encodings, mixed answers, rebinding simulation), the coverage gate and hardening for what A-3 lands. If A-3 is split, no fetch-capable build may exist without the range table. The UTF-8 streaming decoder (with replacement) also lands with A-3/A-4, ahead of A-8.
+Note: B-1, B-2 and B-3 own test depth (encodings, mixed answers, rebinding simulation), the coverage gate and hardening for what A-3a and A-3b land. Split rationale and cut: see `.delivery/artifacts/05-plan/po/sprint-plan.md`.
 
 ### A-4: HTML to markdown conversion (5 pts)
 Maps to: FR-03, NFR-02.
@@ -224,10 +238,10 @@ As an LLM agent, I want to know the final URL so that I can cite it.
 
 | # | Story | Value | Effort | Priority | Dependencies |
 |---|---|---|---|---|---|
-| B-1 | Block private, loopback, link-local on resolved IP | Critical | 5 | 8 | A-3 |
+| B-1 | Block private, loopback, link-local on resolved IP | Critical | 5 | 8 | A-3a |
 | B-2 | Encoded and IPv6 address forms | High | 3 | 9 | B-1 |
-| B-3 | Redirect limit and per-hop revalidation | High | 3 | 8 | A-3, B-1 |
-| B-4 | robots.txt enforcement | Low | 3 | 13 | A-3, OQ-3 |
+| B-3 | Redirect limit and per-hop revalidation | High | 3 | 8 | A-3b, B-1 |
+| B-4 | robots.txt enforcement | Low | 3 | 13 | A-3b, OQ-3 |
 | B-5 | SSRF suite and coverage gate | High | 3 | 9 | B-1, B-2, B-3 |
 | B-6 | Untrusted-content labelling | Medium | 2 | 13 | A-4, OQ-5 |
 
@@ -236,7 +250,7 @@ As an LLM agent, I want to know the final URL so that I can cite it.
 ### B-1: Block private, loopback and link-local on resolved IP (5 pts)
 Maps to: FR-06, Risk 2.
 As a home-lab operator, I want internal addresses refused so that a poisoned page cannot make the agent probe my LAN.
-Note: the first implementation of the range table, resolver filter and per-hop revalidation lands in A-3; B-1 is test depth and hardening of that code (mixed answers, rebinding simulation, range-table completeness).
+Note: the first implementation of the range table, resolver filter and per-hop revalidation lands in A-3a (wired into the client in A-3b); B-1 is test depth and hardening of that code (mixed answers, rebinding simulation, range-table completeness).
 - Given a URL whose host resolves to loopback, RFC 1918, link-local (including 169.254.169.254) or IPv6 unique-local, when `fetch` is called, then it is refused with a "blocked" error before any connection is made.
 - Given a DNS name that resolves to a private IP, when `fetch` is called, then it is refused.
 - Given a name resolves to a public IP, when connecting, then the connection uses that validated IP so a second lookup cannot change it (rebinding defense).
@@ -294,7 +308,7 @@ As a developer, I want fetched content marked as untrusted so that the model tre
 
 | # | Story | Value | Effort | Priority | Dependencies |
 |---|---|---|---|---|---|
-| C-1 | Environment variable parsing and validation | Medium | 3 | 11 | A-3 |
+| C-1 | Environment variable parsing and validation | Medium | 3 | 11 | A-3b |
 | C-2 | Private host allowlist | Medium | 2 | 10 | B-1, C-1, OQ-4 |
 | C-3 | Configurable timeout and max size | Medium | 2 | 11 | C-1 |
 
@@ -338,7 +352,7 @@ As a developer, I want to tune limits so that I can trade completeness against m
 
 | # | Story | Value | Effort | Priority | Dependencies |
 |---|---|---|---|---|---|
-| D-1 | Size- and memory-optimized release profile | High | 2 | 12 | A-3 |
+| D-1 | Size- and memory-optimized release profile | High | 2 | 12 | A-3b |
 | D-2 | ARM build pipeline (aarch64-linux, macOS arm64) | High | 5 | 12 | A-1, D-1 |
 | D-3 | Test suite on aarch64 | High | 3 | 14 | D-2 |
 | D-4 | README, install and migration guide | High | 2 | 14 | D-2 |
@@ -399,7 +413,7 @@ As the project owner, I want a clean v1.0 tag so that the release is auditable.
 
 **Definition:** "Safe to run on my ARM machines, with the memory targets proven."
 
-Included (63 points): E-1, A-1, A-2, A-3, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
+Included (68 points; was 63 before the A-3 split and re-estimate, 5 to 5+5): E-1, A-1, A-2, A-3a, A-3b, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
 
 Deferred to post-MVP (v1.0 completion): A-8, A-9, C-1, C-2, C-3, B-4, B-6, D-3, D-5, D-6, E-6.
 
@@ -414,23 +428,26 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 | Sprint | Goal | Stories | Points |
 |---|---|---|---|
 | 0 | De-risk: benchmark harness/targets and crate stack; go/no-go | E-1, A-1 | 6 |
-| 1 | Walking skeleton and bounded streaming fetch in Claude Code | A-2, A-3 | 8 |
-| 2 | Convert and paginate | A-4, A-5 | 8 |
-| 3 | Harness and content types | E-2, A-6 | 8 |
-| 4 | Memory gate: idle/peak verified, errors clear | E-3, E-4, A-7 | 8 |
-| 5 | Redirect and private-IP safety | B-1, B-3 | 8 |
-| 6 | Hardening and allowlist (if OQ-4 yes) | B-2, B-5, C-2 | 8 |
-| 7 | Config and text polish | C-1, C-3, A-8, A-9 | 8 |
-| 8 | ARM release pipeline | D-1, D-2 | 7 |
-| 9 | ARM tests, docs, report | D-3, D-4, D-5, E-5 | 8 |
-| 10 | Policy items and CI gate | B-4, B-6, E-6 | 8 |
-| 11 | v1.0 | D-6 (plus buffer, rework) | 2 |
+| 1 | Walking skeleton and SSRF core (no network code yet) | A-2, A-3a | 8 |
+| 2 | Bounded streaming fetch in Claude Code, SSRF-guarded | A-3b, A-9 | 6 |
+| 3 | Benchmark harness and idle RSS | E-2, E-3 | 7 |
+| 4 | Convert, and memory gate: idle/peak verified | A-4, E-4 | 8 |
+| 5 | Paginate and content types | A-5, A-6 | 6 |
+| 6 | Clear errors and private-IP test depth | A-7, B-1 | 8 |
+| 7 | Redirect limit, encoded forms, benchmark report | B-3, B-2, E-5 | 8 |
+| 8 | SSRF suite, coverage gate, release profile | B-5, D-1, D-5 | 6 |
+| 9 | ARM release pipeline and docs (MVP complete) | D-2, D-4 | 7 |
+| 10 | Config and allowlist (C-2 if OQ-4 yes) | C-1, C-2, C-3 | 7 |
+| 11 | robots.txt, charset, ARM tests | B-4, A-8, D-3 | 8 |
+| 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 |
 
-Overall MVP is reached at the end of Sprint 9 in this ordering (E-5 lands there). To reach MVP sooner, move D-1, D-2 into Sprint 7 (ahead of C-1/C-3/A-8/A-9) and D-4, E-5 into Sprint 8, giving MVP at the end of Sprint 8 at the cost of delaying config.
+Total 92 points over 13 sprints (0-12). Overall MVP (68 points) is reached at the end of Sprint 9 (D-2, D-4 land there; E-5 landed in Sprint 7), unchanged from before the split. Non-MVP A-9 (Sprint 2) and D-5 (Sprint 8) fill slack; C-2 (Sprint 10) needs C-1. v1.0 moves from Sprint 11 to Sprint 12 because the re-estimate added 5 points. To reach MVP sooner, move D-1 into Sprint 7 and D-2 into Sprint 8, at the cost of delaying B-5.
 
-**Flag for the user (not re-planned):** A-3 stays at 5 pts but its scope grew by absorbing the SSRF range table, resolver filter, per-hop revalidation, the concurrency semaphore and the UTF-8 decoder. Sprint 1 (A-2, A-3) is already exactly at the 8-point ceiling, so A-3 may need re-estimating to 8 or splitting. A split may not leave any fetch-capable build without the range table. Point totals (63 MVP, sprint totals) are unchanged pending that decision.
+**Split decision (2026-09-19, user):** A-3 is split into A-3a (SSRF core, Sprint 1, 5 pts) and A-3b (fetch client, Sprint 2, 5 pts). The original 5 pts under-estimated the absorbed scope; the two halves are re-estimated at 5 each (+5 total). Sprint 1 stays at the 8-point ceiling (A-2 + A-3a) and A-3b moves to Sprint 2, so no fetch-capable build exists before A-3a is in place, and A-3b has a merge gate requiring A-3a's checks. The following stories moved one to two sprints later as a result: A-4 (Sprint 2 to 4), A-5 (2 to 5), A-6 (3 to 5), A-7 (4 to 6); E-2, E-3 and E-4 keep Sprints 3, 3 and 4. The memory gate stays at the end of Sprint 4 (E-3 in Sprint 3, E-4 in Sprint 4).
 
-Trade-off: Sprint 6 sits below the 80% ceiling only if C-2 is dropped (OQ-4 "no"); it is exactly 8 with it.
+**OQ-5 deadline:** OQ-5 (untrusted-content labelling) must be decided before Sprint 2 starts, because it can change the shape of the `fetch` result envelope that A-3b and A-4 produce. OQ-3, OQ-4 and OQ-7 stay open.
+
+Trade-off: Sprint 10 is 7 points with C-2 and 5 if OQ-4 is "no" (C-2 dropped).
 
 # Story-to-Requirement Traceability
 
@@ -441,8 +458,8 @@ Trade-off: Sprint 6 sits below the 80% ceiling only if C-2 is dropped (OQ-4 "no"
 | FR-03 | A-4 |
 | FR-04 | A-5 |
 | FR-05 | B-3 |
-| FR-06 | B-1, B-2, C-2 |
-| FR-07 | A-3, C-3 |
+| FR-06 | A-3a, B-1, B-2, C-2 |
+| FR-07 | A-3b, C-3 |
 | FR-08 | A-6 |
 | FR-09 | A-8 |
 | FR-10 | A-7 |
@@ -451,14 +468,14 @@ Trade-off: Sprint 6 sits below the 80% ceiling only if C-2 is dropped (OQ-4 "no"
 | FR-13 | A-2 |
 | FR-14 | A-9 |
 | FR-15 | A-1, D-1, D-2 |
-| FR-16 | A-3, E-4 |
+| FR-16 | A-3b, E-4 |
 | NFR-01 | A-2 |
 | NFR-02 | A-4 |
-| NFR-04 | B-5, D-3 |
+| NFR-04 | A-3a, B-5, D-3 |
 | NFR-05 | A-1, D-6 |
 | NFR-06, NFR-15 | D-2, D-3, E-6 |
-| NFR-07 | A-3 |
-| NFR-08 | A-3, E-4 |
+| NFR-07 | A-3b |
+| NFR-08 | A-3b, E-4 |
 | NFR-09 | D-5 |
 | NFR-10 | E-1, E-3 |
 | NFR-11, NFR-12 | E-1, E-4 |
@@ -470,8 +487,8 @@ Trade-off: Sprint 6 sits below the 80% ceiling only if C-2 is dropped (OQ-4 "no"
 | # | Item | Owner | Blocks |
 |---|---|---|---|
 | OQ-3 | robots.txt default | Michael | B-4, C-1 default |
-| OQ-4 | Private-host allowlist needed | Michael | C-2 (Sprint 6) |
-| OQ-5 | Untrusted-content labelling | Michael | B-6 |
+| OQ-4 | Private-host allowlist needed | Michael | C-2 (Sprint 10) |
+| OQ-5 | Untrusted-content labelling. DUE before Sprint 2 (affects result envelope in A-3b/A-4) | Michael | B-6 |
 | OQ-7 | Distribution and licence | Michael | D-6 |
 | OQ-8 | Resolved 2026-09-19: not a replacement; no incumbent; schema is default design | Michael | None |
 | OQ-9 | Resolved 2026-09-19: native aarch64 runner on author's cluster; RAM/OS to be recorded | Michael | None |
