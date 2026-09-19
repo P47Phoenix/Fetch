@@ -229,8 +229,8 @@ def main(argv=None):
     env_extra = dict(kv.split("=", 1) for kv in a.child_env)
 
     bad = fixtures.verify(a.fixtures_dir)
-    if bad: return refuse("fixture hash mismatch or missing (fresh checkout? run `python3 bench/fixtures.py generate`; the gzip fixture hash depends on the zlib build, so an aarch64 zlib difference is a fixture-generation issue, not a server one): " + "; ".join(bad))
-    manifest = fixtures.load_manifest()
+    if bad: return refuse("fixture hash mismatch or missing (fresh checkout? run `python3 bench/fixtures.py generate`; the gzip fixture is verified by its decompressed content, so this is a real content problem): " + "; ".join(bad))
+    manifest = fixtures.resolve(fixtures.load_manifest(), a.fixtures_dir)
 
     if not (os.path.isfile(a.binary) and os.access(a.binary, os.X_OK)): return refuse(f"binary not found or not executable: {a.binary}")
     ver = version_of(a.binary, env_extra)
@@ -248,7 +248,7 @@ def main(argv=None):
     host = host_record(); host["native_aarch64"] = native_aarch64()[0]
     emit({**host, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "binary_sha256": fixtures.sha256_file(a.binary),
           "child_env": {**PINNED_ENV, **env_extra}, "runs": a.runs, "settle_s": a.settle, "gating": a.gate,
-          "fixture_sha256": {k: v["sha256"] for k, v in manifest["fixtures"].items()}, "unit": "MiB=2^20 bytes"})
+          "fixture_sha256": {k: v.get("sha256") or v["decompressed_sha256"] for k, v in manifest["fixtures"].items()}, "unit": "MiB=2^20 bytes"})
 
     srv = serve.FixtureServer(a.fixtures_dir, manifest).start()
     base = f"http://127.0.0.1:{srv.port}"

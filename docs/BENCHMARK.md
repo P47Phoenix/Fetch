@@ -250,12 +250,12 @@ Each sample uses a fresh child process (cold: no in-process warm-up). It is star
 3. Peak: make one `tools/call fetch` per fresh process. When it returns, before the process exits, read `VmHWM`.
 4. The fixture server and the harness run on the same host over loopback (`bench/serve.py`).
 
-**Fixtures** (`bench/fixtures.py`). They use a fixed seed (1). Their sha256 and size are committed in `bench/manifest.json`, and the harness refuses to run on a mismatch. `bench/fixtures/` is not committed: regenerate it with `fixtures.py generate` before the first real run (the self-test does this itself).
+**Fixtures** (`bench/fixtures.py`). They use a fixed seed (1). Their sha256 and size are committed in `bench/manifest.json`, and the harness refuses to run on a mismatch. The gzip file is the one exception: gzip output differs between zlib builds (a laptop and the GitHub runner produce different bytes), so the manifest pins what the file unpacks to (its size and sha256, which must match the plain 5 MiB page) and only requires the compressed size to sit between 256 KiB and 2 MiB. The check unpacks the file and compares, so a corrupt or altered gzip is still refused. The scenarios use the real compressed size on disk as the wire bytes, and the 5 MiB limit is still applied to the unpacked bytes. `bench/fixtures/` is not committed: regenerate it with `fixtures.py generate` before the first real run (the self-test does this itself).
 
 | Fixture | Detail |
 |---|---|
 | 5 MB HTML | 5,241,856 B, 1 KiB under the cap so a correct server does not answer `too_large` |
-| Same page gzipped | sent with `Content-Encoding: gzip`. The compressed bytes depend on the zlib build, so re-commit the manifest deliberately if it changes |
+| Same page gzipped | sent with `Content-Encoding: gzip`. The compressed bytes depend on the zlib build, so they are not pinned; the unpacked content is |
 | 50 MB HTML | served two ways: with `Content-Length`, and chunked (no `Content-Length`) |
 | Slow-drip route | `/slow`, 64 B/s |
 

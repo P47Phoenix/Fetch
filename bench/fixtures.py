@@ -56,7 +56,8 @@ def generate(d):
                 f.write(c)
     src = os.path.join(d, "html_5mib.html")
     with open(src, "rb") as fi, open(os.path.join(d, "html_5mib.html.gz"), "wb") as fo:
-        # mtime=0 and fixed level: bytes depend on the zlib build; re-commit the manifest if zlib changes.
+        # mtime=0 and fixed level, but the compressed bytes still depend on the zlib build, so the manifest
+        # pins the DECOMPRESSED payload (deterministic) and only bounds the compressed size.
         with gzip.GzipFile(filename="", mode="wb", fileobj=fo, compresslevel=6, mtime=0) as g:
             g.write(fi.read())
 
@@ -64,10 +65,41 @@ def generate(d):
 FILES = {"html_5mib": "html_5mib.html", "html_5mib_gz": "html_5mib.html.gz", "html_50mib": "html_50mib.html"}
 
 
+# The gz fixture is checked by decompressing it. Its compressed size only has to sit in this band: well above
+# nothing (real compression happened) and far below the 5 MiB cap (wire bytes < decompressed bytes).
+GZ_SIZE_MIN, GZ_SIZE_MAX = 256 * 1024, 2 * 1024 * 1024
+
+
+def gunzip_stats(path):
+    """Return (decompressed_size, decompressed_sha256) streaming, or raise on a corrupt gzip."""
+    h, n = hashlib.sha256(), 0
+    with gzip.open(path, "rb") as g:
+        for b in iter(lambda: g.read(1 << 20), b""):
+            h.update(b); n += len(b)
+    return n, h.hexdigest()
+
+
 def build_manifest(d):
-    return {"version": 1, "unit": "MiB=2^20", "seed": SEED, "fixtures": {
-        n: {"file": f, "size": os.path.getsize(os.path.join(d, f)), "sha256": sha256_file(os.path.join(d, f))}
-        for n, f in FILES.items()}}
+    out = {}
+    for n, f in FILES.items():
+        p = os.path.join(d, f)
+        if f.endswith(".gz"):
+            size, sha = gunzip_stats(p)
+            out[n] = {"file": f, "encoding": "gzip", "decompressed_size": size, "decompressed_sha256": sha,
+                      "compressed_size_min": GZ_SIZE_MIN, "compressed_size_max": GZ_SIZE_MAX,
+                      "compressed_size_reference": os.path.getsize(p)}
+        else:
+            out[n] = {"file": f, "size": os.path.getsize(p), "sha256": sha256_file(p)}
+    return {"version": 2, "unit": "MiB=2^20", "seed": SEED, "fixtures": out}
+
+
+def resolve(manifest, d):
+    """Fill in the on-disk (wire) size of gzip fixtures as m['size']; the server and byte floors use it.
+    Call only after verify() passed."""
+    for m in manifest["fixtures"].values():
+        if m.get("encoding") == "gzip":
+            m["size"] = os.path.getsize(os.path.join(d, m["file"]))
+    return manifest
 
 
 def load_manifest():
@@ -83,6 +115,19 @@ def verify(d, manifest=None):
         p = os.path.join(d, m["file"])
         if not os.path.exists(p):
             bad.append(f"{n}: missing {p}"); continue
+        if m.get("encoding") == "gzip":
+            wire = os.path.getsize(p)
+            if not m["compressed_size_min"] <= wire <= m["compressed_size_max"]:
+                bad.append(f"{n}: compressed size {wire} outside {m['compressed_size_min']}..{m['compressed_size_max']}"); continue
+            try:
+                size, sha = gunzip_stats(p)
+            except (OSError, EOFError) as e:
+                bad.append(f"{n}: not a valid gzip ({e})"); continue
+            if size != m["decompressed_size"]:
+                bad.append(f"{n}: decompressed size {size} != {m['decompressed_size']}"); continue
+            if sha != m["decompressed_sha256"]:
+                bad.append(f"{n}: decompressed sha256 mismatch")
+            continue
         if os.path.getsize(p) != m["size"]:
             bad.append(f"{n}: size {os.path.getsize(p)} != {m['size']}"); continue
         if sha256_file(p) != m["sha256"]:

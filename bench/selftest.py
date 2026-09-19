@@ -28,6 +28,9 @@ def scen(recs, n): return next(r for r in recs if r.get("scenario") == n)
 with tempfile.TemporaryDirectory() as d:
     fixtures.generate(d)
     check("fixtures regenerate byte-identical to committed manifest", not fixtures.verify(d), "; ".join(fixtures.verify(d)))
+    if fails:
+        print("FAIL selftest aborted: fixtures did not verify, later phases need them")
+        sys.exit(1)
     F = ["--fixtures-dir", d]
     # known-memory proof: alloc 0 vs 20 MiB must differ by ~20 MiB (idle and peak)
     rc0, r0 = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--child-env", "STANDIN_IDLE_ALLOC_MIB=0")
