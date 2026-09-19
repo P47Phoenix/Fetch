@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Product/Feature | Fetch MCP Server (`fetch` tool), Rust, low-memory MCP server for ARM |
-| Version | 0.3 (Draft) |
+| Version | 0.4 (Draft) |
 | Author | Michael Connelly |
-| Status | Draft - OQ-1, OQ-2, OQ-8 and OQ-9 resolved; remaining open questions pending |
+| Status | Draft - OQ-1, OQ-2, OQ-8 and OQ-9 resolved; Stage 4 architecture changes applied (v0.4), E-4 size-error rule accepted; OQ-3, OQ-4, OQ-5 and OQ-7 still open |
 | Last Updated | 2026-09-19 |
 
 ## 1. Problem Statement
@@ -22,7 +22,8 @@ The product is a small, local MCP server exposing one `fetch` tool. It is writte
 - OQ-1 (resolved): the goal is a new fetch MCP server with a small memory footprint on ARM. SSRF protection, determinism and code ownership are secondary benefits.
 - OQ-2 (resolved): Rust with the official SDK, https://github.com/modelcontextprotocol/rust-sdk (crate `rmcp`), stdio transport.
 - OQ-8 (resolved 2026-09-19): this is a brand-new server, not a replacement for `mcp__fetch__fetch`; there is no incumbent to baseline. The parameter schema (`url`, `max_length`, `start_index`, `raw`) is the default design, not a compatibility contract.
-- OQ-9 (resolved 2026-09-19): benchmarks run on the author's native aarch64 runner on their cluster. RAM and OS are to be recorded in the benchmark report.
+- OQ-9 (resolved 2026-09-19): benchmarks run on the author's native aarch64 runner on their cluster. RAM and OS are to be recorded in the benchmark report. Trust model: the runner is ephemeral or destroyed after each job, unprivileged, holds no cluster credentials or secrets, is unreachable from fork pull requests, and has no route to the LAN or the protected home-lab hosts; a skipped or absent benchmark job blocks release (architecture 9.2).
+- Size rule (accepted 2026-09-19, architecture 6.4): a `Content-Length` above the max download size returns `too_large` immediately. With no `Content-Length` the body is streamed; the call succeeds if the requested window completes under the cap, and returns `too_large` if the cap is reached first.
 
 **Assumptions (adjustable)**
 - Async runtime is `tokio`; HTTP client is `reqwest` or `hyper` with `rustls` (no OpenSSL); HTML-to-markdown crate is TBD. All crate choices are unvalidated and are decided in the spike (Epic A, story A-1).
@@ -104,7 +105,7 @@ As a developer, I want to set limits and an allowlist via environment variables 
 As a solo developer on ARM hardware, I want the server to use little memory when idle and when fetching so that it does not compete with my other workloads.
 - Given the server has completed the MCP handshake on aarch64-linux, when it is idle for 30 s, then its RSS is within the NFR-10 target.
 - Given a 5 MB page is fetched, when peak RSS is measured, then it is within the NFR-11 target.
-- Given a server response larger than the max size, when `fetch` is called, then memory stays bounded and the call returns a size error.
+- Given a server response larger than the max size, when `fetch` is called, then memory stays bounded and the call returns a size error, unless the response has no `Content-Length` and the requested window completes under the max size (then it succeeds, still bounded).
 
 ### US-8: Install as a single ARM binary
 As a developer, I want one self-contained binary for aarch64-linux and macOS arm64 so that I can register it in Claude Code without installing a runtime.
@@ -119,17 +120,17 @@ As the project owner, I want a reproducible benchmark so that I can release base
 | ID | Requirement | Priority | Acceptance Criteria |
 |---|---|---|---|
 | FR-01 | The server must expose an MCP tool named `fetch` over stdio, implemented with the `rmcp` crate. | Must | `tools/list` returns exactly one tool `fetch` with a JSON schema; passes an MCP client handshake. |
-| FR-02 | `fetch` must accept `url` (required, http/https only), `max_length` (default 5000), `start_index` (default 0), and `raw` (default false). | Must | Schema validation rejects missing/invalid `url`, non-http(s) schemes (`file:`, `ftp:`), and negative or non-integer numbers. |
+| FR-02 | `fetch` must accept `url` (required, http/https only), `max_length` (default 5000, hard cap default 100,000 characters via `FETCH_MAX_LENGTH_CAP`; larger values are clamped and the result says so), `start_index` (default 0), and `raw` (default false). | Must | Schema validation rejects missing/invalid `url`, non-http(s) schemes (`file:`, `ftp:`), and negative or non-integer numbers; a `max_length` above the cap is clamped and the result states the clamp. |
 | FR-03 | The server must convert HTML responses to markdown, stripping scripts, styles and navigation chrome where detectable. | Must | On the test set, output contains no `<script>` text; headings, links, lists and code blocks are preserved. |
 | FR-04 | The server must truncate output at `max_length` characters from `start_index` and state the next `start_index` when truncated. | Must | For a 20,000-char page with `max_length=5000`, four sequential calls reproduce the full text with no overlap or gap. |
 | FR-05 | The server must follow up to 5 redirects and re-validate every hop against the SSRF policy. | Must | A redirect chain of 6 fails with a clear error; a redirect to `127.0.0.1` is refused. |
 | FR-06 | The server must block requests to loopback, private (RFC 1918), link-local (incl. 169.254.169.254), and unique-local IPv6 addresses by default, checked on the resolved IP. | Must | SSRF test suite passes for IPv4, IPv6, decimal/hex-encoded IPs, and a DNS name resolving to a private IP. |
-| FR-07 | The server must apply a request timeout (default 15 s) and a maximum download size (default 5 MB). | Must | A slow server returns a timeout error; a 10 MB response aborts at the limit with a size error. |
+| FR-07 | The server must apply a request timeout (default 15 s) and a maximum download size (default 5 MB, counting wire and decompressed bytes). | Must | A slow server returns a timeout error. Size behaviour, three cases: (1) a response with `Content-Length` above the limit returns a size error (`too_large`) before the body is read; (2) a chunked response with no `Content-Length` whose requested window completes under the limit succeeds; (3) a chunked response whose requested window would extend beyond the limit returns a size error at the limit. |
 | FR-08 | The server must handle content types: convert `text/html`; return `text/*`, `application/json` and `application/xml` as text; reject other binary types with an error naming the type. | Must | A PNG and a PDF return `isError: true` with the content type; JSON returns as text. |
 | FR-09 | The server must send a descriptive `User-Agent` and decode responses by charset from headers or meta tags, defaulting to UTF-8. | Should | A test page in ISO-8859-1 renders correctly; the request carries the configured UA. |
 | FR-10 | The server must return errors as tool results with `isError: true` and a cause-specific message (HTTP status, DNS, timeout, blocked, too large, unsupported type). | Must | Each cause in the list has a test asserting the message and flag. |
 | FR-11 | The server must support an optional robots.txt check, enabled by default, that refuses disallowed URLs with an explanatory error. | Should | With a robots.txt disallowing `/private`, a fetch of `/private` is refused; `FETCH_IGNORE_ROBOTS=1` allows it. |
-| FR-12 | The server must read settings from environment variables: timeout, max size, user agent, allowed private hosts, robots toggle. | Should | Each variable changes behavior in a test; invalid values fail startup with a clear message. |
+| FR-12 | The server must read settings from environment variables: timeout, max size, `max_length` cap, concurrency, user agent, allowed private hosts, robots toggle. | Should | Each variable changes behavior in a test; invalid values fail startup with a clear message naming the variable. |
 | FR-13 | The server must write logs to stderr only and must never write non-protocol output to stdout. | Must | A stdio test client receives no malformed messages while requests are logged. |
 | FR-14 | The server must include the final URL (after redirects) and HTTP status in the result header. | Could | Result text begins with the final URL and status when redirects occurred. |
 | FR-15 | The server must build as a single self-contained binary with no runtime (no Node, Python or system OpenSSL) required. | Must | `ldd`/`otool -L` on the release binary shows only libc/system libraries; the binary runs on a clean aarch64-linux container. |
@@ -148,7 +149,7 @@ Memory NFRs (NFR-10 to NFR-14) are the primary acceptance gates. Targets are abs
 | NFR-05 | Direct dependencies | Maintainability | <= 15 crates (provisional, from spike); `cargo audit` and `cargo deny` clean at release |
 | NFR-06 | Supported platforms | Compatibility | Primary: aarch64-linux (glibc, musl optional) and macOS arm64. Best-effort: x86_64-linux. Stable Rust, MSRV pinned |
 | NFR-07 | Cookies, credentials and auth headers | Security | Not sent or stored; no persistent state |
-| NFR-08 | Concurrent fetch calls | Reliability | 10 in flight without errors or cross-contamination; peak RSS with 10 in flight documented |
+| NFR-08 | Concurrent fetch calls | Reliability | 10 in flight without errors or cross-contamination; peak RSS with 10 in flight documented. Design default `FETCH_MAX_CONCURRENCY` = 3: excess calls queue (at most one timeout for a permit) and all complete |
 | NFR-09 | Tool description | Usability | States purpose, parameters, and pagination usage in <= 150 words |
 | NFR-10 | Idle RSS on aarch64-linux | Resource (primary) | <= 10 MB RSS (VmRSS), median of 10 runs |
 | NFR-11 | Peak RSS fetching a 5 MB HTML page on aarch64-linux | Resource (primary) | <= 40 MB VmHWM, median of 10 runs |
@@ -177,7 +178,7 @@ Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by
 | # | Dependency / Risk | Impact | Likelihood | Owner | Mitigation |
 |---|---|---|---|---|---|
 | 1 | `rmcp` API changes or missing features (pre-1.0 SDK) | Medium | Medium | Michael | Spike A-1; pin version; keep the transport layer thin. |
-| 2 | DNS rebinding bypasses SSRF check | High | Low | Michael | Resolve once, connect to the validated IP (custom resolver/connector), re-check each redirect. |
+| 2 | DNS rebinding bypasses SSRF check | High | Low | Michael | Resolve once, connect to the validated IP (custom resolver/connector), re-check each redirect. Interim window: the full blocked-range table and checks land in A-3 (first fetch-capable build), not B-1. Release rule: no tagged or distributed build before M3, and pre-M3 builds are not registered in a real MCP client. |
 | 3 | Rust HTML-to-markdown crate quality or memory use (DOM-based crates may hold several times the page size) | High | Medium | Michael | Spike A-1 evaluates crates on quality and RSS; consider streaming rewriter (e.g. `lol_html`) or a size-capped DOM; keep converter behind a trait. |
 | 4 | Absolute memory targets (10 MB idle, 40 MB peak) not achievable with the chosen crates | High | Low-Medium | Michael | Define harness and targets first (E-1) with go/no-go gate before feature work; stop or re-scope if 1a/1b cannot be met. |
 | 5 | Prompt injection in fetched content | High | High | Michael | Cannot be eliminated by the server; document it and label output as untrusted content (see OQ-5). |

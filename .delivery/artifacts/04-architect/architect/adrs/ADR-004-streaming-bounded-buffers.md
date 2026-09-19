@@ -1,6 +1,6 @@
 # ADR-004: Streaming, bounded-buffer pipeline (decompression, charset, raw path)
 
-Status: Accepted for the streaming pipeline. The rule 'size error vs early stop' (Caps bullet: Window complete before the cap => success) is PROPOSED pending Product Owner confirmation (architecture.md 6.4); it conflicts with EPICS E-4 AC 2, A-3 AC 1 and FR-07 as currently worded.
+Status: Accepted for the streaming pipeline. The rule 'size error vs early stop' (Caps bullet: Window complete before the cap => success) is ACCEPTED (Product Owner, 2026-09-19; architecture.md 6.4); EPICS E-4, A-3 and PRD FR-07 are amended to match.
 Date: 2026-09-19
 
 ## Context
@@ -18,7 +18,7 @@ Option 2. Stages, in order, all processing one chunk at a time:
 
 Budgets (design allocations; sum table in architecture.md 5.1):
 - Wire chunk processed immediately; no accumulation; <= 64 KiB assumed, enforced by re-slicing larger chunks.
-- Caps: `FETCH_MAX_BYTES` (default 5 MiB) counts BOTH wire bytes and decompressed bytes. `Content-Length` > cap aborts before reading (A-3). Hitting the cap before the Window is complete -> `too_large`; Window complete first -> success. This second half is PROPOSED, not decided (architecture.md 6.4).
+- Caps: `FETCH_MAX_BYTES` (default 5 MiB) counts BOTH wire bytes and decompressed bytes. `Content-Length` > cap aborts before reading (A-3). Hitting the cap before the Window is complete -> `too_large`; Window complete first -> success. This second half is ACCEPTED (Product Owner, 2026-09-19; architecture.md 6.4).
 - Overall deadline `FETCH_TIMEOUT_MS` (default 15 s) wraps DNS, connect, TLS, headers, all redirect hops and body streaming (slow-drip defence).
 - Early stop: as soon as the Window holds `max_length` chars after `start_index` plus one confirming char, drop the response.
 

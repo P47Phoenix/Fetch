@@ -1,6 +1,6 @@
 # Epics and Stories: Fetch MCP Server (Rust, low-memory, ARM)
 
-Source: `docs/PRD.md` v0.3. Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
+Source: `docs/PRD.md` v0.4 (30 stories in total). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
 
 Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment capped at 80% (8 points).
 
@@ -10,6 +10,13 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 2. **Measure early, not last.** The benchmark harness (E-2 to E-4) lands right after the first streaming fetch, so memory regressions are caught while the code is small. Trade-off: some harness effort is spent before all features exist; accepted.
 3. **Value density.** Core fetch (A) delivers the core value. Network safety (B) is next because an unsafe fetcher is not acceptable. Config (C) and polish stories follow. robots.txt and content labelling are lowest value density and depend on open questions, so they go last.
 4. **Packaging (D) split.** The aarch64 cross-build is proven in A-1 (risk), automated in D-2 mid-project, and docs/release finish at the end.
+5. **Interim safety.** Because A-3 (Sprint 1) is the first fetch-capable build and B-1 lands in Sprint 5, A-3 carries the full SSRF range table and checks (architecture 14.1). B-1/B-2/B-3 own test depth and hardening.
+
+## Release Rules (binding, from Stage 4 architecture)
+
+- No tagged or distributed build before M3 (Safety complete). Pre-M3 builds are not registered in a real MCP client (PRD Risk 2 mitigation).
+- A-3 is not Done until an integration test proves `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are refused. If A-3 is split, no fetch-capable build may exist without the range table.
+- Memory gate: E-3/E-5 use the strict absolute targets. E-6 is a regression tripwire (see E-6).
 
 ## Epic-to-Requirement Map
 
@@ -47,10 +54,11 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 ### E-1: Spike - define benchmark harness and absolute targets (3 pts) [SPIKE, time-box 2 days]
 Maps to: NFR-10, NFR-11, NFR-14, Goals 1a, 1b, 2, 3.
 As a solo developer, I want the measurement method and absolute memory targets fixed up front so that the go/no-go decision rests on agreed numbers.
-- Given the targets, when the spike ends, then a one-page result states idle RSS (VmRSS) <= 10 MB and peak RSS (VmHWM) <= 40 MB while fetching a 5 MB page, each as the median of 10 runs.
+- Given the targets, when the spike ends, then a one-page result states idle RSS (VmRSS) <= 10 MB and peak RSS (VmHWM) <= 40 MB while fetching a 5 MB page, each as the median of 10 runs, and states whether MB means 10^6 or 2^20 bytes (MiB) for the 40 MB gate, applied consistently in the harness and report.
 - Given the benchmark host, when the spike ends, then the result records it as the author's native aarch64 runner, with OS and RAM captured (values to be filled in when known).
-- Given the measurement protocol, when written, then it defines the handshake and 30 s idle procedure, the 5 MB, 50 MB and slow-drip fixtures, the MCP client script, and the `/proc/<pid>/status` read method.
-- Given the 50-URL curated set, when defined, then it lists the URLs used for success rate and token reduction (Goals 2 and 3).
+- Given the measurement protocol, when written, then it defines the handshake and 30 s idle procedure, the 5 MB, 50 MB (with and without `Content-Length`) and slow-drip fixtures, the MCP client script, and the `/proc/<pid>/status` read method.
+- Given plain-HTTP fixtures under-measure TLS, when the spike ends, then it decides the TLS benchmark approach (bench-only fixture-CA build feature absent from release builds, or a one-off manual run against real hosts); until decided, reports carry the caveat "NFR-11 measured over plain HTTP only".
+- Given the 50-URL curated set, when defined, then it lists the URLs as offline snapshots used for conversion success rate and token reduction (Goals 2 and 3); the success metric is conversion success, not live fetch success, and a small non-gating live smoke run (10 URLs) covers network, TLS and redirect behaviour.
 - Given the protocol and A-1 results, when the spike ends, then it states a go/no-go recommendation on whether the targets look achievable.
 
 ### E-2: Benchmark harness and fixtures (5 pts)
@@ -60,19 +68,24 @@ As the project owner, I want a one-command harness so that memory measurements a
 - Given the harness is pointed at a server binary, when it runs, then it uses the client script and fixtures defined in E-1.
 - Given a run, when results are produced, then each figure is the median of at least 10 runs with min and max shown.
 - Given Linux and macOS hosts, when the harness runs, then it reads `/proc/<pid>/status` on Linux and `/usr/bin/time -l` on macOS.
-- Given fixtures, when the harness starts, then it provides a 5 MB HTML page, a 50 MB streaming body, and a slow-drip response.
+- Given fixtures, when the harness starts, then it provides a 5 MB HTML page, a 50 MB body served both with and without `Content-Length` (chunked), a gzip variant, and a slow-drip response; each fixture is generated from a fixed seed with a committed sha256 and size in a manifest, and the harness refuses to run on a hash mismatch.
+- Given the gating scenarios G1-G7 (5 MB HTML window at end; same gzip; `raw=true`; late-landmark holdback-full HTML; window beyond the 5 MiB cap expecting `too_large`; 10 concurrent calls; 50 MB with Content-Length, chunked window inside cap, chunked window beyond cap), when the harness runs, then the gating peak is the maximum of the per-scenario medians.
+- Given the validity rule, when a run early-stops before reading the expected amount (fixture server byte counter below the manifest `expected_min_bytes`), then that sample is invalid, and fewer than 10 valid samples for any scenario makes the whole report INVALID.
+- Given the determinism list (fresh process per sample, pinned child environment, recorded page size, THP, governor and load average, native-ARM preflight refusing QEMU, both gnu and musl binaries), when the harness runs, then it applies and records each item; idle samples may run in parallel processes; the full matrix runs nightly and on main and tag builds.
 
 ### E-3: Idle RSS measurement and target check (2 pts)
 Maps to: NFR-10, US-7.
 As a developer on ARM, I want idle memory verified against target so that a resident server stays small.
 - Given the release binary on aarch64-linux, when idle 30 s after `initialize` and `tools/list`, then RSS is at or below 10 MB.
-- Given the result exceeds the target, when the harness finishes, then it exits non-zero and prints the measured value and the target.
+- Given the result exceeds the target, when the harness finishes, then it exits non-zero and prints the measured value and the target. This E-3/E-5 gate is the strict absolute target (no tolerance).
 
 ### E-4: Peak RSS and boundedness checks (3 pts)
 Maps to: NFR-11, NFR-12, FR-16, US-7.
 As a developer on ARM, I want peak memory verified during fetches so that large pages cannot exhaust RAM.
 - Given the 5 MB HTML fixture, when `fetch` runs, then peak RSS is at or below 40 MB.
-- Given the 50 MB fixture with max size 5 MB, when `fetch` runs, then the call returns a size error and peak RSS is within 10% of the 5 MB-page peak.
+- Given the 50 MB fixture served with `Content-Length` and max size 5 MB, when `fetch` runs, then the call returns a `too_large` error and peak RSS is within 10% of the 5 MB-page peak.
+- Given the 50 MB fixture served chunked (no `Content-Length`) and a requested window that completes inside the 5 MB cap, when `fetch` runs, then the call succeeds and peak RSS is within 10% of the 5 MB-page peak.
+- Given the 50 MB fixture served chunked and a requested window that extends beyond the cap, when `fetch` runs, then the call returns a `too_large` error and peak RSS is within 10% of the 5 MB-page peak.
 - Given 10 concurrent fetches of the 5 MB page, when they run, then peak RSS is recorded and reported (NFR-08 documentation).
 - Given allocator candidates from A-1, when compared here, then the chosen allocator and its RSS effect are recorded.
 
@@ -87,8 +100,8 @@ As the project owner, I want a written report so that I can decide to release an
 Maps to: NFR-14, NFR-15.
 As the project owner, I want CI to fail on memory regressions so that the saving persists.
 - Given a pull request, when CI runs on an aarch64 runner, then it executes the E-3 and E-4 checks against the built binary.
-- Given idle or peak RSS exceeds the cap by more than 10%, when CI runs, then the job fails and prints the figures.
-- Given no aarch64 runner is available, when CI runs, then the job is marked skipped with a reason, and the release checklist requires a manual run.
+- Given the median idle or peak RSS exceeds the absolute target, or regresses more than 10% against the stored last-main baseline, when CI runs, then the job fails and prints the figures. The 10% is relative to the baseline and never a licence to exceed the absolute target; E-6 is a regression tripwire, while the release gate (E-3/E-5) is the strict absolute target.
+- Given no aarch64 runner is available, when CI runs, then the job fails or blocks (a skipped job never reads as green: it is a required status check and the release workflow depends on it); a documented manual run of the same bench command on the same runner, attached to the release, is accepted as equivalent.
 
 ---
 
@@ -135,14 +148,21 @@ As an MCP client developer, I want a registered `fetch` tool with a validated sc
 - Given an aarch64 host, when the server starts, then it reaches ready within 250 ms.
 - Given Claude Code is configured with the binary path, when it lists tools, then `fetch` appears.
 
-### A-3: Streaming, size-bounded HTTP fetch (5 pts)
-Maps to: FR-07, FR-16, NFR-08.
-As a developer on ARM, I want the body read as a stream and capped so that memory cannot grow past the size limit.
-- Given a URL returning a 10 MB body and the default 5 MB limit, when `fetch` is called, then reading stops at the limit and the call returns a "too large" error.
+### A-3: Streaming, size-bounded HTTP fetch with interim SSRF safety (5 pts, scope grew; see flag in Sprint Order)
+Maps to: FR-06, FR-07, FR-16, NFR-08, Risk 2.
+As a developer on ARM, I want the body read as a stream and capped so that memory cannot grow past the size limit, and I want the first fetch-capable build to already refuse internal addresses.
+- Given a URL returning a 10 MB body with a `Content-Length` header and the default 5 MB limit, when `fetch` is called, then it returns a "too large" error without reading the body.
+- Given a URL returning a 10 MB chunked body (no `Content-Length`) and a requested window that would extend beyond the limit, when `fetch` is called, then reading stops at the limit and the call returns a "too large" error; given a chunked body whose requested window completes under the limit, then the call succeeds.
 - Given a server that never finishes sending, when 15 s elapse, then the call returns a timeout error and the connection is closed.
 - Given a response with a `Content-Length` above the limit, when `fetch` is called, then it aborts before reading the body.
 - Given 10 concurrent calls to different URLs, when they complete, then each result matches its own URL with no cross-contamination.
 - Given a request, when it is sent, then no cookies, credentials or auth headers are included (NFR-07).
+- Given more calls than `FETCH_MAX_CONCURRENCY` (default 3), when 10 calls are issued, then 3 run, 7 queue for at most `FETCH_TIMEOUT_MS` and all complete without errors; the fetch deadline starts at permit acquisition.
+- Given the first fetch-capable build (interim safety, architecture 14.1), when it runs, then it applies the FULL blocked-range table (IPv4 and IPv6 incl. IPv4-mapped/compatible, ULA, link-local, loopback, CGNAT, metadata addresses 169.254.169.254, fd00:ec2::254, 168.63.129.16), the IP-literal pre-check, a resolver filter (resolve once, refuse if any answer is blocked, dial only the validated set) and per-hop revalidation in the redirect loop; the default policy is fail-closed.
+- Given the integration tests, when run, then they prove `127.0.0.1`, `169.254.169.254`, a private-resolving name and a redirect to a private address are each refused; A-3 is not Done until they pass.
+- Given a gzip response, when decoded, then only identity or single gzip is accepted (checked from the header before decode) and the decompressed-byte cap applies.
+
+Note: B-1, B-2 and B-3 own test depth (encodings, mixed answers, rebinding simulation), the coverage gate and hardening for what A-3 lands. If A-3 is split, no fetch-capable build may exist without the range table. The UTF-8 streaming decoder (with replacement) also lands with A-3/A-4, ahead of A-8.
 
 ### A-4: HTML to markdown conversion (5 pts)
 Maps to: FR-03, NFR-02.
@@ -157,6 +177,7 @@ As an LLM agent, I want clean markdown so that I spend fewer tokens.
 Maps to: FR-02, FR-04.
 As an LLM agent, I want to page through long content so that I never overflow my context.
 - Given a 20,000-character page and `max_length=5000`, when four sequential calls use the returned `start_index`, then concatenated output equals the full text with no overlap or gap.
+- Given `max_length` above the hard cap (default 100,000 characters), when `fetch` is called, then the value is clamped and the result states the clamp.
 - Given content is truncated, when the result is returned, then it states the next `start_index`.
 - Given `start_index` at or beyond the content length, when `fetch` is called, then the result is an empty-content message stating the total length, not a crash.
 - Given multi-byte UTF-8 text, when a page boundary falls inside a character, then the split is on a character boundary.
@@ -215,6 +236,7 @@ As an LLM agent, I want to know the final URL so that I can cite it.
 ### B-1: Block private, loopback and link-local on resolved IP (5 pts)
 Maps to: FR-06, Risk 2.
 As a home-lab operator, I want internal addresses refused so that a poisoned page cannot make the agent probe my LAN.
+Note: the first implementation of the range table, resolver filter and per-hop revalidation lands in A-3; B-1 is test depth and hardening of that code (mixed answers, rebinding simulation, range-table completeness).
 - Given a URL whose host resolves to loopback, RFC 1918, link-local (including 169.254.169.254) or IPv6 unique-local, when `fetch` is called, then it is refused with a "blocked" error before any connection is made.
 - Given a DNS name that resolves to a private IP, when `fetch` is called, then it is refused.
 - Given a name resolves to a public IP, when connecting, then the connection uses that validated IP so a second lookup cannot change it (rebinding defense).
@@ -283,7 +305,8 @@ Maps to: FR-12.
 As a developer, I want a single validated config so that misconfiguration is caught at startup.
 - Given valid values for timeout, max size, user agent, allowed hosts and robots toggle, when the server starts, then it applies them.
 - Given an invalid value (non-numeric timeout, negative size), when the server starts, then it exits non-zero with a message naming the variable and writing only to stderr.
-- Given no variables, when the server starts, then it uses defaults: 15 s, 5 MB, block private, robots per OQ-3.
+- Given no variables, when the server starts, then it uses defaults: 15 s, 5 MB, `max_length` cap 100,000, concurrency 3, block private, robots per OQ-3.
+- Given a config error, when the server exits before the MCP handshake, then the stderr text names the variable (the client shows only a generic spawn failure, so this text is the diagnostic; documented in D-4).
 
 ### C-2: Private host allowlist (2 pts)
 Maps to: FR-06, FR-12, US-6, OQ-4.
@@ -299,6 +322,7 @@ As a developer, I want to tune limits so that I can trade completeness against m
 - Given `FETCH_TIMEOUT_MS=5000`, when a server takes longer, then the call fails with a timeout error.
 - Given `FETCH_MAX_BYTES=1048576`, when a larger body is served, then reading stops at 1 MB with a size error.
 - Given a configured max size, when peak RSS is measured, then it scales with the configured limit rather than the response size.
+- Given `FETCH_MAX_LENGTH_CAP` is unset, when the server starts, then the `max_length` hard cap is 100,000 characters (was 200,000 in an earlier draft; lowered to fit the memory budget); a set value is validated and applied.
 
 ---
 
@@ -336,7 +360,10 @@ As a developer, I want CI to build ARM release binaries so that I can install wi
 - Given a tag push, when CI runs, then it produces stripped binaries for `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`, with checksums.
 - Given the aarch64-linux artifact, when run on a clean aarch64 container, then it completes the MCP handshake.
 - Given an x86_64-linux build, when requested, then it is produced as best-effort and its failure does not block release.
-- Given the Rust toolchain, when the MSRV is set, then it is pinned in `rust-toolchain.toml`.
+- Given the Rust toolchain, when the MSRV is set, then it is pinned in `rust-toolchain.toml` (exact channel), `Cargo.lock` is committed, all CI commands use `--locked`, high-churn direct dependencies use exact `=` requirements, cross-build tools (`cargo-zigbuild`, `ziglang`) are version-pinned, and every GitHub Action is pinned by full commit SHA.
+- Given the runner topology (architecture 9.2), when workflows are written, then hosted jobs run PR checks, self-hosted aarch64 jobs run only on main, tags, nightly and maintainer dispatch, fork PRs never reach the self-hosted runner, and the aarch64 test and memory-gate jobs are required status checks that the release workflow depends on.
+- Given `deny.toml`, when committed, then it has `advisories`, `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`), `sources` (crates.io only) and `licenses` (permissive allow-list) sections, and CI asserts the release build has neither the `test-support` nor the bench fixture-CA feature.
+- Given the binary, when run with `--version`, then it prints crate version, commit, target triple and libc, and startup writes one `info` line to stderr.
 
 ### D-3: Test suite on aarch64 (3 pts)
 Maps to: NFR-15, NFR-04.
@@ -351,6 +378,7 @@ As a developer, I want clear install steps so that I can register the server qui
 - Given the README, when followed on aarch64-linux and macOS arm64, then the server is registered in Claude Code and `fetch` works.
 - Given the README, when read, then it lists environment variables, defaults, limitations (no JS, prompt-injection note), and a section "Registering in Claude Code" with the config snippet.
 - Given the benchmark report exists, when linked, then the README states the measured idle and peak memory.
+- Given the README, when read, then it documents: config errors exit before the handshake with the variable named on stderr; proxies are unsupported (fixed no-proxy); hosts behind a local NAT64 gateway should note that NAT64/6to4 addresses with public embedded IPv4 are allowed; and the musl static build may not resolve `.local` or split-DNS names that glibc resolves.
 
 ### D-5: Tool description within 150 words (1 pt)
 Maps to: NFR-09.
@@ -399,6 +427,8 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 | 11 | v1.0 | D-6 (plus buffer, rework) | 2 |
 
 Overall MVP is reached at the end of Sprint 9 in this ordering (E-5 lands there). To reach MVP sooner, move D-1, D-2 into Sprint 7 (ahead of C-1/C-3/A-8/A-9) and D-4, E-5 into Sprint 8, giving MVP at the end of Sprint 8 at the cost of delaying config.
+
+**Flag for the user (not re-planned):** A-3 stays at 5 pts but its scope grew by absorbing the SSRF range table, resolver filter, per-hop revalidation, the concurrency semaphore and the UTF-8 decoder. Sprint 1 (A-2, A-3) is already exactly at the 8-point ceiling, so A-3 may need re-estimating to 8 or splitting. A split may not leave any fetch-capable build without the range table. Point totals (63 MVP, sprint totals) are unchanged pending that decision.
 
 Trade-off: Sprint 6 sits below the 80% ceiling only if C-2 is dropped (OQ-4 "no"); it is exactly 8 with it.
 

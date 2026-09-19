@@ -40,7 +40,7 @@ Domain Discovery: the PRD/EPICS give sufficient domain detail (single-user local
 | 001 | reqwest 0.13, rustls+ring, HTTP/1.1 only, gzip only, no proxy, manual redirects, no pool | Accepted (ARM check pending) |
 | 002 | lol_html streaming tokenizer + own markdown emitter, bounded hold-back for main-content selection, behind `Converter` trait | Proposed (quality unproven) |
 | 003 | Resolve once, validate all IPs, pin via custom resolver, per-hop revalidation, own IP tables | Accepted |
-| 004 | Push pipeline with fixed byte/char budgets; manual gzip (flate2); early stop; raw path streamed too | Accepted for pipeline; the E-4 size-error vs early-stop rule is PROPOSED pending Product Owner confirmation (6.4) |
+| 004 | Push pipeline with fixed byte/char budgets; manual gzip (flate2); early stop; raw path streamed too | Accepted for pipeline; the E-4 size-error vs early-stop rule is ACCEPTED (Product Owner, 2026-09-19; 6.4) |
 | 005 | System allocator; ship gnu.2.17 primary + musl candidate; choice pending ARM | Proposed |
 | 006 | Schema, character-based stateless pagination over streamed output | Accepted |
 
@@ -195,9 +195,9 @@ Runtime failures become `CallToolResult { isError: true, content: [text] }` with
 
 Blocked-target errors occur before any connection, so error text cannot reveal LAN topology. Blocked messages are identical for "resolves private" vs "IP literal private" except category words.
 
-### 6.4 PROPOSED rule, pending Product Owner confirmation (not decided here)
+### 6.4 Size-error vs early-stop rule (ACCEPTED)
 
-Status: PROPOSED. The Architect does not decide this; ADR-004 carries the same marking.
+Status: ACCEPTED by the Product Owner on 2026-09-19 as proposed below; ADR-004 carries the same status. PRD FR-07 and EPICS A-3, E-2, E-4 are amended to the three fixtures.
 
 EPICS E-4 expects a 50 MB body with a 5 MB cap to yield a size error (and A-3 expects a 10 MB body to yield "too large"; FR-07 acceptance is the same). With early stop, a chunked (no Content-Length) 50 MB HTML whose first window fits inside the first 5 MB legitimately succeeds. Proposed rule: Content-Length above cap -> `too_large` immediately; no Content-Length -> stream, succeed if the window completes before the cap, `too_large` if the cap is reached first. Proposed fixture set for E-4 (and E-2, A-3): (1) 50 MB with Content-Length -> `too_large`; (2) 50 MB chunked, window inside cap -> success; (3) 50 MB chunked, requested window beyond cap -> `too_large`. If the PO instead requires a size error for every over-cap body, early stop must be disabled for over-cap chunked bodies (read to cap), which is memory-neutral but costs time. Please confirm before Stage 5 planning.
 
