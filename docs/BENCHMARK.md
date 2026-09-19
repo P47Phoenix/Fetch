@@ -1,28 +1,181 @@
 # Benchmark protocol and absolute targets (story E-1)
 
-Status: E-1 result, Sprint 0. Other documents (PRD, EPICS, architecture, config defaults, reports) refer to this file for the unit, targets, scenarios and method. Harness skeleton: `bench/` (self-test: `python3 bench/selftest.py`). E-2 builds the full fixture set and CI on top of it.
+**What is this?** This file explains how we measure how much memory the `fetch-mcp` program uses, and the two limits it must stay under: 10 MB when idle and 40 MB at its peak. **Who needs it?** Anyone who runs the benchmark scripts in `bench/`, or who reads a memory report and wants to know what the numbers mean. **What to do first:** read the Glossary below, then follow the Quickstart (step 1 takes about 1 minute and needs no Rust).
 
-Verification status: hosted GitHub Actions has never run this repository's workflow, and `cargo-deny` and `cargo-audit` have never been run (not installed on the dev host). The harness has only been exercised against the stand-in and the skeleton binary, never against a real MCP server.
+Status: E-1 result, Sprint 0. Other documents (PRD, EPICS, architecture, config defaults, reports) refer to this file for the unit, targets, scenarios and method. The test tools live in `bench/` (self-test: `python3 bench/selftest.py`). Story E-2 builds the full fixture set and CI on top of them.
+
+## Read this first: what has and has not been checked
+
+Be careful not to read more into this document than it says.
+
+| Item | Status |
+|---|---|
+| Hosted GitHub Actions running this repository's workflow | Never run. |
+| `cargo-deny` and `cargo-audit` | Never run (not installed on the dev host). |
+| The benchmark scripts | Only run against the stand-in and the skeleton binary. Never against a real MCP server. |
+| The `fetch-mcp` binary | A skeleton. It has no MCP server yet. |
+| Native aarch64 measurement | Not done. No such host was available. |
+
+## Glossary
+
+Each term is explained here once. Later sections use the short form.
+
+| Term | Plain meaning |
+|---|---|
+| MCP | Model Context Protocol. A way for an AI tool (a "client") to talk to a helper program (a "server") such as `fetch-mcp`. |
+| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` today only prints its version. It has no MCP server yet. Do not register it in a real MCP client. |
+| Stand-in | `bench/standin_mcp.py`. A fake server written in Python, used only to test the benchmark tools. It is NOT the product. Its memory figures say nothing about the product. |
+| MB, MiB | In this project "MB" always means MiB (mebibyte): 1 MB = 2^20 = 1,048,576 bytes. Reports say "MB (MiB)". |
+| kB | Kilobyte as Linux reports it in `/proc`: 1 kB = 1,024 bytes (strictly a KiB). So 10 MB = 10,240 kB and 40 MB = 40,960 kB. |
+| VmRSS | "Resident set size". How much RAM the process holds right now. Linux shows it as the `VmRSS` line in `/proc/<pid>/status`. We use it for the idle target. |
+| VmHWM | "High water mark". The most RAM the process ever held so far. Same file, `VmHWM` line. We use it for the peak target. |
+| Idle | The server has started, said hello, listed its tools, and then waited 30 seconds doing nothing. |
+| Peak | The highest memory use while the server fetches one page. |
+| Settle | The 30 second wait before the idle reading, so start-up noise dies down. Flag: `--settle`. |
+| Median | Sort the results and take the middle one. With 10 runs it is the average of the 5th and 6th. One odd run cannot change it much. |
+| Fixture | A test file with fixed content, so every run sees the same input. Made by `bench/fixtures.py`. |
+| Cap | The largest page the server may read: 5 MB (5,242,880 bytes). Bigger pages give a `too_large` error. |
+| Loopback | Talking to your own machine (`127.0.0.1` or `::1`) instead of the internet. The benchmark's test web server runs this way. |
+| Fetch | What the server does: download a web page and turn it into text. |
+| SSRF | Server-side request forgery. Tricking a server into fetching addresses it should not, such as internal ones. The shipped binary blocks these, which is why it cannot reach the loopback test server (see section 4). |
+| Shipped binary | The real release build. Blocks loopback. Used for the idle measurement. |
+| Bench binary (`bench-loopback`) | A special build that is allowed to reach loopback so the benchmark can fetch from the local test server. Never released. |
+| Marker | A fixed piece of text (`FETCH_MCP_MARKER_...`) that a special build prints in `--version` and carries inside the binary. Checks look for it to tell builds apart. |
+| Scenario | One named test case, for example `idle` or `g4a-5mib-full`. |
+| Gate | A point in the project plan where we must take a memory verdict: G0 (end of Sprint 0), G4a (end of Sprint 4), G4b (end of Sprint 5). Not the same as the scenario IDs G1 to G7 (see "Gate names versus scenario IDs" below). |
+| Gating run | A run made with `--gate`. Only a gating run can prove a target is met. |
+| Advisory run | Any run without `--gate`, including `--smoke` runs. Useful for testing the tools. Proves nothing about a target. |
+| Smoke run (`--smoke`) | A quick run that may use fewer than 10 samples. Never valid for a memory claim. |
+| ADVISORY_PASS | The summary word for a passing advisory run. It is NOT a result. Only a `--gate` run with summary `PASS` counts. |
+| PASS / FAIL | PASS: the numbers are within the target. FAIL: a target was missed. |
+| INVALID | The run does not count. Usually fewer than 10 valid samples, or the fixtures did not match. |
+| INCOMPLETE | A needed comparison run is missing (see "Boundedness" in section 5). Also used when a gating run leaves out part of the required set of scenarios. Never a pass. |
+| REFUSED | The script declined to start, for example because you asked `--gate` on the wrong machine. |
+| Handshake | The opening exchange: the client sends `initialize`, then `tools/list`, and the server must answer with real results, including a tool named `fetch`. |
+| JSON-RPC, stdio | The message format (JSON-RPC) and the pipe (the program's standard input and output) the client and server use to talk. |
+| JSONL | "JSON lines": one JSON record per line of output. |
+| aarch64 (ARM) | The 64-bit ARM CPU type. The gating host must be a real (native) aarch64 machine. |
+| QEMU | Software that pretends to be another CPU. Its memory figures are not trusted, so QEMU never gates. |
+| ELF | The Linux program file format. The harness reads its header to see the CPU type. |
+| gnu, musl | Two versions of the C library the binary can be built with. Both are measured. |
+| p95 | 95% of results are at or below this value. |
+| OQ-n | An open question in the project plan, for example OQ-7 (licence). |
+| E-1, E-2, A-1 ... | Story IDs in `docs/EPICS.md`. |
 
 ## Quickstart (contributors)
 
-Prerequisites: Linux, Python 3.8+ (standard library only), a Rust toolchain only if you build the real binary. macOS is not supported yet (E-2).
+Do these steps in order. Steps 1 to 4 work on any Linux machine and need no Rust for step 1 and step 4. Step 5 only works on the real aarch64 runner.
 
-1. Self-test the harness (about 1 minute, no Rust needed): `python3 bench/selftest.py`. Expected last line: `SELFTEST PASSED`. It regenerates fixtures itself and runs against `bench/standin_mcp.py`, a stand-in that is NOT the product, so its RSS figures are not product measurements.
-2. Before a real run, generate the fixtures once: `python3 bench/fixtures.py generate` (measure.py refuses on a missing or mismatched `bench/manifest.json` hash).
-3. Build the binary you are measuring (skip for the stand-in): `cargo build --release --locked -p fetch-mcp` (shipped kind) or `cargo build --release --locked -p fetch-mcp --features bench-loopback` (bench kind). Later steps assume this.
-4. Worked example, advisory smoke on the stand-in (bench kind needs the marker, so set `STANDIN_BENCH=1`): `python3 bench/measure.py --binary bench/standin_mcp.py --binary-kind bench --child-env STANDIN_BENCH=1 --scenario g4a-5mib-full --smoke`. Output is JSON lines, one per scenario and a final `summary`; without `--gate` the summary verdict is `ADVISORY_PASS` or `FAIL`, never `PASS`. Exit 0 with `ADVISORY_PASS` (any non-`--gate` run, including every `--smoke` run) is NOT a result and never satisfies a target; only a `--gate` run with summary verdict `PASS` counts. Per-scenario lines may read `verdict: PASS` in an advisory run; only the summary verdict is authoritative. See the exit code table in section 6.
+**Before you start you need:**
 
-   Current limitation: the `fetch-mcp` binary is a skeleton with no MCP server until later stories (A-2/A-3a), so a real `measure.py` run against it fails the handshake (exit 2). Only the self-test and the stand-in are runnable now. Also, E-8 says a bench build logs its marker to stderr at startup; that is not implemented yet (the marker is only printed by `--version`).
-5. Gating run (aarch64 runner only): `python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle --gate`. `--gate` refuses `--smoke`, target overrides, `--settle` other than 30, `--parallel-idle` above 1, and any `--child-env` (allowlist is empty, so `GLIBC_TUNABLES`, `FETCH_*`, `LC_ALL`, `PATH` etc. are all refused), and requires the complete gate set for the binary kind: shipped needs `idle`; bench needs every scenario of the G4a (and/or G4b) group touched, so a partial run is refused (exit 2, reason `incomplete`). Those refusals precede the native-aarch64 check (exit 3), so they behave the same on any host. A bench binary under `--gate` therefore needs a real `bench-loopback` build (its `--version` marker), not the stand-in env trick.
-   Binary identity (`--gate` only, after the override rules, before any sample): the binary must be an ELF whose `e_machine` matches the host architecture (aarch64 for a gating run), `--version` must start `fetch-mcp `, a `shipped` binary must contain no `FETCH_MCP_MARKER_` token and a `bench` binary must contain `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1`. A stand-in script, a wrong-architecture ELF or a marker-stripped build is refused (exit 2, reason `binary identity`). Without `--gate` (advisory and self-test flows) only the `--version` marker rules apply, so the stand-in still works. Handshake: `initialize` and `tools/list` must return a JSON-RPC `result` (an `error` reply is an invalid sample, so an error-only server gives INVALID, exit 2) and `tools/list` must contain a `fetch` tool. A server that closes stdout mid-run fails that sample at once.
-   Binary identity (`--gate` only, after the override rules, before any sample): the binary must be an ELF whose `e_machine` matches the host architecture (aarch64 for a gating run), `--version` must start `fetch-mcp `, a `shipped` binary must contain no `FETCH_MCP_MARKER_` token and a `bench` binary must contain `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1`. A stand-in script, a wrong-architecture ELF or a marker-stripped build is refused (exit 2, reason `binary identity`). Without `--gate` (advisory and self-test flows) only the `--version` marker rules apply, so the stand-in still works. Handshake: `initialize` and `tools/list` must return a JSON-RPC `result` (an `error` reply is an invalid sample, so an error-only server gives INVALID, exit 2) and `tools/list` must contain a `fetch` tool. A server that closes stdout mid-run fails that sample at once.
+- Linux. macOS is not supported yet (E-2).
+- Python 3.8 or newer. The standard library is enough.
+- A Rust toolchain, only if you build the real binary (step 3).
+
+### Step 1. Check that the test tools work (about 1 minute)
+
+```
+python3 bench/selftest.py
+```
+
+Success: the last line reads `SELFTEST PASSED`.
+
+Why: this proves the benchmark tools can pass and can fail. It makes its own fixtures. It runs against `bench/standin_mcp.py`, a stand-in that is NOT the product, so its memory figures are not product measurements.
+
+### Step 2. Generate the fixtures (once, before any real run)
+
+```
+python3 bench/fixtures.py generate
+```
+
+Success: it prints `generated in <your path>/bench/fixtures`.
+
+Why: `measure.py` refuses to run if `bench/manifest.json` is missing or its hashes do not match the fixture files.
+
+### Step 3. Build the binary you want to measure (skip for the stand-in)
+
+| Kind | Command |
+|---|---|
+| Shipped (the real release build) | `cargo build --release --locked -p fetch-mcp` |
+| Bench (allowed to reach loopback) | `cargo build --release --locked -p fetch-mcp --features bench-loopback` |
+
+Success: the build ends with a `Finished` line and the file `target/release/fetch-mcp` exists. Later steps assume you did this.
+
+### Step 4. Try a worked example (advisory smoke run on the stand-in)
+
+```
+python3 bench/measure.py --binary bench/standin_mcp.py --binary-kind bench --child-env STANDIN_BENCH=1 --scenario g4a-5mib-full --smoke
+```
+
+Why `STANDIN_BENCH=1`: a bench-kind binary must show the marker, and this variable makes the stand-in show it.
+
+Success: it prints three JSON lines (a `host` line, one `scenario` line, then a final `summary` line) and exits with code 0. It takes a few seconds. The `summary` line has `"verdict": "ADVISORY_PASS"`.
+
+**Important: this success is not a result.**
+
+- Without `--gate`, the summary verdict is `ADVISORY_PASS` or `FAIL`. It is never `PASS`.
+- Exit 0 with `ADVISORY_PASS` (any run without `--gate`, including every `--smoke` run) never satisfies a target.
+- Only a `--gate` run with summary verdict `PASS` counts.
+- A per-scenario line may say `"verdict": "PASS"` in an advisory run. Ignore it. Only the `summary` verdict is authoritative.
+- The exit codes are in the table in section 6.
+
+**Current limitation.** The `fetch-mcp` binary is a skeleton until later stories (A-2 and A-3a). A real `measure.py` run against it fails the handshake and exits with code 2. Only the self-test and the stand-in are runnable now. Also, story E-8 says a bench build must print its marker to stderr at start-up. That is not built yet. Today the marker is only printed by `--version`.
+
+### Step 5. Gating run (real aarch64 runner only)
+
+```
+python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle --gate
+```
+
+Why it is strict: this is the run that counts, so the script refuses anything that could bend the result.
+
+`--gate` refuses all of these:
+
+- `--smoke`
+- target overrides (`--idle-target-mib`, `--peak-target-mib`)
+- `--settle` other than 30
+- `--parallel-idle` above 1
+- any `--child-env`. The allow-list is empty, so `GLIBC_TUNABLES`, `FETCH_*`, `LC_ALL`, `PATH` and the rest are all refused.
+
+`--gate` also needs the complete set of scenarios for the binary kind:
+
+- A shipped binary needs `idle`.
+- A bench binary needs every scenario of the G4a group (and/or the G4b group) it touches. A partial run is refused: exit 2, reason `incomplete`.
+
+Those refusals come before the native-aarch64 check (exit 3). So they behave the same on any host. A bench binary under `--gate` needs a real `bench-loopback` build (its `--version` marker). The stand-in with the environment variable trick does not work.
+
+**Binary identity check.** With `--gate` only, after the override rules and before any sample, the script checks that the file really is what you say it is:
+
+1. It must be an ELF file whose CPU type (`e_machine`) matches the host (aarch64 for a gating run).
+2. `--version` must start with `fetch-mcp `.
+3. A `shipped` binary must contain no `FETCH_MCP_MARKER_` text.
+4. A `bench` binary must contain `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1`.
+
+A stand-in script, a wrong-architecture ELF or a binary with its marker stripped is refused (exit 2, reason `binary identity`). Without `--gate` (advisory and self-test runs) only the `--version` marker rules apply, so the stand-in still works.
+
+**Handshake check.** `initialize` and `tools/list` must both return a JSON-RPC `result`. An `error` reply is an invalid sample, so a server that only sends errors gives INVALID (exit 2). `tools/list` must contain a tool named `fetch`. A server that closes its output part-way through fails that sample at once.
+
+### What can go wrong
+
+| Symptom | What it means | Fix |
+|---|---|---|
+| Self-test does not end with `SELFTEST PASSED` | A benchmark tool is broken, or Python is older than 3.8. | Read the last failing line above it. Check `python3 --version`. |
+| Refusal about `bench/manifest.json` or a fixture hash (exit 2) | The fixtures are missing or changed. | Run `python3 bench/fixtures.py generate`, then try again. |
+| Exit 2, `INVALID`, `RuntimeError: server closed stdout` when you point it at `target/release/fetch-mcp` | The skeleton has no MCP server yet, so the handshake fails. This is expected today. | Nothing to fix. Use the self-test and the stand-in until A-2 and A-3a land. |
+| Exit 2, refused, reason `binary identity` | The file is not the right kind: a script, a wrong-CPU ELF, or the wrong marker. | Rebuild with the command for the kind you passed (step 3). |
+| Exit 2, refused, reason `incomplete` | A `--gate` bench run left out scenarios of its group. | Run the whole group (for example every G4a scenario). |
+| Exit 2, `INCOMPLETE` in a 50 MB scenario | Its 5 MB reference scenario has no valid result in the same run. | Include `g4a-5mib-full` in the same run. |
+| Exit 2, refused, `--gate` override | You used `--smoke`, a target override, another `--settle`, `--parallel-idle` above 1, or `--child-env`. | Remove the flag. |
+| Exit 3, `--gate` off native aarch64 | You are not on a real aarch64 machine. | Run on the aarch64 runner. Other machines can only do advisory runs. |
+| Exit 0 but the verdict says `ADVISORY_PASS` | The run was not a `--gate` run. It is not a result. | Do the gating run in step 5 on the aarch64 runner. |
+| Exit 1 | A target was missed. | The numbers are real. Investigate the memory use; do not change the target. |
+| `--runs` below 10 is refused | Fewer than 10 samples are only allowed with `--smoke`. | Use the default 10, or add `--smoke` for a non-counting test. |
 
 Gate names versus scenario IDs: G0, G4a and G4b are gates (points in the plan where a memory verdict is taken). G1 to G7 are the scenario IDs from architecture 11.1. The harness IDs in the table in section 5 (for example `g4a-5mib-full`) name the gate and the scenario together.
 
 ## 1. Unit definition (stated once)
 
-MB in this project means MiB: 1 MB = 2^20 = 1,048,576 bytes, for the targets, the fixtures and the fetch cap alike. The harness reads `/proc` in kB (KiB), so 10 MB = 10,240 kB and 40 MB = 40,960 kB. The 5 MB fetch cap = 5,242,880 bytes. Reports say "MB (MiB)".
+MB in this project means MiB: 1 MB = 2^20 = 1,048,576 bytes. This holds for the targets, the fixtures and the fetch cap alike. The harness reads `/proc` in kB (KiB), so 10 MB = 10,240 kB and 40 MB = 40,960 kB. The 5 MB fetch cap = 5,242,880 bytes. Reports say "MB (MiB)".
 
 ## 2. Absolute targets
 
@@ -32,11 +185,13 @@ MB in this project means MiB: 1 MB = 2^20 = 1,048,576 bytes, for the targets, th
 | Peak | VmHWM after the fetch returned | <= 40 MB (40,960 kB) | max over gating scenarios of per-scenario medians, each of 10 valid runs, `bench-loopback` binary |
 | Boundedness | 50 MB scenarios peak | <= 1.10 x the 5 MB full-read peak | medians |
 
-No tolerance on the release gate (E-3/E-5). E-6 CI is a tripwire: the absolute target still applies, plus a 10% regression bound versus the stored last-main baseline. Gates: G0 (end Sprint 0), G4a (end Sprint 4), G4b (end Sprint 5); definitions in architecture 11.0. Targets are not lowered.
+"Boundedness" means memory must not grow with page size: a 50 MB page may use at most 10% more than a 5 MB page.
+
+There is no tolerance on the release gate (E-3 and E-5). E-6 CI is a tripwire: the absolute target still applies, plus a 10% regression bound against the stored last-main baseline. Gates: G0 (end of Sprint 0), G4a (end of Sprint 4), G4b (end of Sprint 5); definitions in architecture 11.0. Targets are not lowered.
 
 ## 3. Benchmark host (placeholders, fill when known)
 
-Per OQ-9 the host is the author's native aarch64 runner on their cluster. Recorded by the harness (`kind: host` JSONL line): machine, kernel, CPU, MemTotal, page size, THP, governor, load average, cgroup limit, container flag, OS.
+Per OQ-9 the host is the author's native aarch64 runner on their cluster. The harness records these in a `kind: host` JSONL line: machine, kernel, CPU, MemTotal (total RAM), page size, THP (transparent huge pages), governor (CPU speed policy), load average, cgroup limit (a memory cap set by the system), container flag, OS.
 
 | Field | Value |
 |---|---|
@@ -46,24 +201,67 @@ Per OQ-9 the host is the author's native aarch64 runner on their cluster. Record
 | CPU / page size | PLACEHOLDER (record `getconf PAGESIZE`; only same-page-size runs are compared) |
 | Isolation | must satisfy architecture 9.2 (isolated, no fork PRs, no secrets) |
 
-Native aarch64 procedure: (1) preflight: `uname -m` = aarch64, `file <binary>` = ARM aarch64, no qemu aarch64 handler in `/proc/sys/fs/binfmt_misc` (the harness `--gate` mode checks and refuses with exit 3 otherwise); (2) build gnu (`.2.17`) and musl with the pinned interim script, shipped and `bench-loopback` from one commit; (3) `python3 bench/measure.py --gate --binary <bin> --binary-kind shipped|bench --scenario ...`; (4) commit the JSONL under the report. QEMU or any non-aarch64 figure is never gating (the A-1 qemu figure of 13.0 MB idle was translator overhead).
+Native aarch64 procedure:
+
+1. Preflight: `uname -m` prints `aarch64`, `file <binary>` says ARM aarch64, and there is no qemu aarch64 handler in `/proc/sys/fs/binfmt_misc`. The harness `--gate` mode checks this and refuses with exit 3 otherwise.
+2. Build gnu (`.2.17`) and musl with the pinned interim script. Build shipped and `bench-loopback` from one commit.
+3. Run `python3 bench/measure.py --gate --binary <bin> --binary-kind shipped|bench --scenario ...`.
+4. Commit the JSONL output under the report.
+
+QEMU or any non-aarch64 figure is never gating. (The A-1 QEMU figure of 13.0 MB idle was translator overhead.)
 
 ## 4. Binaries (E-8 loopback path, CONFIRMED by the user 2026-09-19; OQ-4 not decided)
 
-The shipped release binary is fail-closed and cannot reach the loopback fixture server. Idle is gated on the shipped binary. Peak and 50 MB scenarios run on the `bench-loopback` build (compile-time Cargo feature, off by default, permits only 127.0.0.0/8 and `::1`, never in a release, tag or distributed artifact, asserted absent by the D-7 guard). Both come from one commit, one Cargo.lock hash and the D-7 release profile, via the same pinned pipeline, and both report commit and Cargo.lock hash in `--version` (commit and hash are added by E-8/D-3; today `--version` prints the crate version only). Marker contract, one definition (`--binary-kind shipped` is refused if `--version` contains `bench-loopback`, `test-support` or any `FETCH_MCP_MARKER_` token, so a binary carrying only the test-support marker is not accepted as shipped): a build with a forbidden feature makes `--version` print a marker `FETCH_MCP_MARKER_<FEATURE>_V1:<feature-name>`, so a bench build prints `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback` and a release build prints no marker. The harness checks for the literal `bench-loopback` in `--version` (it refuses peak runs without it, and refuses a marked binary for shipped-binary idle); the D-7 guard greps the binary for the `FETCH_MCP_MARKER_` prefix, so any marker (including a renamed feature) fails a release build. Every figure is labelled with its binary (`binary_kind`). Bench-vs-shipped bounds (E-8, part of the G4a pass; enforced by no script yet: the idle delta, size record, public-host cross-check and commit/lock-hash equality are checked by E-8 (story id) when `--version` gains commit and lock hash, and by the manual E-8/G4a report until then): idle delta <= 0.5 MB; binary size delta recorded and explained (no bound); one manual 5 MB fetch of a public host on the shipped binary within 10% of the bench peak and <= 40 MB; same commit and Cargo.lock hash. Exceeding a bound fails G4a until explained and re-measured.
+**Why two binaries?** The shipped release binary is fail-closed: it blocks unsafe addresses, so it cannot reach the loopback test server. So idle is measured on the shipped binary. Peak and 50 MB scenarios run on the `bench-loopback` build instead.
+
+The `bench-loopback` build:
+
+- is a compile-time Cargo feature, off by default;
+- permits only `127.0.0.0/8` and `::1`;
+- is never in a release, tag or distributed artifact (the D-7 guard asserts it is absent).
+
+Both binaries come from one commit, one `Cargo.lock` hash and the D-7 release profile, through the same pinned pipeline. Both report commit and `Cargo.lock` hash in `--version`. (E-8 and D-3 add the commit and hash; today `--version` prints the crate version only.)
+
+**Marker contract (one definition).**
+
+- A build with a forbidden feature makes `--version` print `FETCH_MCP_MARKER_<FEATURE>_V1:<feature-name>`. A bench build prints `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback`. A release build prints no marker.
+- `--binary-kind shipped` is refused if `--version` contains `bench-loopback`, `test-support` or any `FETCH_MCP_MARKER_` text. So a binary carrying only the test-support marker is not accepted as shipped.
+- The harness looks for the literal `bench-loopback` in `--version`. It refuses peak runs without it. It refuses a marked binary for a shipped-binary idle run.
+- The D-7 guard searches the binary for the `FETCH_MCP_MARKER_` prefix. Any marker (including a renamed feature) fails a release build.
+- Every figure is labelled with its binary (`binary_kind`).
+
+**Bench-versus-shipped bounds** (E-8, part of the G4a pass). No script enforces them yet. E-8 (a story ID) checks the idle delta, size record, public-host cross-check and commit/lock-hash equality when `--version` gains commit and lock hash. Until then the manual E-8/G4a report checks them.
+
+| Bound | Rule |
+|---|---|
+| Idle delta | <= 0.5 MB |
+| Binary size delta | recorded and explained (no bound) |
+| Public-host cross-check | one manual 5 MB fetch of a public host on the shipped binary: within 10% of the bench peak and <= 40 MB |
+| Build identity | same commit and `Cargo.lock` hash |
+
+Exceeding a bound fails G4a until it is explained and re-measured.
 
 ## 5. Measurement method
 
-Per sample a fresh child process (cold; no in-process warm-up), spawned with a pinned environment (allow-list: `PATH`, `FETCH_LOG=warn`, `LC_ALL=C`, plus recorded `--child-env`; `RUST_LOG`, `LD_PRELOAD`, `MALLOC_*` unset). Client script = `bench/measure.py` (JSON-RPC over stdio):
+Each sample uses a fresh child process (cold: no in-process warm-up). It is started with a pinned environment. The allow-list is `PATH`, `FETCH_LOG=warn`, `LC_ALL=C`, plus any recorded `--child-env`. `RUST_LOG`, `LD_PRELOAD` and `MALLOC_*` are unset. The client script is `bench/measure.py` (JSON-RPC over stdio).
 
-1. Spawn; `initialize`; `notifications/initialized`; `tools/list`.
-2. Idle: sleep 30 s (`--settle`), read `VmRSS` (and `VmHWM`) from `/proc/<pid>/status`. Idle samples may run in parallel processes (`--parallel-idle`).
-3. Peak: one `tools/call fetch` per fresh process; on return, before exit, read `VmHWM`.
-4. Fixture server and harness on the same host over loopback (`bench/serve.py`).
+1. Start the process. Send `initialize`, then `notifications/initialized`, then `tools/list`.
+2. Idle: sleep 30 s (`--settle`), then read `VmRSS` (and `VmHWM`) from `/proc/<pid>/status`. Idle samples may run in parallel processes (`--parallel-idle`).
+3. Peak: make one `tools/call fetch` per fresh process. When it returns, before the process exits, read `VmHWM`.
+4. The fixture server and the harness run on the same host over loopback (`bench/serve.py`).
 
-Fixtures (`bench/fixtures.py`, fixed seed 1, sha256 and size committed in `bench/manifest.json`, harness refuses to run on mismatch; `bench/fixtures/` is not committed, regenerate with `fixtures.py generate` before the first real run; selftest does this itself): 5 MB HTML (5,241,856 B, 1 KiB under the cap so a correct server does not answer `too_large`), the same page gzipped (`Content-Encoding: gzip`; compressed bytes depend on the zlib build, re-commit the manifest deliberately if it changes), 50 MB HTML served with `Content-Length` and served chunked (no `Content-Length`), and a slow-drip route (`/slow`, 64 B/s). Late-landmark HTML and the remaining E-2 fixtures are not in the skeleton.
+**Fixtures** (`bench/fixtures.py`). They use a fixed seed (1). Their sha256 and size are committed in `bench/manifest.json`, and the harness refuses to run on a mismatch. `bench/fixtures/` is not committed: regenerate it with `fixtures.py generate` before the first real run (the self-test does this itself).
 
-Scenarios (`bench/scenarios.py`). G0/G4a/G4b are gates; G1..G7 are scenario IDs (architecture 11.1):
+| Fixture | Detail |
+|---|---|
+| 5 MB HTML | 5,241,856 B, 1 KiB under the cap so a correct server does not answer `too_large` |
+| Same page gzipped | sent with `Content-Encoding: gzip`. The compressed bytes depend on the zlib build, so re-commit the manifest deliberately if it changes |
+| 50 MB HTML | served two ways: with `Content-Length`, and chunked (no `Content-Length`) |
+| Slow-drip route | `/slow`, 64 B/s |
+
+The late-landmark HTML and the remaining E-2 fixtures are not in the skeleton.
+
+**Scenarios** (`bench/scenarios.py`). G0, G4a and G4b are gates. G1 to G7 are scenario IDs (architecture 11.1).
 
 | Harness ID | Scenario | Gate | Status in skeleton |
 |---|---|---|---|
@@ -76,15 +274,23 @@ Scenarios (`bench/scenarios.py`). G0/G4a/G4b are gates; G1..G7 are scenario IDs 
 | `g6-concurrent10` | 10 concurrent (G1/G2 mix), recorded not gating | none | defined, E-4 |
 | `g4b-window-start`, `g4b-window-end` (G1), `g4b-raw` (G3), `g4b-chunked-window-in-cap` (G7b), `g4b-window-beyond-cap` (G5, G7c) | need A-5 / A-6; same 40 MB target; 50 MB cases <= 1.10x | G4b | defined, args/windows are E-2 |
 
-`g4a-50mib-cl` early-stop floor is ZERO bytes (`min_bytes` = 0), as architecture 11.2 sets `expected_min_bytes` for G7a to zero (a correct client aborts on the Content-Length header, before any body write). Nothing per-scenario confirms the request reached the server: a fetch-less or error-only stub that returns `too_large` for every call passes this scenario line (reproduced). The gate is still not falsely passed, because the same server fails `g4a-5mib-full` and `g4a-5mib-gz` (byte floors above zero), and the handshake requires a real `fetch` tool. Treat the `g4a-50mib-cl` line as meaningful only alongside the passing 5 MiB scenarios.
+**The `g4a-50mib-cl` early-stop floor is ZERO bytes** (`min_bytes` = 0). Architecture 11.2 sets `expected_min_bytes` for G7a to zero, because a correct client stops on the `Content-Length` header, before any body is written. This has a consequence. Nothing per-scenario confirms the request reached the server. A fetch-less or error-only stub that returns `too_large` for every call passes this scenario line (reproduced). The gate is still not falsely passed, because that same server fails `g4a-5mib-full` and `g4a-5mib-gz` (their byte floors are above zero), and the handshake requires a real `fetch` tool. Treat the `g4a-50mib-cl` line as meaningful only alongside the passing 5 MiB scenarios.
 
-Boundedness: a scenario with a `bounded_vs` reference (the 50 MB ones vs `g4a-5mib-full`) whose reference has no valid result in the same run yields verdict `INCOMPLETE` (exit 2), never `PASS`/`ADVISORY_PASS`.
+**Boundedness.** A scenario with a `bounded_vs` reference (the 50 MB ones compare against `g4a-5mib-full`) whose reference has no valid result in the same run gets verdict `INCOMPLETE` (exit 2). It never gets `PASS` or `ADVISORY_PASS`.
 
-Non-gating, reported: default-parameter call, slow-drip (timing +-20% of `FETCH_TIMEOUT_MS`), TLS run. The harness refuses unimplemented scenarios (exit 2) rather than skipping them.
+Non-gating, reported: a default-parameter call, slow-drip (timing +-20% of `FETCH_TIMEOUT_MS`), and a TLS run. The harness refuses unimplemented scenarios (exit 2) rather than skipping them.
 
 ## 6. Valid-run rule and verdicts
 
-A sample is valid only if the handshake succeeded, the outcome matches the scenario (`ok` or `too_large`), and the fixture server's byte counter for the route is >= the scenario `min_bytes` (early-stop check; the counter is an upper bound on client consumption). A scenario needs >= 10 valid samples, else the whole report is INVALID (exit 2; `--runs < 10` is refused unless `--smoke`, which is never valid for NFR claims). No outlier is discarded; min/median/max are reported and the decision uses the median. Exit codes:
+A sample is valid only if all of these hold:
+
+- the handshake succeeded;
+- the outcome matches the scenario (`ok` or `too_large`);
+- the fixture server's byte counter for the route is >= the scenario `min_bytes` (the early-stop check; the counter is an upper bound on what the client read).
+
+A scenario needs at least 10 valid samples, otherwise the whole report is INVALID (exit 2). `--runs` below 10 is refused unless `--smoke`, which is never valid for memory claims (NFR claims). No outlier is discarded. Min, median and max are reported, and the decision uses the median.
+
+Exit codes:
 
 | Code | Meaning |
 |---|---|
@@ -93,24 +299,44 @@ A sample is valid only if the handshake succeeded, the outcome matches the scena
 | 2 | INVALID, INCOMPLETE or refused (fixture hash, wrong binary kind, missing binary, unimplemented scenario, fewer than 10 runs, `--gate` override or incomplete gate set, failed handshake) |
 | 3 | `--gate` off native aarch64 |
 
- Output is JSONL: one `host` line, one line per scenario, one `summary` line (gating peak = max of medians, boundedness ratios, verdict).
+Output is JSONL: one `host` line, one line per scenario, and one `summary` line (gating peak = max of medians, boundedness ratios, verdict).
 
 ## 7. Determinism list
 
-Fresh process per sample; pinned child env (above); fixtures from fixed seed with committed hashes; page size, THP, CPU governor (performance preferred), load average before and after (> 0.5 above idle baseline marks the run suspect, repeat once), cgroup limit, libc (gnu/musl), allocator, binary sha256, commit, profile and toolchain recorded; ASLR left at default (recorded); one discarded dry-run of the matrix per session, recorded as such; native-ARM preflight; both gnu and musl binaries run; no concurrent load on the runner. Skeleton status: the host record, pinned env, hash check, preflight and binary sha are implemented; load-average repeat rule, dry-run discard, libc/allocator/profile/commit fields (from `--version`) and macOS `/usr/bin/time -l` are E-2.
+"Determinism" means: the same setup gives the same numbers. These are the rules that make it so.
+
+- Fresh process per sample.
+- Pinned child environment (section 5).
+- Fixtures from a fixed seed with committed hashes.
+- These are recorded: page size, THP, CPU governor (performance preferred), load average before and after, cgroup limit, libc (gnu/musl), allocator, binary sha256, commit, profile and toolchain.
+- Load average more than 0.5 above the idle baseline marks the run suspect: repeat once.
+- ASLR (address randomisation) is left at its default and recorded.
+- One discarded dry run of the matrix per session, recorded as such.
+- Native-ARM preflight.
+- Both gnu and musl binaries are run.
+- No other load on the runner.
+
+Skeleton status: the host record, pinned environment, hash check, preflight and binary sha are implemented. The load-average repeat rule, the dry-run discard, the libc/allocator/profile/commit fields (from `--version`) and macOS `/usr/bin/time -l` are E-2.
 
 ## 8. TLS approach (decision)
 
-NFR-11 is measured over plain HTTP on the fixture server. TLS is covered by a one-off manual run against real public hosts on the shipped binary (the same run that serves as the E-8 shipped-binary cross-check), reported separately. A bench-only fixture-CA build feature is not adopted: it would add a second trust-affecting compile-time route to guard beyond `bench-loopback`, for a small RSS question the manual run answers. Until the manual run exists, reports carry the caveat "NFR-11 measured over plain HTTP only". (Author recommendation for owner review.)
+NFR-11 (the memory requirement) is measured over plain HTTP on the fixture server. TLS (encrypted HTTPS) is covered by a one-off manual run against real public hosts on the shipped binary. That is the same run that serves as the E-8 shipped-binary cross-check, and it is reported separately.
+
+A bench-only fixture-CA build feature is not adopted. It would add a second compile-time route that affects trust and would need guarding beyond `bench-loopback`, for a small RSS question the manual run answers. Until the manual run exists, reports carry the caveat "NFR-11 measured over plain HTTP only". (Author recommendation for owner review.)
 
 ## 9. Goals 2, 3 and 5 method definitions (for A-4 and E-5)
 
-- Token count: `tiktoken` encoding `cl100k_base` (pin the package version), `len(encode(text, disallowed_special=()))`. A reproducible proxy, not Claude's tokenizer. Used only in the offline A-4 check script, not in the memory harness.
-- Baseline: the raw HTML body as captured in the snapshot (no conversion, no stripping). Reduction per page = 1 - tokens(markdown) / tokens(raw HTML); Goal 3 = median over the set (>= 50%).
-- "Converts successfully": the converter returns no error and the markdown is non-empty (after whitespace trim). Goal 2 = successes / snapshots (>= 95%), on offline snapshots, not live fetches.
-- Goal 5 overhead: conversion time of the 1 MB (1,048,576 B) fixture page, excluding network: call the converter in-process on the page held in memory, 5 warm-up calls discarded, 100 timed calls, report p95, on the native aarch64 runner, release profile; target <= 500 ms.
-- 50-URL set: E-7 captures offline snapshots (HTML plus manifest with URL, date, size, sha256); the 10-URL live smoke list (network, TLS, redirects, JSON, plain text) is separate and non-gating. DEFERRED (owner: project owner; user decision, Sprint 0 revision 4): the concrete 50-URL list and the 10-URL live smoke list are not defined in Sprint 0 and must be supplied by the project owner before E-7 (Sprint 2) starts; they must exclude pages needing cookies or authentication. Sprint 0 exit for E-1 records the deferral in place of the list.
+- **Token count:** `tiktoken` encoding `cl100k_base` (pin the package version), `len(encode(text, disallowed_special=()))`. A token is a small chunk of text that AI models count. This is a reproducible proxy, not Claude's tokenizer. It is used only in the offline A-4 check script, not in the memory harness.
+- **Baseline:** the raw HTML body as captured in the snapshot (no conversion, no stripping). Reduction per page = 1 - tokens(markdown) / tokens(raw HTML). Goal 3 = median over the set (>= 50%).
+- **"Converts successfully":** the converter returns no error and the markdown is non-empty (after whitespace trim). Goal 2 = successes / snapshots (>= 95%), on offline snapshots, not live fetches.
+- **Goal 5 overhead:** conversion time of the 1 MB (1,048,576 B) fixture page, excluding network. Call the converter in-process on the page held in memory, discard 5 warm-up calls, time 100 calls, report p95. Use the native aarch64 runner and the release profile. Target <= 500 ms.
+- **50-URL set:** E-7 captures offline snapshots (HTML plus a manifest with URL, date, size, sha256). The 10-URL live smoke list (network, TLS, redirects, JSON, plain text) is separate and non-gating.
+  - **DEFERRED** (owner: project owner; user decision, Sprint 0 revision 4). The concrete 50-URL list and the 10-URL live smoke list are not defined in Sprint 0. The project owner must supply them before E-7 (Sprint 2) starts. They must exclude pages that need cookies or authentication. The Sprint 0 exit for E-1 records the deferral in place of the list.
 
 ## 10. G0 and go/no-go
 
-A-1 was measured on x86_64 only (idle 3.7-5.2 MB, streaming-build peak 6.1 MB first page, 8.7 MB deep, 11.1 MB raw; buffered DOM 56 MB fails), before this protocol existed: 0.5 s settle, cap 16 MiB, kB medians of 10. Deviation recorded: A-1 has not been re-run under this protocol (no aarch64 access and no A-1 binary rebuilt in E-1); G0 requires that re-run or a gap analysis on the native aarch64 host. Preliminary recommendation: GO, conditional on the streaming design (a buffered DOM converter is NO-GO) and on native aarch64 confirmation, since x86_64 figures sit well under both targets but page size and allocator behaviour on ARM are unmeasured.
+A-1 was measured on x86_64 only, before this protocol existed. Its figures: idle 3.7-5.2 MB; streaming-build peak 6.1 MB on the first page, 8.7 MB on a deep page, 11.1 MB raw; a buffered DOM (whole page held as a tree in memory) at 56 MB fails. It used a 0.5 s settle, a 16 MiB cap and kB medians of 10.
+
+Deviation recorded: A-1 has not been re-run under this protocol (no aarch64 access, and no A-1 binary was rebuilt in E-1). G0 requires that re-run, or a gap analysis, on the native aarch64 host.
+
+Preliminary recommendation: GO, on two conditions. First, the streaming design (a buffered DOM converter is NO-GO). Second, native aarch64 confirmation, because the x86_64 figures sit well under both targets but page size and allocator behaviour on ARM are unmeasured.
