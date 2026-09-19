@@ -9,7 +9,9 @@ Prerequisites: Linux, Python 3.8+ (standard library only), a Rust toolchain only
 1. Self-test the harness (about 1 minute, no Rust needed): `python3 bench/selftest.py`. Expected last line: `SELFTEST PASSED`. It regenerates fixtures itself and runs against `bench/standin_mcp.py`, a stand-in that is NOT the product, so its RSS figures are not product measurements.
 2. Before a real run, generate the fixtures once: `python3 bench/fixtures.py generate` (measure.py refuses on a missing or mismatched `bench/manifest.json` hash).
 3. Build the binary you are measuring (skip for the stand-in): `cargo build --release --locked -p fetch-mcp` (shipped kind) or `cargo build --release --locked -p fetch-mcp --features bench-loopback` (bench kind). Later steps assume this.
-4. Worked example, advisory smoke on the stand-in (bench kind needs the marker, so set `STANDIN_BENCH=1`): `python3 bench/measure.py --binary bench/standin_mcp.py --binary-kind bench --child-env STANDIN_BENCH=1 --scenario g4a-5mib-full --smoke`. Output is JSON lines, one per scenario and a final `summary`; without `--gate` the summary verdict is `ADVISORY_PASS` or `FAIL`, never `PASS`. Exit codes: 0 pass, 1 target missed, 2 invalid or refused, 3 `--gate` off native aarch64.
+4. Worked example, advisory smoke on the stand-in (bench kind needs the marker, so set `STANDIN_BENCH=1`): `python3 bench/measure.py --binary bench/standin_mcp.py --binary-kind bench --child-env STANDIN_BENCH=1 --scenario g4a-5mib-full --smoke`. Output is JSON lines, one per scenario and a final `summary`; without `--gate` the summary verdict is `ADVISORY_PASS` or `FAIL`, never `PASS`. Exit 0 with `ADVISORY_PASS` (any non-`--gate` run, including every `--smoke` run) is NOT a result and never satisfies a target; only a `--gate` run with summary verdict `PASS` counts. Per-scenario lines may read `verdict: PASS` in an advisory run; only the summary verdict is authoritative. See the exit code table in section 6.
+
+   Current limitation: the `fetch-mcp` binary is a skeleton with no MCP server until later stories (A-2/A-3a), so a real `measure.py` run against it fails the handshake (exit 2). Only the self-test and the stand-in are runnable now. Also, E-8 says a bench build logs its marker to stderr at startup; that is not implemented yet (the marker is only printed by `--version`).
 5. Gating run (aarch64 runner only): `python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle --gate`. `--gate` refuses `--smoke`, target overrides, `--settle` other than 30, `--parallel-idle` above 1, and any `--child-env` (allowlist is empty, so `GLIBC_TUNABLES`, `FETCH_*`, `LC_ALL`, `PATH` etc. are all refused), and requires the complete gate set for the binary kind: shipped needs `idle`; bench needs every scenario of the G4a (and/or G4b) group touched, so a partial run is refused (exit 2, reason `incomplete`). Those refusals precede the native-aarch64 check (exit 3), so they behave the same on any host. A bench binary under `--gate` therefore needs a real `bench-loopback` build (its `--version` marker), not the stand-in env trick.
 
 Gate names versus scenario IDs: G0, G4a and G4b are gates (points in the plan where a memory verdict is taken). G1 to G7 are the scenario IDs from architecture 11.1. The harness IDs in the table in section 5 (for example `g4a-5mib-full`) name the gate and the scenario together.
@@ -78,7 +80,16 @@ Non-gating, reported: default-parameter call, slow-drip (timing +-20% of `FETCH_
 
 ## 6. Valid-run rule and verdicts
 
-A sample is valid only if the handshake succeeded, the outcome matches the scenario (`ok` or `too_large`), and the fixture server's byte counter for the route is >= the scenario `min_bytes` (early-stop check; the counter is an upper bound on client consumption). A scenario needs >= 10 valid samples, else the whole report is INVALID (exit 2; `--runs < 10` is refused unless `--smoke`, which is never valid for NFR claims). No outlier is discarded; min/median/max are reported and the decision uses the median. Exit codes: 0 pass, 1 target missed, 2 INVALID, INCOMPLETE or refused (fixture hash, wrong binary kind, missing binary, unimplemented scenario, fewer than 10 runs, --gate override or incomplete gate set), 3 `--gate` off native aarch64. Output is JSONL: one `host` line, one line per scenario, one `summary` line (gating peak = max of medians, boundedness ratios, verdict).
+A sample is valid only if the handshake succeeded, the outcome matches the scenario (`ok` or `too_large`), and the fixture server's byte counter for the route is >= the scenario `min_bytes` (early-stop check; the counter is an upper bound on client consumption). A scenario needs >= 10 valid samples, else the whole report is INVALID (exit 2; `--runs < 10` is refused unless `--smoke`, which is never valid for NFR claims). No outlier is discarded; min/median/max are reported and the decision uses the median. Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | `--gate` run: summary `PASS`. Non-gate or `--smoke` run: `ADVISORY_PASS`, which is NOT a result and never satisfies a target |
+| 1 | target missed |
+| 2 | INVALID, INCOMPLETE or refused (fixture hash, wrong binary kind, missing binary, unimplemented scenario, fewer than 10 runs, `--gate` override or incomplete gate set, failed handshake) |
+| 3 | `--gate` off native aarch64 |
+
+ Output is JSONL: one `host` line, one line per scenario, one `summary` line (gating peak = max of medians, boundedness ratios, verdict).
 
 ## 7. Determinism list
 

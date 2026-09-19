@@ -35,4 +35,4 @@ Also enable "Require branches to be up to date" and "Require a pull request befo
 
 ## Licence
 
-`Cargo.toml` carries no `license` field and `publish = false` blocks publishing. The project licence is OQ-7 (open) and is not decided here; nothing in CI, `deny.toml` or the benchmark docs depends on it (`deny.toml` `[licenses]` covers dependencies only).
+An Apache-2.0 `LICENSE` file exists from the initial commit. The project's licence and distribution remain open under OQ-7 and are not decided here; `Cargo.toml` has `publish = false` until they are decided. Nothing in CI, `deny.toml` or the benchmark docs depends on the choice (`deny.toml` `[licenses]` covers dependencies only).
