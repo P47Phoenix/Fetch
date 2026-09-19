@@ -1,14 +1,14 @@
-# Epics and Stories: Fetch MCP Server (Rust, low-memory ARM replacement)
+# Epics and Stories: Fetch MCP Server (Rust, low-memory, ARM)
 
-Source: `docs/PRD.md` v0.2. Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
+Source: `docs/PRD.md` v0.3. Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
 
 Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment capped at 80% (8 points).
 
 ## Ordering Rationale
 
-1. **Risk first.** The whole project is justified by a memory claim (PRD Goal 1). The incumbent baseline (E-1) and the `rmcp`/crate spike (A-1) run first, because a failed memory case or an unworkable crate stack invalidates everything later. Cost of delay on these is negative: building features first risks wasted work.
+1. **Risk first.** The whole project is justified by a memory claim (PRD Goal 1). The benchmark harness and absolute targets (E-1) and the `rmcp`/crate spike (A-1) run first, because a failed memory case or an unworkable crate stack invalidates everything later. Cost of delay on these is negative: building features first risks wasted work.
 2. **Measure early, not last.** The benchmark harness (E-2 to E-4) lands right after the first streaming fetch, so memory regressions are caught while the code is small. Trade-off: some harness effort is spent before all features exist; accepted.
-3. **Value density.** Core fetch (A) delivers the replacement value. Network safety (B) is next because an unsafe fetcher cannot replace the incumbent. Config (C) and polish stories follow. robots.txt and content labelling are lowest value density and depend on open questions, so they go last.
+3. **Value density.** Core fetch (A) delivers the core value. Network safety (B) is next because an unsafe fetcher is not acceptable. Config (C) and polish stories follow. robots.txt and content labelling are lowest value density and depend on open questions, so they go last.
 4. **Packaging (D) split.** The aarch64 cross-build is proven in A-1 (risk), automated in D-2 mid-project, and docs/release finish at the end.
 
 ## Epic-to-Requirement Map
@@ -25,38 +25,39 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 
 # Epic E: Memory benchmarking and validation
 
-**Epic Goal:** Prove, with reproducible measurements on ARM, that the Rust server uses less memory than the incumbent `mcp__fetch__fetch`, and keep it that way.
+**Epic Goal:** Prove, with reproducible measurements on ARM, that the Rust server meets its absolute memory targets (idle <= 10 MB RSS; peak <= 40 MB while fetching a 5 MB page), and keep it that way.
 
-**Success Metric:** Report shows idle RSS and 5 MB-fetch peak RSS each at or below 50% of the incumbent on aarch64-linux; 50 MB-response test stays within 10% of the 5 MB peak; CI gate active.
+**Success Metric:** Report shows idle RSS at or below 10 MB and 5 MB-fetch peak RSS (VmHWM) at or below 40 MB on aarch64-linux, each the median of 10 runs; 50 MB-response test stays within 10% of the 5 MB peak; CI gate active.
 
-**Out of Scope:** Optimizing the incumbent; CPU or latency benchmarking beyond NFR-02; non-ARM benchmark tuning.
+**Out of Scope:** CPU or latency benchmarking beyond NFR-02; non-ARM benchmark tuning.
 
 ### Story Map
 
 | # | Story | Value | Effort | Priority | Dependencies |
 |---|---|---|---|---|---|
-| E-1 | Spike: baseline incumbent memory | Critical (go/no-go) | 3 | 1 | OQ-8, OQ-9 |
-| E-2 | Benchmark harness and fixtures | High | 5 | 5 | A-3 |
-| E-3 | Idle RSS measurement and target check | High | 2 | 6 | E-2, A-2 |
-| E-4 | Peak RSS and boundedness checks | High | 3 | 6 | E-2, A-3, A-4 |
-| E-5 | Comparative report and replace decision | High | 2 | 10 | E-3, E-4, A-7 |
+| E-1 | Spike: define benchmark harness and absolute targets | Critical (go/no-go) | 3 | 1 | None (OQ-9 resolved) |
+| E-2 | Benchmark harness and fixtures | High | 5 | 5 | E-1, A-3 |
+| E-3 | Idle RSS measurement and target check | High | 2 | 6 | E-1, E-2, A-2 |
+| E-4 | Peak RSS and boundedness checks | High | 3 | 6 | E-1, E-2, A-3, A-4 |
+| E-5 | Benchmark report and release decision | High | 2 | 10 | E-3, E-4, A-7 |
 | E-6 | CI regression gate on aarch64 | Medium | 3 | 11 | E-2, D-2 |
 
 **MVP Slice:** E-1, E-2, E-3, E-4, E-5. Rationale: these prove or disprove the primary claim. E-6 protects it after release and can follow.
 
-### E-1: Spike - baseline the incumbent's memory (3 pts) [SPIKE, time-box 2 days]
-Maps to: NFR-10, NFR-11, Goals 1a, 1b, 2, 3.
-As a solo developer replacing `mcp__fetch__fetch`, I want to measure the existing server's memory on ARM so that the new server's targets and the go/no-go decision rest on real numbers.
-- Given the incumbent is installed on an aarch64-linux host, when it completes the MCP handshake and idles 30 s, then idle RSS (VmRSS) is recorded as the median of 10 runs.
-- Given a local HTTP server serving a 5 MB HTML fixture, when the incumbent fetches it, then peak RSS (VmHWM) is recorded as the median of 10 runs.
-- Given the same 50-URL curated set, when the incumbent runs it, then success rate, median token reduction, default `max_length`, robots.txt behavior and error message forms are recorded for parity.
-- Given the numbers, when the spike ends, then a one-page result states incumbent version, host, RAM, the two baselines, proposed absolute caps for NFR-10/NFR-11, and a go/no-go recommendation.
+### E-1: Spike - define benchmark harness and absolute targets (3 pts) [SPIKE, time-box 2 days]
+Maps to: NFR-10, NFR-11, NFR-14, Goals 1a, 1b, 2, 3.
+As a solo developer, I want the measurement method and absolute memory targets fixed up front so that the go/no-go decision rests on agreed numbers.
+- Given the targets, when the spike ends, then a one-page result states idle RSS (VmRSS) <= 10 MB and peak RSS (VmHWM) <= 40 MB while fetching a 5 MB page, each as the median of 10 runs.
+- Given the benchmark host, when the spike ends, then the result records it as the author's native aarch64 runner, with OS and RAM captured (values to be filled in when known).
+- Given the measurement protocol, when written, then it defines the handshake and 30 s idle procedure, the 5 MB, 50 MB and slow-drip fixtures, the MCP client script, and the `/proc/<pid>/status` read method.
+- Given the 50-URL curated set, when defined, then it lists the URLs used for success rate and token reduction (Goals 2 and 3).
+- Given the protocol and A-1 results, when the spike ends, then it states a go/no-go recommendation on whether the targets look achievable.
 
 ### E-2: Benchmark harness and fixtures (5 pts)
 Maps to: NFR-14, Goal 1d.
-As the project owner, I want a one-command harness so that memory comparisons are repeatable.
+As the project owner, I want a one-command harness so that memory measurements are repeatable.
 - Given the repo, when I run the single harness command, then it starts a local fixture HTTP server, drives a target MCP server over stdio, and prints idle and peak RSS.
-- Given the harness is pointed at either the incumbent or the new binary, when it runs, then it uses an identical client script and fixtures for both.
+- Given the harness is pointed at a server binary, when it runs, then it uses the client script and fixtures defined in E-1.
 - Given a run, when results are produced, then each figure is the median of at least 10 runs with min and max shown.
 - Given Linux and macOS hosts, when the harness runs, then it reads `/proc/<pid>/status` on Linux and `/usr/bin/time -l` on macOS.
 - Given fixtures, when the harness starts, then it provides a 5 MB HTML page, a 50 MB streaming body, and a slow-drip response.
@@ -64,22 +65,22 @@ As the project owner, I want a one-command harness so that memory comparisons ar
 ### E-3: Idle RSS measurement and target check (2 pts)
 Maps to: NFR-10, US-7.
 As a developer on ARM, I want idle memory verified against target so that a resident server stays small.
-- Given the release binary on aarch64-linux, when idle 30 s after `initialize` and `tools/list`, then RSS is at or below 50% of the E-1 baseline and at or below the agreed absolute cap.
-- Given the result exceeds the target, when the harness finishes, then it exits non-zero and prints the ratio.
+- Given the release binary on aarch64-linux, when idle 30 s after `initialize` and `tools/list`, then RSS is at or below 10 MB.
+- Given the result exceeds the target, when the harness finishes, then it exits non-zero and prints the measured value and the target.
 
 ### E-4: Peak RSS and boundedness checks (3 pts)
 Maps to: NFR-11, NFR-12, FR-16, US-7.
 As a developer on ARM, I want peak memory verified during fetches so that large pages cannot exhaust RAM.
-- Given the 5 MB HTML fixture, when `fetch` runs, then peak RSS is at or below 50% of the E-1 baseline and at or below the agreed absolute cap.
+- Given the 5 MB HTML fixture, when `fetch` runs, then peak RSS is at or below 40 MB.
 - Given the 50 MB fixture with max size 5 MB, when `fetch` runs, then the call returns a size error and peak RSS is within 10% of the 5 MB-page peak.
 - Given 10 concurrent fetches of the 5 MB page, when they run, then peak RSS is recorded and reported (NFR-08 documentation).
 - Given allocator candidates from A-1, when compared here, then the chosen allocator and its RSS effect are recorded.
 
-### E-5: Comparative report and replace decision (2 pts)
+### E-5: Benchmark report and release decision (2 pts)
 Maps to: Goals 1a-1d, US-9.
-As the project owner, I want a written comparison so that I can decide to swap the incumbent in my Claude Code config.
-- Given E-3 and E-4 results, when the report is generated, then it lists incumbent versus new for idle RSS, peak RSS, and 50 MB boundedness with ratios.
-- Given the report shows every target met, when it is published to `docs/`, then it states "replace" and lists the config change needed.
+As the project owner, I want a written report so that I can decide to release and register the server in my Claude Code config.
+- Given E-3 and E-4 results, when the report is generated, then it lists idle RSS, peak RSS, and 50 MB boundedness against their absolute targets.
+- Given the report shows every target met, when it is published to `docs/`, then it states "release" and lists the config change needed.
 - Given any target missed, when it is published, then it states the gap and the follow-up actions.
 
 ### E-6: CI regression gate on aarch64 (3 pts)
@@ -95,7 +96,7 @@ As the project owner, I want CI to fail on memory regressions so that the saving
 
 **Epic Goal:** A working `fetch` MCP tool in Rust (`rmcp`, stdio) that retrieves a URL through a streaming, size-bounded pipeline, converts HTML to markdown, paginates, and reports errors clearly.
 
-**Success Metric:** 50-URL test set >= 95% success; median token reduction >= 50%; all Must FRs in this epic pass; parity with the incumbent's parameters.
+**Success Metric:** 50-URL test set >= 95% success; median token reduction >= 50%; all Must FRs in this epic pass; parameters `url`, `max_length`, `start_index`, `raw` as specified.
 
 **Out of Scope:** JS rendering, PDF/binary extraction, caching, batch fetch, authenticated fetch.
 
@@ -113,7 +114,7 @@ As the project owner, I want CI to fail on memory regressions so that the saving
 | A-8 | Charset decoding and User-Agent | Medium | 2 | 12 | A-3 |
 | A-9 | Final URL and status header | Low | 1 | 12 | A-3 |
 
-**MVP Slice:** A-1 to A-7. Rationale: this is the minimum that reproduces the incumbent's core behavior (fetch, convert, paginate, raw, errors). A-8 (charset, UA) and A-9 (header) are refinements; UTF-8 default covers most pages.
+**MVP Slice:** A-1 to A-7. Rationale: this is the minimum core behavior (fetch, convert, paginate, raw, errors). A-8 (charset, UA) and A-9 (header) are refinements; UTF-8 default covers most pages.
 
 ### A-1: Spike - `rmcp`, HTTP client, and HTML-to-markdown choice (3 pts) [SPIKE, time-box 3 days]
 Maps to: FR-01, FR-15, NFR-05, NFR-15, Risks 1, 3, 9.
@@ -209,7 +210,7 @@ As an LLM agent, I want to know the final URL so that I can cite it.
 | B-5 | SSRF suite and coverage gate | High | 3 | 9 | B-1, B-2, B-3 |
 | B-6 | Untrusted-content labelling | Medium | 2 | 13 | A-4, OQ-5 |
 
-**MVP Slice:** B-1, B-2, B-3, B-5. Rationale: an unguarded fetcher is not an acceptable replacement. B-4 and B-6 are policy items awaiting OQ-3 and OQ-5, so they follow.
+**MVP Slice:** B-1, B-2, B-3, B-5. Rationale: an unguarded fetcher is not acceptable. B-4 and B-6 are policy items awaiting OQ-3 and OQ-5, so they follow.
 
 ### B-1: Block private, loopback and link-local on resolved IP (5 pts)
 Maps to: FR-06, Risk 2.
@@ -275,7 +276,7 @@ As a developer, I want fetched content marked as untrusted so that the model tre
 | C-2 | Private host allowlist | Medium | 2 | 10 | B-1, C-1, OQ-4 |
 | C-3 | Configurable timeout and max size | Medium | 2 | 11 | C-1 |
 
-**MVP Slice:** None required; defaults (15 s, 5 MB, block all private) suffice for the first swap. C-2 is promoted if OQ-4 says home-lab access is needed at v1.0.
+**MVP Slice:** None required; defaults (15 s, 5 MB, block all private) suffice for the first release. C-2 is promoted if OQ-4 says home-lab access is needed at v1.0.
 
 ### C-1: Environment variable parsing and validation (3 pts)
 Maps to: FR-12.
@@ -303,7 +304,7 @@ As a developer, I want to tune limits so that I can trade completeness against m
 
 # Epic D: Packaging, ARM builds and docs
 
-**Epic Goal:** A single-binary, dependency-light, ARM-first release with automated builds, tests on ARM, and documentation to swap it in for the incumbent.
+**Epic Goal:** A single-binary, dependency-light, ARM-first release with automated builds, tests on ARM, and documentation to install and register it.
 
 **Success Metric:** Release artifacts for aarch64-linux and macOS arm64; CI green on aarch64; a new user registers the server in Claude Code from the README in under 5 minutes.
 
@@ -320,7 +321,7 @@ As a developer, I want to tune limits so that I can trade completeness against m
 | D-5 | Tool description within 150 words | Low | 1 | 14 | A-5 |
 | D-6 | Licensing, dependency audit and release tag | Medium | 2 | 15 | D-3, OQ-7 |
 
-**MVP Slice:** D-1, D-2, D-4. Rationale: a swap needs a buildable ARM binary and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
+**MVP Slice:** D-1, D-2, D-4. Rationale: a release needs a buildable ARM binary and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
 
 ### D-1: Size- and memory-optimized release profile (2 pts)
 Maps to: FR-15, NFR-13.
@@ -344,12 +345,12 @@ As a developer, I want tests to run on real ARM so that ARM-specific issues are 
 - Given no native runner, when CI runs, then tests run under QEMU and the job states that RSS figures come only from native runs.
 - Given a test failure on aarch64, when CI finishes, then the pipeline fails.
 
-### D-4: README, install and migration guide (2 pts)
+### D-4: README and install guide (2 pts)
 Maps to: US-8, Goal 6.
-As a developer, I want clear install steps so that I can replace the incumbent quickly.
+As a developer, I want clear install steps so that I can register the server quickly.
 - Given the README, when followed on aarch64-linux and macOS arm64, then the server is registered in Claude Code and `fetch` works.
-- Given the README, when read, then it lists environment variables, defaults, limitations (no JS, prompt-injection note), and a section "Replacing mcp__fetch__fetch" with the config diff and rollback.
-- Given the benchmark report exists, when linked, then the README states the measured memory ratio.
+- Given the README, when read, then it lists environment variables, defaults, limitations (no JS, prompt-injection note), and a section "Registering in Claude Code" with the config snippet.
+- Given the benchmark report exists, when linked, then the README states the measured idle and peak memory.
 
 ### D-5: Tool description within 150 words (1 pt)
 Maps to: NFR-09.
@@ -368,15 +369,15 @@ As the project owner, I want a clean v1.0 tag so that the release is auditable.
 
 # Overall MVP Slice (cross-epic)
 
-**Definition:** "Safe to swap in for `mcp__fetch__fetch` on my ARM machines, with the memory claim proven."
+**Definition:** "Safe to run on my ARM machines, with the memory targets proven."
 
 Included (63 points): E-1, A-1, A-2, A-3, E-2, A-4, A-5, A-6, E-3, E-4, A-7, B-1, B-3, B-2, B-5, D-1, D-2, D-4, E-5.
 
 Deferred to post-MVP (v1.0 completion): A-8, A-9, C-1, C-2, C-3, B-4, B-6, D-3, D-5, D-6, E-6.
 
-Rationale: the MVP contains every story needed to (a) prove the memory case, (b) match the incumbent's core behavior, (c) refuse internal addresses, and (d) install on ARM. Charset handling, config knobs, robots.txt and labelling do not affect the swap decision. Trade-off: MVP ships with fixed defaults and UTF-8-only decoding; acceptable for personal use. Cost of adding A-8 early is low (2 pts) and it can be pulled forward if the test set shows encoding failures.
+Rationale: the MVP contains every story needed to (a) prove the memory case, (b) deliver the core fetch behavior, (c) refuse internal addresses, and (d) install on ARM. Charset handling, config knobs, robots.txt and labelling do not affect the release decision. Trade-off: MVP ships with fixed defaults and UTF-8-only decoding; acceptable for personal use. Cost of adding A-8 early is low (2 pts) and it can be pulled forward if the test set shows encoding failures.
 
-**Decision gates:** (1) End of Sprint 0: go/no-go on the memory target from E-1 and A-1. (2) End of Sprint 4: E-3 and E-4 confirm targets before investing in safety and packaging.
+**Decision gates:** (1) End of Sprint 0: go/no-go on the absolute memory targets from E-1 and A-1. (2) End of Sprint 4: E-3 and E-4 confirm targets before investing in safety and packaging.
 
 # Suggested Sprint Order
 
@@ -384,7 +385,7 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 
 | Sprint | Goal | Stories | Points |
 |---|---|---|---|
-| 0 | De-risk: incumbent baseline and crate stack; go/no-go | E-1, A-1 | 6 |
+| 0 | De-risk: benchmark harness/targets and crate stack; go/no-go | E-1, A-1 | 6 |
 | 1 | Walking skeleton and bounded streaming fetch in Claude Code | A-2, A-3 | 8 |
 | 2 | Convert and paginate | A-4, A-5 | 8 |
 | 3 | Harness and content types | E-2, A-6 | 8 |
@@ -442,5 +443,5 @@ Trade-off: Sprint 6 sits below the 80% ceiling only if C-2 is dropped (OQ-4 "no"
 | OQ-4 | Private-host allowlist needed | Michael | C-2 (Sprint 6) |
 | OQ-5 | Untrusted-content labelling | Michael | B-6 |
 | OQ-7 | Distribution and licence | Michael | D-6 |
-| OQ-8 | Exact incumbent and schema compatibility target | Michael | E-1 |
-| OQ-9 | Native aarch64 host/runner for benchmarks | Michael | E-1, E-6, D-3 |
+| OQ-8 | Resolved 2026-09-19: not a replacement; no incumbent; schema is default design | Michael | None |
+| OQ-9 | Resolved 2026-09-19: native aarch64 runner on author's cluster; RAM/OS to be recorded | Michael | None |
