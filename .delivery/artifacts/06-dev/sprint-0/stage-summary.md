@@ -1,0 +1,23 @@
+# Stage 6 Development, Sprint 0: summary (routing metadata)
+- Built: A-1 (converter/HTML spike, spikes/a1), D-7 (release-feature guard, CI workflow, deny.toml, Dependabot), E-1 (bench harness: bench/measure.py, fixtures, scenarios, stand-in server, selftest). Branch sprint-0/spikes, draft PR #2.
+- Revisions 1-6 (reports: revision-N-report.md)
+  - 1: licence field vs OQ-7, marker/--version contract, dependabot, unused fixture-ca removed
+  - 2: INCOMPLETE verdict and gate completeness, empty child-env allowlist, shipped-binary marker refusal, OQ-7 kept open
+  - 3: docs only (exit codes, ADVISORY_PASS is not a result, licence wording)
+  - 4: independent-review blockers: spike clippy in CI, handshake strictness, binary identity checks, EOF sentinel, test job in CI, 50-URL list recorded DEFERRED
+  - 5: spikes/a1/Cargo.lock committed, G7a floor documented, counter race fixed, docs corrections
+  - 6: gzip fixture verification made portable across zlib builds (hosted CI first-run failure)
+- DoD rounds: dod/ (round 1), dod/round-2/, dod/round-3/, dod/round-4/. Round 1: architect and tech-writer NOT_DONE; round 2: architect and QA NOT_DONE; round 3: tech-writer NOT_DONE (2 blocking); round 4: tech-writer DONE (0 blocking, 1 non-blocking). Details in the round files.
+- Independent reviews: independent-review/ (dev + QA, blockers -> revision 4), independent-review-2/ (dev + QA, blocker -> revision 5), independent-review-3/ (dev + QA, no QA blocking; QA F1 partial fetch-less pass), independent-review-4/ (tech-writer, plain-language docs, no blocking). Also adversarial-review.md (no blocking) and docs-plain-language-report.md.
+- UAT: CONDITIONAL GO (preliminary, x86_64 evidence only), uat/uat-report.md. G0 NOT formally met; PR must not be merged as "G0 passed". UAT checkpoint NOT passed by the user.
+- Hosted CI: run 35467631941 failed (gz fixture portability); fixed in 740c0fb (revision 6); run 35470977286 all five checks green.
+- Verified: fmt, clippy -D warnings (root and spikes/a1 feature sets), cargo test --locked, release guard and self-test, bench/selftest.py (stand-in server), actionlint, hosted CI (five checks), cargo-deny as part of hosted CI.
+- NOT verified: cargo-audit never run (nightly audit is D-3); native aarch64 never measured (no ARM host recorded); real product binary never measured (skeleton only, stand-in used); branch protection not configured (docs/ci-branch-protection.md).
+- Known gap G7a: g4a-50mib-cl floor is 0 (architecture 11.2), so a server that skips that fetch can pass that line; the 5 MiB scenarios and handshake still bind. Tighten in Sprint 1.
+- Other tooling gaps: spikes/a1 not fmt-clean; spike clippy covers only partial feature sets; guard tree check covers only the root package.
+- Deferred with owners
+  - E-1 50-URL curated list: project owner, before E-7 (Sprint 2)
+  - macOS build and 10-page converter comparison: pending user decision D-2/A-4
+- Open questions: OQ-5 (before Sprint 2), OQ-7 (before Sprint 9), OQ-3 and OQ-4 (before Sprint 10)
+- User decisions still needed: ARM runner access; branch protection setup; merge condition for PR #2 given CONDITIONAL GO; confirmation of the TLS approach
+- Next: Sprint 1 (A-2 + A-3a) on a new branch after PR #2 merges
