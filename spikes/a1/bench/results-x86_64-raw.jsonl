@@ -1,0 +1,2 @@
+{"binary": "bins/reqwest-lolhtml-stream", "idle_rss_kB_median": 4650.0, "peak_hwm_kB_median": 11122.0, "post_rss_kB_median": 5966.0, "idle_min_max": [4508, 4788], "peak_min_max": [10780, 11584], "all_ok": true, "resp_bytes": 50159}
+{"binary": "bins/ureq-none", "idle_rss_kB_median": 3676.0, "peak_hwm_kB_median": 14082.0, "post_rss_kB_median": 3992.0, "idle_min_max": [3576, 3752], "peak_min_max": [14000, 14288], "all_ok": true, "resp_bytes": 50159}
