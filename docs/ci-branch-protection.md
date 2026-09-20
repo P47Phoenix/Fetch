@@ -2,7 +2,9 @@
 
 **What is this?** CI (continuous integration) is a set of automatic checks that GitHub runs on every change. This file lists those checks and the rule that should stop broken changes reaching `main`. **Who needs it?** The repository owner, who must switch the rule on, and contributors who see a check fail. **What to do first:** read "Read this first" below, then follow "Owner quickstart".
 
-Workflow file: `.github/workflows/ci.yml`. It uses hosted `ubuntu-latest` runners only. It has no self-hosted runner, no secrets and no `pull_request_target`.
+Workflow file: `.github/workflows/ci.yml`. It uses hosted `ubuntu-latest` runners only, with no secrets and no `pull_request_target`. There is no self-hosted runner and none is planned (ADR-007).
+
+A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurement of the A-1 spike on `ubuntu-24.04-arm`. Its job id is `bench`. It is advisory: do NOT add it to the required checks.
 
 ## Read this first: what has and has not been checked
 
@@ -44,7 +46,25 @@ Do this now that the first CI run (pull request #2) has happened. The check name
 
 Success: a pull request shows the five checks, and the merge button stays locked until they pass.
 
-Later stories add more required checks (D-3, E-6). Add them to the rule when they land.
+Later stories add more required checks (D-3, E-6, D-2). Add them to the rule when they land.
+
+### Planned end state: two platform gate jobs (NOT YET EXISTING)
+
+Per ADR-007 the release image is multi-arch and both platforms are hard-gated on their own native hosted runner. Once the release workflow exists, the required set becomes the five checks above plus two platform gate jobs:
+
+| Check | Runner | Status |
+|---|---|---|
+| Platform gate for `linux/amd64` | `ubuntu-24.04` | NOT YET EXISTING. Job id not chosen; match it exactly once it exists. |
+| Platform gate for `linux/arm64` | `ubuntu-24.04-arm` | NOT YET EXISTING. Job id not chosen; match it exactly once it exists. |
+
+Today the required set is still `fmt`, `clippy`, `test`, `deny`, `release-guard`, matching the job ids in `ci.yml`. Do not add the two gate names until they have run once, because GitHub only offers names it has seen. A skipped required job counts as a failure for the release: the publish job needs both gates, and the release is blocked unless both pass.
+
+### Publish job and image visibility (planned)
+
+- Only the publish job gets `packages: write` (and `id-token` and `attestations` write if provenance is added). Every other job keeps the default `contents: read`.
+- The publish job has no fork or pull request trigger. It runs only from a maintainer-controlled event on the default branch or a tag, after both platform gates pass on the same image digest. It adds tags to the tested digest and never rebuilds.
+- Candidate images are pushed by digest and left untagged. Fork pull requests run the same hosted jobs with no secrets and never push an image.
+- GHCR packages are private by default when a workflow first pushes them. Making the package public is a manual setting and is the distribution act that open question OQ-7 (licence and distribution) must come before. Until then anonymous `docker pull` fails. This document does not decide OQ-7.
 
 ## What can go wrong
 

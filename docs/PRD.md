@@ -12,11 +12,11 @@
 
 LLM clients cannot read live web pages on their own. They need a tool that takes a URL and returns content the model can use: clean text, bounded in size, and safe to run from the developer's machine or network.
 
-The author runs MCP servers on ARM hardware (aarch64 Linux and Apple Silicon). On small ARM machines the memory cost of an always-resident MCP server matters. **The purpose of this project is a new fetch MCP server that stays within absolute memory targets on ARM** (idle <= 10 MB RSS; peak <= 40 MB while fetching a 5 MB page), with reliable functional behavior.
+The author runs MCP servers on ARM hardware (aarch64 Linux and Apple Silicon). On small ARM machines the memory cost of an always-resident MCP server matters. **The purpose of this project is a new fetch MCP server that stays within absolute memory targets on ARM** (idle <= 10 MiB RSS; peak <= 40 MiB while fetching a 5 MiB page), with reliable functional behavior.
 
 Secondary concerns carry over from the original draft. Raw HTTP responses are a poor fit for LLMs: HTML is token-heavy, large pages overflow context, and a naive fetcher can be steered to internal network addresses (SSRF) by prompt-injected content.
 
-The product is a small, local MCP server exposing one `fetch` tool. It is written in Rust with the official MCP Rust SDK (`rmcp`), ships as a single binary, streams and bounds all buffering so memory is capped by the configured max download size, converts HTML to markdown, paginates large responses, and blocks unsafe targets by default.
+The product is a small, local MCP server exposing one `fetch` tool. It is written in Rust with the official MCP Rust SDK (`rmcp`), ships as a container image holding one self-contained server binary, streams and bounds all buffering so memory is capped by the configured max download size, converts HTML to markdown, paginates large responses, and blocks unsafe targets by default.
 
 **Decisions recorded**
 - OQ-1 (resolved): the goal is a new fetch MCP server with a small memory footprint on ARM. SSRF protection, determinism and code ownership are secondary benefits.
@@ -28,7 +28,7 @@ The product is a small, local MCP server exposing one `fetch` tool. It is writte
 
 **Assumptions (adjustable)**
 - Async runtime is `tokio`; HTTP client is `reqwest` or `hyper` with `rustls` (no OpenSSL); HTML-to-markdown crate is TBD. All crate choices are unvalidated and are decided in the spike (Epic A, story A-1).
-- Memory targets are absolute (idle <= 10 MB RSS; peak <= 40 MB VmHWM fetching a 5 MB page; median of 10 runs). The benchmark harness and targets are defined in the Sprint 0 story E-1.
+- Memory targets are absolute (idle <= 10 MiB RSS; peak <= 40 MiB VmHWM fetching a 5 MiB page; median of 10 runs). The benchmark harness and targets are defined in the Sprint 0 story E-1.
 - Transport is stdio; single user; runs locally.
 - Target clients are Claude Code and Claude Desktop.
 - Primary platforms (ADR-007, user 2026-09-19): the container image for linux/arm64 and linux/amd64, both native-memory-gated (Linux, macOS via Docker Desktop, Windows via WSL2). Standalone binaries are not released.
@@ -39,14 +39,14 @@ Goal 1 is the primary goal. Goals 2-6 are guardrails that the server must meet t
 
 | # | Goal | Metric | Target | Baseline |
 |---|---|---|---|---|
-| 1a | **Lower idle memory on ARM** | Idle RSS (after MCP `initialize` + `tools/list`, 30 s settle) on aarch64-linux | <= 10 MB RSS (VmRSS), median of 10 runs | none - new |
-| 1b | **Lower peak memory while fetching** | Peak RSS (VmHWM) fetching a 5 MB HTML page on aarch64-linux | <= 40 MB VmHWM, median of 10 runs | none - new |
-| 1c | **Memory capped by max size** | Peak RSS growth when the server returns a 50 MB body with max size 5 MB | Within 10% of the 5 MB-page peak (no unbounded buffering) | none - new |
+| 1a | **Lower idle memory on ARM** | Idle RSS (after MCP `initialize` + `tools/list`, 30 s settle) on aarch64-linux | <= 10 MiB RSS (VmRSS), median of 10 runs | none - new |
+| 1b | **Lower peak memory while fetching** | Peak RSS (VmHWM) fetching a 5 MiB HTML page on aarch64-linux | <= 40 MiB VmHWM, median of 10 runs | none - new |
+| 1c | **Memory capped by max size** | Peak RSS growth when the server returns a 50 MiB body with max size 5 MiB | Within 10% of the 5 MiB-page peak (no unbounded buffering) | none - new |
 | 1d | **Claim proven, not asserted** | Reproducible benchmark against the absolute targets, published in repo | Report exists; run in CI on aarch64 | none - new |
 | 2 | Reliable page retrieval | Offline HTML conversion success on a 50-URL curated snapshot set (checked in A-4, Sprint 4), plus a non-gating 10-URL live smoke of network, TLS, redirect, JSON and plain-text behaviour (owner E-5) | >= 95% | none - new |
 | 3 | Token-efficient output | Median token reduction, HTML to markdown, on the test set | >= 50% | none - new |
 | 4 | Safe by default | Private/loopback/link-local targets blocked in SSRF test suite | 100% of cases | none - new |
-| 5 | Responsive | p95 conversion overhead for a 1 MB page, excluding remote server time (method defined in E-1, checked in A-4) | <= 500 ms | none - new |
+| 5 | Responsive | p95 conversion overhead for a 1 MiB page, excluding remote server time (method defined in E-1, checked in A-4) | <= 500 ms | none - new |
 | 6 | Works in real clients | Server registers and tool call succeeds in Claude Code on aarch64-linux and macOS arm64, by v1.0 | Yes | none - new |
 
 Decision rule: if the spikes show the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped at the go/no-go gate G0 (end of Sprint 0) or the memory gate G4 (G4a end of Sprint 4, idle plus scenarios needing only A-3b and A-4; G4b end of Sprint 5, the window, early-stop and `raw=true` scenarios, which completes the gate), before safety and packaging work (see Section 9).
@@ -105,7 +105,7 @@ As a developer, I want to set limits and an allowlist via environment variables 
 ### US-7: Run a small resident server on ARM
 As a solo developer on ARM hardware, I want the server to use little memory when idle and when fetching so that it does not compete with my other workloads.
 - Given the server has completed the MCP handshake on aarch64-linux, when it is idle for 30 s, then its RSS is within the NFR-10 target.
-- Given a 5 MB page is fetched, when peak RSS is measured, then it is within the NFR-11 target.
+- Given a 5 MiB page is fetched, when peak RSS is measured, then it is within the NFR-11 target.
 - Given a server response larger than the max size, when `fetch` is called, then memory stays bounded and the call returns a size error, unless the response has no `Content-Length` and the requested window completes under the max size (then it succeeds, still bounded).
 
 ### US-8: Install as a tested container image (arm64)
@@ -126,7 +126,7 @@ As the project owner, I want a reproducible benchmark so that I can release base
 | FR-04 | The server must truncate output at `max_length` characters from `start_index` and state the next `start_index` when truncated. | Must | For a 20,000-char page with `max_length=5000`, four sequential calls reproduce the full text with no overlap or gap. |
 | FR-05 | The server must follow up to 5 redirects and re-validate every hop against the SSRF policy. | Must | A redirect chain of 6 fails with a clear error; a redirect to `127.0.0.1` is refused. |
 | FR-06 | The server must block requests to loopback, private (RFC 1918), link-local (incl. 169.254.169.254), and unique-local IPv6 addresses by default, checked on the resolved IP. | Must | SSRF test suite passes for IPv4, IPv6, decimal/hex-encoded IPs, and a DNS name resolving to a private IP. |
-| FR-07 | The server must apply a request timeout (default 15 s) and a maximum download size (default 5 MB, counting wire and decompressed bytes). | Must | A slow server returns a timeout error. Size behaviour, three cases: (1) a response with `Content-Length` above the limit returns a size error (`too_large`) before the body is read; (2) a chunked response with no `Content-Length` whose requested window completes under the limit succeeds; (3) a chunked response whose requested window would extend beyond the limit returns a size error at the limit. |
+| FR-07 | The server must apply a request timeout (default 15 s) and a maximum download size (default 5 MiB, counting wire and decompressed bytes). | Must | A slow server returns a timeout error. Size behaviour, three cases: (1) a response with `Content-Length` above the limit returns a size error (`too_large`) before the body is read; (2) a chunked response with no `Content-Length` whose requested window completes under the limit succeeds; (3) a chunked response whose requested window would extend beyond the limit returns a size error at the limit. |
 | FR-08 | The server must handle content types: convert `text/html`; return `text/*`, `application/json` and `application/xml` as text; reject other binary types with an error naming the type. | Must | A PNG and a PDF return `isError: true` with the content type; JSON returns as text. |
 | FR-09 | The server must send a descriptive `User-Agent` and decode responses by charset from headers or meta tags, defaulting to UTF-8. | Should | A test page in ISO-8859-1 renders correctly; the request carries the configured UA. |
 | FR-10 | The server must return errors as tool results with `isError: true` and a cause-specific message (HTTP status, DNS, timeout, blocked, too large, unsupported type). | Must | Each cause in the list has a test asserting the message and flag. |
@@ -134,8 +134,8 @@ As the project owner, I want a reproducible benchmark so that I can release base
 | FR-12 | The server must read settings from environment variables: timeout, max size, `max_length` cap, concurrency, user agent, allowed private hosts, robots toggle. | Should | Each variable changes behavior in a test; invalid values fail startup with a clear message naming the variable. |
 | FR-13 | The server must write logs to stderr only and must never write non-protocol output to stdout. | Must | A stdio test client receives no malformed messages while requests are logged. |
 | FR-14 | The server must include the final URL (after redirects) and HTTP status in the result header. | Could | Result text begins with the final URL and status when redirects occurred. |
-| FR-15 | The server must build as a single self-contained binary with no runtime (no Node, Python or system OpenSSL) required. | Must | `ldd`/`otool -L` on the release binary shows only libc/system libraries; the binary runs on a clean aarch64-linux container. |
-| FR-16 | The server must read response bodies as a stream and stop reading at the max download size; it must not buffer more than max size plus a documented conversion overhead. | Must | A test server sending an unbounded/50 MB body causes an abort at max size and peak RSS stays within NFR-12. |
+| FR-15 | The released image must contain a single self-contained server binary and need no language runtime (no Node, Python or system OpenSSL) inside the image. | Must | For each platform (`linux/amd64`, `linux/arm64`), the server binary extracted from the image shows only libc/system libraries (`ldd`) or none (static), the image has no shell, package manager or interpreter, and the image starts and completes the MCP handshake on that platform. |
+| FR-16 | The server must read response bodies as a stream and stop reading at the max download size; it must not buffer more than max size plus a documented conversion overhead. | Must | A test server sending an unbounded/50 MiB body causes an abort at max size and peak RSS stays within NFR-12. |
 
 ## 6. Non-Functional Requirements
 
@@ -144,20 +144,20 @@ Memory NFRs (NFR-10 to NFR-14) are the primary acceptance gates. Targets are abs
 | ID | Requirement | Type | Target |
 |---|---|---|---|
 | NFR-01 | Server startup time | Performance | <= 250 ms to ready on aarch64 (tighter than the original 1 s, since no runtime boot) |
-| NFR-02 | Conversion overhead for a 1 MB HTML page | Performance | <= 500 ms p95 |
+| NFR-02 | Conversion overhead for a 1 MiB HTML page | Performance | <= 500 ms p95 |
 | NFR-03 | Peak memory during a max-size fetch | Resource | Superseded by NFR-11 |
 | NFR-04 | Unit and integration test coverage of SSRF, redirect, and pagination logic | Quality | >= 90% line coverage |
 | NFR-05 | Direct dependencies | Maintainability | <= 15 crates (provisional, from spike); `cargo audit` and `cargo deny` clean at release |
-| NFR-06 | Supported platforms | Compatibility | Primary: aarch64-linux (glibc, musl optional) and macOS arm64. Best-effort: x86_64-linux. Stable Rust, MSRV pinned |
+| NFR-06 | Supported platforms | Compatibility | Container image platforms `linux/arm64` and `linux/amd64`, both primary and both native-memory-gated (ADR-007). Linux runs the image directly; macOS via Docker Desktop and Windows via WSL2 run it in a Linux VM. No standalone binary release. One libc flavour is published, chosen under ADR-005 criteria inside the image. Stable Rust, MSRV pinned |
 | NFR-07 | Cookies, credentials and auth headers | Security | Not sent or stored; no persistent state |
 | NFR-08 | Concurrent fetch calls | Reliability | 10 in flight without errors or cross-contamination; peak RSS with 10 in flight documented. Design default `FETCH_MAX_CONCURRENCY` = 3: excess calls queue (at most one timeout for a permit) and all complete |
 | NFR-09 | Tool description | Usability | States purpose, parameters, and pagination usage in <= 150 words |
-| NFR-10 | Idle RSS on aarch64-linux | Resource (primary) | <= 10 MB RSS (VmRSS), median of 10 runs |
-| NFR-11 | Peak RSS fetching a 5 MB HTML page on aarch64-linux | Resource (primary) | <= 40 MB VmHWM, median of 10 runs |
-| NFR-12 | Memory boundedness | Resource (primary) | Peak RSS with a 50 MB response and 5 MB max size within 10% of NFR-11 measurement |
-| NFR-13 | Release binary size | Resource | <= 10 MB stripped, aarch64-linux (provisional) |
+| NFR-10 | Idle RSS on aarch64-linux | Resource (primary) | <= 10 MiB RSS (VmRSS), median of 10 runs |
+| NFR-11 | Peak RSS fetching a 5 MiB HTML page on aarch64-linux | Resource (primary) | <= 40 MiB VmHWM, median of 10 runs |
+| NFR-12 | Memory boundedness | Resource (primary) | Peak RSS with a 50 MiB response and 5 MiB max size within 10% of NFR-11 measurement |
+| NFR-13 | Server binary size in the image | Resource | <= 10 MiB stripped, per platform (`linux/arm64`, `linux/amd64`) (provisional); compressed image size recorded, not gated |
 | NFR-14 | Benchmark reproducibility | Quality | Harness runs from one command; reports median of >= 10 runs; method: `/proc/<pid>/status` VmHWM/VmRSS on Linux, `/usr/bin/time -l` on macOS; run in CI on an aarch64 runner |
-| NFR-15 | ARM build and test | Compatibility | CI builds release binaries for aarch64-linux and macOS arm64 and runs the full test suite on aarch64 (native runner or QEMU documented as fallback) |
+| NFR-15 | Multi-platform build and test | Compatibility | CI builds a per-platform image for `linux/amd64` and `linux/arm64` on native GitHub-hosted runners (`ubuntu-24.04`, `ubuntu-24.04-arm`) and runs the full test suite and memory gates on both. QEMU or emulated runs are not accepted as a gate |
 
 Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by a local HTTP server, one MCP client script; benchmark hosts (GitHub-hosted native arm64 and amd64 runners, both gated, ADR-007), OS, kernel, CPU model, RAM, page size, server version and commit recorded in the report.
 
@@ -181,7 +181,7 @@ Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by
 | 1 | `rmcp` API changes or missing features (pre-1.0 SDK) | Medium | Medium | Michael | Spike A-1; pin version; keep the transport layer thin. |
 | 2 | DNS rebinding bypasses SSRF check | High | Low | Michael | Resolve once, connect to the validated IP (custom resolver/connector), re-check each redirect. Interim window: the full blocked-range table and checks land in A-3a (SSRF core, Sprint 1, before the first fetch-capable build A-3b), not B-1. Release rule: no tagged or distributed build before M3, and pre-M3 builds are not registered in a real MCP client. |
 | 3 | Rust HTML-to-markdown crate quality or memory use (DOM-based crates may hold several times the page size) | High | Medium | Michael | Spike A-1 evaluates crates on quality and RSS; consider streaming rewriter (e.g. `lol_html`) or a size-capped DOM; keep converter behind a trait. |
-| 4 | Absolute memory targets (10 MB idle, 40 MB peak) not achievable with the chosen crates | High | Low-Medium | Michael | Define harness and targets first (E-1) with go/no-go gate before feature work; stop or re-scope if 1a/1b cannot be met. |
+| 4 | Absolute memory targets (10 MiB idle, 40 MiB peak) not achievable with the chosen crates | High | Low-Medium | Michael | Define harness and targets first (E-1) with go/no-go gate before feature work; stop or re-scope if 1a/1b cannot be met. |
 | 5 | Prompt injection in fetched content | High | High | Michael | Cannot be eliminated by the server; document it and label output as untrusted content (see OQ-5). |
 | 6 | Sites block bots or need JS | Low | High | Michael | Accept for v1; document limitation. |
 | 7 | Solo developer time and no stated deadline | Low | Medium | Michael | Spike-first ordering; keep scope to the Must items first. |

@@ -42,11 +42,11 @@ Tool description (draft, <= 150 words): "Fetches a URL and returns its main cont
 ## Consequences
 + No server state, no cache memory; every call bounded identically.
 + Model-friendly units; UTF-8 safe.
-- Each continuation costs a full refetch and reparse up to the requested window: O(start_index) time, O(max_length) memory (spike deep page start 2,000,000: 8.7 MB peak).
+- Each continuation costs a full refetch and reparse up to the requested window: O(start_index) time, O(max_length) memory (spike deep page start 2,000,000: 8.7 MiB peak).
 - Repeated paging of a huge page is O(n^2) total network/CPU; acceptable for the personal-use scope; can be mitigated later by a bounded cache (out of scope).
 - Total length unknown on non-final pages.
 - Converter changes (version upgrades) shift offsets across versions; not an issue within one session.
 - Clamping `max_length` silently changes behavior; mitigated by stating the clamp in the result.
 
 ## What ARM data would flip it
-The schema is not ARM-dependent. Two indirect triggers: (a) if native ARM time for deep-page calls exceeds the 15 s default deadline on realistic 5 MB pages (CPU-bound conversion on slow ARM cores), consider a byte-offset hint or bounded cache; (b) if ARM peak for large `max_length` (the 100,000-char cap) with JSON serialisation copies exceeds the budget in architecture.md 5.1, lower the `max_length` cap default further (e.g. to 50,000). Revisit character units only if the E-1 token analysis shows the model-side mismatch causes context overflow in practice.
+The schema is not ARM-dependent. Two indirect triggers: (a) if native ARM time for deep-page calls exceeds the 15 s default deadline on realistic 5 MiB pages (CPU-bound conversion on slow ARM cores), consider a byte-offset hint or bounded cache; (b) if ARM peak for large `max_length` (the 100,000-char cap) with JSON serialisation copies exceeds the budget in architecture.md 5.1, lower the `max_length` cap default further (e.g. to 50,000). Revisit character units only if the E-1 token analysis shows the model-side mismatch causes context overflow in practice.

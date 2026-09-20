@@ -8,7 +8,7 @@ The `fetch-mcp` binary is a skeleton. It has no MCP server yet, so it does nothi
 
 The licence is not decided yet (open question OQ-7). An Apache-2.0 `LICENSE` file exists, and the project is marked `publish = false` (Cargo will refuse to publish it to the public crates.io registry) until the decision is made.
 
-What has not been checked yet: the automatic checks (CI) ran once on GitHub and passed, but branch protection is not switched on, `cargo-audit` and native aarch64 measurement have not run, and the 10 MB idle and 40 MB peak targets are unverified. Details: [what has and has not been checked](docs/BENCHMARK.md#read-this-first-what-has-and-has-not-been-checked).
+What has not been checked yet: the automatic checks (CI) ran once on GitHub and passed, but branch protection is not switched on, and `cargo-audit` has not run. The 10 MiB idle and 40 MiB peak targets are unverified for the product: only the Sprint 0 spike was measured on a hosted arm64 runner (advisory, well under both targets), and amd64 is not measured yet. The release artifact will be a multi-arch container image (`linux/amd64` and `linux/arm64`) on GHCR, not standalone binaries (ADR-007). Details: [what has and has not been checked](docs/BENCHMARK.md#read-this-first-what-has-and-has-not-been-checked).
 
 ## Where to go next
 

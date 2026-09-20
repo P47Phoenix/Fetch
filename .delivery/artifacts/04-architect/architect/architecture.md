@@ -13,13 +13,13 @@ Read in full: PRD v0.3, EPICS, A-1 report, spike source.
 |---|---|---|
 | New tool, not a replacement; no incumbent baseline (OQ-8) | Decision already made | PRD 1 |
 | Rust, official `rmcp`, stdio (OQ-2) | Decision already made | spike pinned rmcp 3.4.0 |
-| Absolute targets: idle <= 10 MB VmRSS, peak <= 40 MB VmHWM on 5 MB page, median of 10; 50 MB body bounded within 10% (NFR-10..12) | Decision already made | PRD 6 |
+| Absolute targets: idle <= 10 MiB VmRSS, peak <= 40 MiB VmHWM on 5 MiB page, median of 10; 50 MiB body bounded within 10% (NFR-10..12) | Decision already made | PRD 6 |
 | Params `url`, `max_length`, `start_index`, `raw`; defaults 5000/0/false | Decision already made (default design, not compat contract) | FR-02, OQ-8 |
 | Benchmarks on a native aarch64 runner (OQ-9; now GitHub-hosted arm64, ADR-007) | Decision already made (amended by user 2026-09-19) | PRD 1 |
 | Streaming/bounded buffering, FR-16 | Decision already made | PRD 5 |
-| DOM converters unusable (htmd 56 MB, html2md 56 MB, html2text 185 MB) | Spike-proven | A-1 3a |
-| Streaming reqwest + lol_html `send` API: 6.1 / 8.7 / 11.1 MB | Spike-proven (x86, crude emitter) | A-1 3b |
-| mimalloc regresses idle to ~11 MB | Spike-proven | A-1 3a |
+| DOM converters unusable (htmd 56 MiB, html2md 56 MiB, html2text 185 MiB) | Spike-proven | A-1 3a |
+| Streaming reqwest + lol_html `send` API: 6.1 / 8.7 / 11.1 MiB | Spike-proven (x86, crude emitter) | A-1 3b |
+| mimalloc regresses idle to ~11 MiB | Spike-proven | A-1 3a |
 | ureq needs spawn_blocking | Spike-proven | A-1 8 |
 | cargo-zigbuild for aarch64 gnu.2.17 + musl | Spike-proven (build only) | A-1 4 |
 | HTTP client (reqwest vs hyper), converter internals, readability approach, SSRF mechanics, allocator/libc, pagination semantics over stream | Open (architect fills) | ADR-001..006 |
@@ -116,9 +116,9 @@ Everything after step 5 is synchronous code called from the async loop; per-chun
 
 Runtime: `tokio` `current_thread`, features `rt,macros,io-std,io-util,net,time` (as in spike). Tool futures must be `Send` (spike finding): lol_html must use `lol_html::send`; converter state lives in one owned struct, shared via `Arc<Mutex<..>>` only where the API forces it.
 
-### 5.1 Memory budget (design allocations tied to the 40 MB peak)
+### 5.1 Memory budget (design allocations tied to the 40 MiB peak)
 
-Budget, not measurement. Unit is MiB (1 MiB = 1,048,576 B); the 40 MB gate is read as 40 MiB-equivalent VmHWM in the benchmark (E-1 defines MB once (10^6 or 2^20, stated in one place) and that single definition is used for every target, fixture and cap; using MB = 10^6 only makes the gate stricter by 4.6%, and the headroom below covers that. All gate figures are the median of 10 valid runs). Idle budget uses the NFR ceiling (10) even though spike idle is 4.6 MB, so a bad ARM idle result still leaves the peak budget intact.
+Budget, not measurement. Unit is MiB (1 MiB = 1,048,576 B); the 40 MiB gate is 40 MiB of VmHWM (40,960 kB as Linux `/proc` reports it, where kB means KiB). The unit is MiB everywhere: every target, fixture and cap (decision 2026-09-19, superseding the earlier open MB-vs-MiB question). All gate figures are the median of 10 valid runs). Idle budget uses the NFR ceiling (10) even though spike idle is 4.6 MiB, so a bad ARM idle result still leaves the peak budget intact.
 
 Per-fetch items (all budgets, worst case per item):
 
@@ -145,7 +145,7 @@ Worked worst cases, per fetch, delta over idle:
 | S1 HTML, default `max_length` 5000, identity or gzip | a+b+c+d+e+f+g+h = 4.43; + window 0.02 + copy 0.02 + frame 0.06 | 4.5 |
 | S2 HTML, `max_length` at cap 100,000, gzip, holdback full | 4.43 + i 0.38 + j 0.38 + k 1.14 | 6.3 |
 | S3 `raw=true` or text/json/xml at cap (no lol_html, emitter, holdback, prescan) | a+b+c+e = 1.17; + 0.38 + 0.38 + 1.14 | 3.1 |
-| S4 50 MB body (any encoding) | same as S1 or S2: no stage retains more than budgeted regardless of body size | 4.5 to 6.3 |
+| S4 50 MiB body (any encoding) | same as S1 or S2: no stage retains more than budgeted regardless of body size | 4.5 to 6.3 |
 | S5 gzip bomb | as S2 (bounded inflate step, cap on decompressed bytes) | 6.3 |
 
 Worst per-fetch delta W = 6.3 MiB (S2). Earlier draft said "6 MiB design ceiling" but summed items were about 8.2 MiB because it counted a 200,000-char cap (window 0.76 MiB, 3 MiB JSON copy) at the same time as the largest converter state; the honest figure at the old cap was ~8.5 MiB. Two changes close the arithmetic: cap 100,000 chars, and concurrency default 3.
@@ -154,17 +154,17 @@ Concurrency: PRD NFR-08 wants 10 in flight without errors. Uncapped: 10 + 10 x 6
 
 Queue wait: to keep deadlines meaningful (Security NB-4) a queued call waits at most `FETCH_TIMEOUT_MS` for a permit, then returns `timeout` (message says "queued too long"); the fetch deadline starts at permit acquisition. Worst caller-observed latency is therefore 2 x FETCH_TIMEOUT_MS. Also cap the tokio blocking pool (`max_blocking_threads` = 4) so timed-out `getaddrinfo` calls cannot accumulate threads.
 
-Spike reference (x86, plain HTTP, crude emitter): 6.1 MB first page, 8.7 MB deep page peak absolute (idle 4.6 => delta 1.5 and 4.1 MB), 11.1 MB raw buffered (removed). The budget is deliberately larger than the spike deltas because the spike emitter is incomplete and TLS/gzip were not exercised.
+Spike reference (x86, plain HTTP, crude emitter): 6.1 MiB first page, 8.7 MiB deep page peak absolute (idle 4.6 => delta 1.5 and 4.1 MiB), 11.1 MiB raw buffered (removed). The budget is deliberately larger than the spike deltas because the spike emitter is incomplete and TLS/gzip were not exercised.
 
-Body cap: `FETCH_MAX_BYTES` default 5 MiB (5,242,880) applies to wire bytes AND to decompressed bytes fed downstream. Because decoding is done by us (flate2 on the raw wire stream, ADR-004), both counters are observable. A 50 MB body therefore cannot cost more than the 5 MB body plus one chunk.
+Body cap: `FETCH_MAX_BYTES` default 5 MiB (5,242,880) applies to wire bytes AND to decompressed bytes fed downstream. Because decoding is done by us (flate2 on the raw wire stream, ADR-004), both counters are observable. A 50 MiB body therefore cannot cost more than the 5 MiB body plus one chunk.
 
 ### 5.2 Early stop
 
-Consequence for measurement: early stop makes the default call cheap, so a benchmark that early-stops cannot demonstrate the NFR-11 peak. Section 11 defines the gating scenarios as ones that force (near) full consumption. The `Window` sink reports `done` as soon as it holds `max_length` chars after `start_index` plus one confirming char. The pump then drops the response (connection closed, no reuse). Deep pages (start_index large) must consume and discard up to `start_index` chars, so cost is O(start_index) time but O(max_length) memory. Spike deep page (start 2,000,000): 8.7 MB peak.
+Consequence for measurement: early stop makes the default call cheap, so a benchmark that early-stops cannot demonstrate the NFR-11 peak. Section 11 defines the gating scenarios as ones that force (near) full consumption. The `Window` sink reports `done` as soon as it holds `max_length` chars after `start_index` plus one confirming char. The pump then drops the response (connection closed, no reuse). Deep pages (start_index large) must consume and discard up to `start_index` chars, so cost is O(start_index) time but O(max_length) memory. Spike deep page (start 2,000,000): 8.7 MiB peak.
 
 ### 5.3 Raw path
 
-`raw=true` and non-HTML text (json/xml/plain) use `convert::text` through the same decoder and `Window`. No full-body buffering (the spike's 11.1 MB raw path was buffered; that path is removed).
+`raw=true` and non-HTML text (json/xml/plain) use `convert::text` through the same decoder and `Window`. No full-body buffering (the spike's 11.1 MiB raw path was buffered; that path is removed).
 
 ## 6. Error Model
 
@@ -200,7 +200,7 @@ Blocked-target errors occur before any connection, so error text cannot reveal L
 
 Status: ACCEPTED by the Product Owner on 2026-09-19 as proposed below; ADR-004 carries the same status. PRD FR-07 and EPICS A-3, E-2, E-4 are amended to the three fixtures.
 
-EPICS E-4 expects a 50 MB body with a 5 MB cap to yield a size error (and A-3 expects a 10 MB body to yield "too large"; FR-07 acceptance is the same). With early stop, a chunked (no Content-Length) 50 MB HTML whose first window fits inside the first 5 MB legitimately succeeds. Proposed rule: Content-Length above cap -> `too_large` immediately; no Content-Length -> stream, succeed if the window completes before the cap, `too_large` if the cap is reached first. Proposed fixture set for E-4 (and E-2, A-3): (1) 50 MB with Content-Length -> `too_large`; (2) 50 MB chunked, window inside cap -> success; (3) 50 MB chunked, requested window beyond cap -> `too_large`. If the PO instead requires a size error for every over-cap body, early stop must be disabled for over-cap chunked bodies (read to cap), which is memory-neutral but costs time. Please confirm before Stage 5 planning.
+EPICS E-4 expects a 50 MiB body with a 5 MiB cap to yield a size error (and A-3 expects a 10 MiB body to yield "too large"; FR-07 acceptance is the same). With early stop, a chunked (no Content-Length) 50 MiB HTML whose first window fits inside the first 5 MiB legitimately succeeds. Proposed rule: Content-Length above cap -> `too_large` immediately; no Content-Length -> stream, succeed if the window completes before the cap, `too_large` if the cap is reached first. Proposed fixture set for E-4 (and E-2, A-3): (1) 50 MiB with Content-Length -> `too_large`; (2) 50 MiB chunked, window inside cap -> success; (3) 50 MiB chunked, requested window beyond cap -> `too_large`. If the PO instead requires a size error for every over-cap body, early stop must be disabled for over-cap chunked bodies (read to cap), which is memory-neutral but costs time. Please confirm before Stage 5 planning.
 
 ## 7. Configuration Surface
 
@@ -232,10 +232,10 @@ Fixed constants (not configurable): max redirects 5, robots cap 512 KB, HTTP/1.1
 
 ## 9. Build and Release (aarch64)
 
-- Profile: `opt-level="s"` (spike), `lto=true`, `codegen-units=1`, `panic="abort"`, `strip=true`. **Pinned early:** D-7 (Sprint 0) fixes these five settings in `Cargo.toml` so G0, G4a, G4b and E-5 measure what ships. D-1 (Sprint 8) finalises the profile (`opt-level` `3` vs `s` against NFR-02) and MUST re-measure idle and peak on the shipped image on the GitHub-hosted arm64 runner (gnu and musl candidates until ADR-005 decides) against 10 MB idle and 40 MB peak; a miss blocks MVP tagging (a failure re-plans Sprint 9). E-5 (Sprint 7) reports on the pinned profile and states that the D-1 re-measure still governs the tag. Install a panic hook that writes to stderr before abort; confirm rmcp itself never logs to stdout (A-2).
+- Profile: `opt-level="s"` (spike), `lto=true`, `codegen-units=1`, `panic="abort"`, `strip=true`. **Pinned early:** D-7 (Sprint 0) fixes these five settings in `Cargo.toml` so G0, G4a, G4b and E-5 measure what ships. D-1 (Sprint 8) finalises the profile (`opt-level` `3` vs `s` against NFR-02) and MUST re-measure idle and peak on the shipped image on the GitHub-hosted arm64 runner (gnu and musl candidates until ADR-005 decides) against 10 MiB idle and 40 MiB peak; a miss blocks MVP tagging (a failure re-plans Sprint 9). E-5 (Sprint 7) reports on the pinned profile and states that the D-1 re-measure still governs the tag. Install a panic hook that writes to stderr before abort; confirm rmcp itself never logs to stdout (A-2).
 - Targets (AMENDED by ADR-007): the release artifact is a multi-arch (`linux/amd64` + `linux/arm64`) container image on GHCR built from per-platform images, not standalone binaries. Inside each ships one of the musl static or gnu binary (`{x86_64,aarch64}-unknown-linux-{musl,gnu}`), one libc flavour for both platforms, chosen by ADR-005. Standalone macOS/gnu/musl binary releases, ad-hoc codesign, per-binary names and checksums are DROPPED from D-2. macOS (Docker Desktop) and Windows (WSL2) users run the linux image in a VM. Deferred (considered, not rejected): Windows containers, arm/v7, 386, riscv64, ppc64le, s390x. Image references: `ghcr.io/<owner>/<repo>:<version>` and `@sha256:<manifest digest>` (final names follow OQ-7).
 - Cross-build method proven in spike: `cargo-zigbuild` with `ziglang` pip package, ~35 s per target on x86 host, both exit 0. ring provider avoids the aws-lc C build; zig cc supplies the C compiler for ring.
-- Runtime QEMU caveat: the gnu.2.17 binary cannot run under qemu-user without a loader (spike). QEMU functional tests therefore cover the musl binary only, or use `QEMU_LD_PREFIX` with an aarch64 sysroot. Spike showed qemu RSS is invalid (13.0/19.5 MB vs 4.7/6.1 MB native x86), so NEVER gate or publish memory from QEMU.
+- Runtime QEMU caveat: the gnu.2.17 binary cannot run under qemu-user without a loader (spike). QEMU functional tests therefore cover the musl binary only, or use `QEMU_LD_PREFIX` with an aarch64 sysroot. Spike showed qemu RSS is invalid (13.0/19.5 MiB vs 4.7/6.1 MiB native x86), so NEVER gate or publish memory from QEMU.
 - FR-15 check in CI: `ldd`/`otool -L` (no OpenSSL; musl shows "statically linked") AND `objdump -T` asserting every required GLIBC symbol version is <= 2.17 (ldd alone does not show this).
 
 ### 9.1 Pinning and reproducibility (resolves DevOps B1)
@@ -297,7 +297,7 @@ Availability (replaces "offline runner"): risk is hosted-runner availability, ar
 | Loopback fixtures | production policy blocks loopback, so tests use a test-only policy constructor behind `#[cfg(any(test, feature = "test-support"))]`; benchmarks use the `bench-loopback` build (11 item 7). It must NOT be reachable from env vars or default features (Security review item) |
 | MCP e2e | stdio client script (rmcp client or Python): handshake, `tools/list` has exactly one tool, call, stdout contains only JSON-RPC while stderr logs (FR-13) |
 | Security additions | each redirect hop builds a fresh request with no inherited headers; test asserts no Authorization/Cookie/Referer is sent on a cross-origin hop; gzip fixtures: stacked/unknown Content-Encoding rejected before decode, multi-member and trailing garbage; `168.63.129.16` blocked; https->http redirect surfaced in the Final URL header; error/log text contains no full URL query |
-| Resource abuse | 50 MB with and without Content-Length; slow-drip; gzip bomb (small wire, huge output); 100k-deep nesting; single 10 MB attribute; header bomb; 6-hop redirect; redirect to `127.0.0.1` and to `file:` |
+| Resource abuse | 50 MiB with and without Content-Length; slow-drip; gzip bomb (small wire, huge output); 100k-deep nesting; single 10 MiB attribute; header bomb; 6-hop redirect; redirect to `127.0.0.1` and to `file:` |
 | Coverage | `cargo llvm-cov`, gate >= 90% lines on `ssrf`, `fetch::redirect`, `convert::window` (NFR-04, B-5) |
 | Quality set | offline snapshots of the 50-URL curated set (E-1) measure CONVERSION success and token reduction (Goals 2, 3), not live fetch success: snapshot success != live success. Add a small non-gating live smoke run (10 URLs, documented) for network/TLS/redirect behaviour. Thresholds (95% success, 50% token reduction) are unproven until A-4 (ADR-002 Proposed); fallback if failing: whole-body mode, `raw=true` escape hatch, and PRD threshold review |
 | ARM | full suite on native aarch64 runner (D-3); QEMU fallback for functional only |
@@ -312,37 +312,37 @@ Promote the spike harness (`bench/gen_fixture.py`, `serve.py`, `measure.py`) int
 3. Peak: one `fetch` per fresh process, read `VmHWM` after the call. Median of >= 10.
 4. Scenarios, split into gating and non-gating (below).
 5. Record per report: host CPU, kernel, `getconf PAGESIZE`, RAM, cgroup limits / container flag, load average before and after, CPU governor, libc (gnu/musl), allocator, binary sha, commit, cargo profile, toolchain version, fixture sha256s. macOS uses `/usr/bin/time -l` (not comparable to VmHWM; reported separately).
-6. Gate decision uses the MEDIAN exactly as the PRD defines it (idle <= 10 MB, peak <= 40 MB, 50 MB run <= 1.10 x the 5 MB run). Exit non-zero on failure. E-3/E-5 release gate is the strict absolute target. E-6 CI is a regression tripwire with two conditions: fail if the median exceeds the absolute target at all, AND fail if the median regresses more than 10% versus the stored last-main baseline (baseline stored as a CI artifact / dedicated branch by the main-push job). The 10% is relative to the stored baseline, never a licence to exceed 40 MB; the two gates are not contradictory.
-7. Bench harness reach and binaries (E-8, CONFIRMED by the user 2026-09-19): the shipped binary's fail-closed policy blocks the loopback fixture server, so the harness uses a second binary built with the compile-time Cargo feature `bench-loopback` (ADR-003; off by default; permits only 127.0.0.0/8 and ::1; every other blocked range still refuses; no runtime switch). Which binary each gate measures: IDLE RSS is gated on the SHIPPED binary (also recorded on the bench build); PEAK RSS (VmHWM) is gated on the BENCH build. To bound fidelity loss the record carries numeric bounds: idle delta bench vs shipped <= 0.5 MB; binary size delta recorded and explained; one public-host 5 MB fetch on the shipped binary within 10% of the bench peak and <= 40 MB; both binaries report the same commit and Cargo.lock hash. Exceeding a bound fails G4a. Figures in reports are labelled by binary. This does not decide OQ-4 (the shipped allowlist question is separate).
+6. Gate decision uses the MEDIAN exactly as the PRD defines it (idle <= 10 MiB, peak <= 40 MiB, 50 MiB run <= 1.10 x the 5 MiB run). Exit non-zero on failure. E-3/E-5 release gate is the strict absolute target. E-6 CI is a regression tripwire with two conditions: fail if the median exceeds the absolute target at all, AND fail if the median regresses more than 10% versus the stored last-main baseline (baseline stored as a CI artifact / dedicated branch by the main-push job). The 10% is relative to the stored baseline, never a licence to exceed 40 MiB; the two gates are not contradictory.
+7. Bench harness reach and binaries (E-8, CONFIRMED by the user 2026-09-19): the shipped binary's fail-closed policy blocks the loopback fixture server, so the harness uses a second binary built with the compile-time Cargo feature `bench-loopback` (ADR-003; off by default; permits only 127.0.0.0/8 and ::1; every other blocked range still refuses; no runtime switch). Which binary each gate measures: IDLE RSS is gated on the SHIPPED binary (also recorded on the bench build); PEAK RSS (VmHWM) is gated on the BENCH build. To bound fidelity loss the record carries numeric bounds: idle delta bench vs shipped <= 0.5 MiB; binary size delta recorded and explained; one public-host 5 MiB fetch on the shipped binary within 10% of the bench peak and <= 40 MiB; both binaries report the same commit and Cargo.lock hash. Exceeding a bound fails G4a. Figures in reports are labelled by binary. This does not decide OQ-4 (the shipped allowlist question is separate).
 8. HTTPS coverage: plain-HTTP fixtures under-measure TLS. Recommendation for E-1: a bench-only build feature that trusts a fixture CA from an env var, never enabled in release (CI asserts absence, 9.2), with one comparison run showing the feature costs no measurable RSS. Alternative: measure TLS against real hosts once, manually. Decision left to E-1. Until decided, the E-5 report template carries the caveat "NFR-11 measured over plain HTTP only".
-9. Release profile: the profile of section 9 (opt-level, lto, panic=abort, strip, codegen-units) is pinned in Sprint 0 (D-7) and every gate and benchmark uses it (with MB defined once in E-1 and the median of 10 valid runs; the harness rejects fewer). D-1 (Sprint 8) re-measures the finalised profile on the shipped build on aarch64 (gnu and musl) within 10 MB idle and 40 MB peak; a miss blocks MVP tagging.
+9. Release profile: the profile of section 9 (opt-level, lto, panic=abort, strip, codegen-units) is pinned in Sprint 0 (D-7) and every gate and benchmark uses it (with MiB defined once in E-1 and the median of 10 valid runs; the harness rejects fewer). D-1 (Sprint 8) re-measures the finalised profile on the shipped build on aarch64 (gnu and musl) within 10 MiB idle and 40 MiB peak; a miss blocks MVP tagging.
 10. Baseline note: PRD has no incumbent (OQ-8); the spike report's "E-1 incumbent baseline" item is obsolete.
 
 ### 11.0 Memory gate split: G0, G4a, G4b
 
-Naming: the memory GATES are G0, G4a and G4b; the scenario IDs G1..G7 in 11.1 are a separate list (the plan's "G4" gate is not the G4 scenario below). Targets are unchanged and not lowered: idle <= 10 MB, peak <= 40 MB, gnu and musl, native aarch64 only (GitHub-hosted arm64 runner, measured inside the image, ADR-007), median of 10 valid runs, on the D-7 profile.
+Naming: the memory GATES are G0, G4a and G4b; the scenario IDs G1..G7 in 11.1 are a separate list (the plan's "G4" gate is not the G4 scenario below). Targets are unchanged and not lowered: idle <= 10 MiB, peak <= 40 MiB, gnu and musl, native aarch64 only (GitHub-hosted arm64 runner, measured inside the image, ADR-007), median of 10 valid runs, on the D-7 profile.
 
 | Gate | When | Content |
 |---|---|---|
-| G0 | end Sprint 0 | A-1 idle <= 10 MB and 5 MB-fetch peak <= 40 MB on native aarch64 (glibc), or a written gap analysis; A-1 re-run under the E-1 protocol or the deviation recorded |
-| G4a | end Sprint 4 | idle (shipped binary) plus the scenarios that need only A-3b and A-4 (full consumption, no window or early stop): (1) 5 MB HTML fully read and converted (G1/G2 read-in-full form), (2) same gzipped, (3) late-landmark holdback-full HTML (G4), (4) 50 MB with Content-Length -> `too_large` (G7a), (5) 50 MB chunked read beyond the cap without a window -> `too_large`; (4) and (5) within 10% of the 5 MB peak. 10-concurrent (G6) recorded, not gating. Includes the shipped-vs-bench record of item 7. Pass: continue to Sprint 5. Fail: stop feature work, memory-reduction sprint (allocator, buffer sizes, converter swap via trait) |
-| G4b | end Sprint 5 (owned by A-5 and A-6; A-6 records the combined result) | scenarios that need A-5 (window at start with early stop, window at end, chunked window inside the cap succeeding (G7b), window beyond cap -> `too_large` (G5, G7c)) and A-6 (`raw=true`, G3), same 40 MB peak, idle re-checked at 10 MB on the shipped binary, the two 50 MB chunked window cases within 10% of the 5 MB peak. Fail: stop before Sprint 6 |
+| G0 | end Sprint 0 | A-1 idle <= 10 MiB and 5 MiB-fetch peak <= 40 MiB on native aarch64 (glibc), or a written gap analysis; A-1 re-run under the E-1 protocol or the deviation recorded |
+| G4a | end Sprint 4 | idle (shipped binary) plus the scenarios that need only A-3b and A-4 (full consumption, no window or early stop): (1) 5 MiB HTML fully read and converted (G1/G2 read-in-full form), (2) same gzipped, (3) late-landmark holdback-full HTML (G4), (4) 50 MiB with Content-Length -> `too_large` (G7a), (5) 50 MiB chunked read beyond the cap without a window -> `too_large`; (4) and (5) within 10% of the 5 MiB peak. 10-concurrent (G6) recorded, not gating. Includes the shipped-vs-bench record of item 7. Pass: continue to Sprint 5. Fail: stop feature work, memory-reduction sprint (allocator, buffer sizes, converter swap via trait) |
+| G4b | end Sprint 5 (owned by A-5 and A-6; A-6 records the combined result) | scenarios that need A-5 (window at start with early stop, window at end, chunked window inside the cap succeeding (G7b), window beyond cap -> `too_large` (G5, G7c)) and A-6 (`raw=true`, G3), same 40 MiB peak, idle re-checked at 10 MiB on the shipped binary, the two 50 MiB chunked window cases within 10% of the 5 MiB peak. Fail: stop before Sprint 6 |
 
 Both platforms (amd64 and arm64) are hard-gated for G4a, G4b and the D-1 re-measure (ADR-007); the amd64 figures are no longer the preliminary x86 spike numbers. A G4a pass does not close the memory gate: the complete gate closes at the end of Sprint 5 (one sprint later than first told). Both need the hosted native runners for both platforms (ADR-007); if either is unavailable they cannot be evaluated and the next sprint does not start. The G1..G7 definitions in 11.1 are the scenario definitions for both parts; where a scenario's window-at-end form needs A-5, its full-read form is used in G4a.
 
 ### 11.1 Gating scenarios (resolves QA B1)
 
-Early stop makes a default call read only the first chunks, so the NFR-11 peak MUST come from scenarios that force near-full consumption. Which scenarios are evaluated at G4a versus G4b is set in 11.0. The gating peak is the MAXIMUM of the per-scenario medians over the scenarios below (measured on the bench build, 11 item 7) (each the median of >= 10 fresh processes); the 40 MB check applies to that maximum.
+Early stop makes a default call read only the first chunks, so the NFR-11 peak MUST come from scenarios that force near-full consumption. Which scenarios are evaluated at G4a versus G4b is set in 11.0. The gating peak is the MAXIMUM of the per-scenario medians over the scenarios below (measured on the bench build, 11 item 7) (each the median of >= 10 fresh processes); the 40 MiB check applies to that maximum.
 
 | ID | Scenario | Forces consumption because |
 |---|---|---|
-| G1 | 5 MB HTML identity, `max_length` = cap, `start_index` set so the window sits at the end of the converted output | early stop cannot fire until the tail is reached |
+| G1 | 5 MiB HTML identity, `max_length` = cap, `start_index` set so the window sits at the end of the converted output | early stop cannot fire until the tail is reached |
 | G2 | same as G1, gzip | adds inflate state |
-| G3 | `raw=true` 5 MB, window at end | raw path, no lol_html |
+| G3 | `raw=true` 5 MiB, window at end | raw path, no lol_html |
 | G4 | HTML fixture whose main-content landmark appears late so the ADR-002 holdback fills to its 256 KiB limit, `max_length` = cap | worst emitter/holdback state (S2) |
-| G5 | 5 MB body with requested window beyond the 5 MiB cap (expects `too_large`) | reads to the cap |
+| G5 | 5 MiB body with requested window beyond the 5 MiB cap (expects `too_large`) | reads to the cap |
 | G6 | 10 concurrent calls (each a G1/G2 mix) | worst concurrent state with semaphore 3 |
-| G7 | 50 MB body: (a) with Content-Length (header abort), (b) chunked, window inside cap, (c) chunked, window beyond cap | boundedness check vs the 5 MB run (rule 6.4, ACCEPTED); G7b/G7c compare with the G1/G5 medians; G7a is trivially small |
+| G7 | 50 MiB body: (a) with Content-Length (header abort), (b) chunked, window inside cap, (c) chunked, window beyond cap | boundedness check vs the 5 MiB run (rule 6.4, ACCEPTED); G7b/G7c compare with the G1/G5 medians; G7a is trivially small |
 
 Non-gating (reported, not part of the peak gate): default-parameter call (`max_length` 5000, start 0), slow-drip (deadline behaviour; timing tolerance +-20% of FETCH_TIMEOUT_MS), TLS comparison run.
 
@@ -445,7 +445,7 @@ Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-g
 
 | Story | Modules / ADR | Notes |
 |---|---|---|
-| E-1 | bench design, section 11 | uses this doc's budgets and scenario list; defines MB once |
+| E-1 | bench design, section 11 | uses this doc's budgets and scenario list; uses MiB throughout |
 | A-1 | done (spike) | inputs to ADR-001, 002, 005 |
 | A-2 | `main`, `server`, `config` (skeleton), `error`, `obs` | schema per ADR-006; stdout purity test |
 | A-3a (SSRF core, 5 pts, Sprint 1) | `ssrf::ranges` full table, `ssrf::resolver` (resolve once, refuse on any blocked answer, return validated set), `ssrf::check_url` and per-hop revalidation function, `ssrf::Policy` fail-closed default plus test-only constructor (14.1) | ADR-003; no HTTP client dependency yet; unit tests with injectable resolver |
@@ -489,10 +489,10 @@ Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner
 
 1. EPICS A-3 acceptance: add the interim-safety criteria of 14.1 (full range table, IP-literal check, resolver filter, per-hop revalidation, integration test refusing 127.0.0.1 / 169.254.169.254 / private-resolving name / redirect to private). Adjust A-3 estimate (5 pts) if the PO judges it necessary. Note B-1 becomes "test depth and hardening" for what A-3 lands.
 2. EPICS release rule: no tagged or distributed build before M3; pre-M3 builds not registered in a real MCP client (PRD Risk 2 mitigation).
-3. EPICS E-4 AC 2, A-3 AC 1 (10 MB body -> "too large") and PRD FR-07 acceptance: amend to the three fixtures of 6.4 IF the PO confirms the proposed rule. Also E-2 fixtures gain header/no-header variants. Must be resolved before Stage 5.
+3. EPICS E-4 AC 2, A-3 AC 1 (10 MiB body -> "too large") and PRD FR-07 acceptance: amend to the three fixtures of 6.4 IF the PO confirms the proposed rule. Also E-2 fixtures gain header/no-header variants. Must be resolved before Stage 5.
 4. PRD/EPICS FR-02 / C-3: `max_length` hard-cap default 100,000 chars (this design) instead of the 200,000 of the earlier draft; PRD does not currently state a cap, so this is a new documented config default.
 5. EPICS E-3 vs E-6: state that E-3/E-5 release gate is strict absolute targets, E-6 CI is a regression tripwire (fail above absolute target OR >10% regression vs stored main baseline).
-6. EPICS E-1: fix the MB vs MiB unit for the 40 MB gate, decide the TLS benchmark approach (11 item 7), and define the 50-URL success metric as conversion success with a non-gating live smoke run.
+6. EPICS E-1: the unit is fixed as MiB (done); decide the TLS benchmark approach (11 item 7), and define the 50-URL success metric as conversion success with a non-gating live smoke run.
 7. EPICS E-2/E-6: record the gating scenarios G1-G7, validity rule and determinism list of section 11; idle samples run in parallel; full matrix nightly.
 8. EPICS D-2/D-3: pinning list (9.1), runner topology and trust (9.2), required status checks, `deny.toml` contents, `--version` flag.
 9. EPICS C-1 / D-4: config-error diagnostics, fixed no-proxy limit, NAT64 note, musl DNS limitation.
@@ -504,7 +504,7 @@ Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner
 | Finding | Resolution |
 |---|---|
 | Architect B-1 memory arithmetic | 5.1 rewritten: 11 labelled items, worked worst case per scenario (S1 4.5, S2 6.3, S3 3.1 MiB), honest note that the old items summed ~8.2-8.5 MiB; cap lowered to 100,000 chars, `FETCH_MAX_CONCURRENCY` 3 so 10 + 3 x 6.3 = 28.9 MiB vs 40; ADR-004 flip formula updated. rmcp clone count flagged UNVERIFIED with A-2 measurement task (R14). No measurement invented. |
-| Architect NB-1 | ADR-001 Options now says ~0.36 MB. |
+| Architect NB-1 | ADR-001 Options now says ~0.36 MiB. |
 | Architect NB-2 | Single rule: initial-URL non-http(s)/userinfo = invalid params; redirect Location non-http(s) = `blocked_target` (6.1, ADR-003, ADR-006). |
 | Architect NB-3 | Decoding done manually with `flate2` on the raw wire stream; reqwest `gzip` feature off; both counters observable; dependency count now 14 (ADR-001, ADR-004). |
 | Architect NB-4 | ADR-002 drop list rewritten; `form` no longer dropped wholesale; only form controls/chrome dropped (form contents kept). Tuned at A-4. |
@@ -532,9 +532,9 @@ Applies the user-approved Sprint Plan and the plan's "Required architecture chan
 
 | Change | Where |
 |---|---|
-| `bench-loopback` Cargo feature (E-8, user-confirmed): off by default, only 127.0.0.0/8 and ::1, second binary from same commit and pinned pipeline, no runtime switch; idle gated on shipped binary, peak on bench build, numeric bounds (idle delta <= 0.5 MB, public-host peak within 10% and <= 40 MB, same commit and Cargo.lock hash) | sec 9, sec 11 item 7, sec 11.2, R12, ADR-003 |
+| `bench-loopback` Cargo feature (E-8, user-confirmed): off by default, only 127.0.0.0/8 and ::1, second binary from same commit and pinned pipeline, no runtime switch; idle gated on shipped binary, peak on bench build, numeric bounds (idle delta <= 0.5 MiB, public-host peak within 10% and <= 40 MiB, same commit and Cargo.lock hash) | sec 9, sec 11 item 7, sec 11.2, R12, ADR-003 |
 | Release guard (D-7, D-2) forbids `test-support`, `bench-loopback` and fixture-CA feature and marker string in release artifacts | sec 9, R12, ADR-003 |
 | Memory gate split G0 / G4a (end S4) / G4b (end S5); complete gate closes end of Sprint 5; scenario IDs G1..G7 kept, gate and scenario naming clarified | sec 11.0, 11.1, ADR-004, ADR-005 |
 | Release profile pinned in D-7 (Sprint 0), D-1 (Sprint 8) re-measures on shipped build, miss blocks MVP tag | sec 9, sec 11 item 9, ADR-005 |
-| Stale wording: ADR-006 200,000 -> 100,000 char cap; MB defined once in E-1, median of 10 valid runs; `ring` is transitive (count 14 unchanged); ADR-001 "~1 MB" -> ~1.3 MB; G7 pairing stated; 13.1 item order | sec 3, 5.1, 11.1, 13.1, ADR-001, ADR-006 |
+| Stale wording: ADR-006 200,000 -> 100,000 char cap; MiB defined once in E-1, median of 10 valid runs; `ring` is transitive (count 14 unchanged); ADR-001 "~1 MiB" -> ~1.3 MiB; G7 pairing stated; 13.1 item order | sec 3, 5.1, 11.1, 13.1, ADR-001, ADR-006 |
 | Story map: 34 stories, A-3a/A-3b split, D-7, E-7, E-8 added; A-8 decoder note aligned | sec 15, 14.1 |

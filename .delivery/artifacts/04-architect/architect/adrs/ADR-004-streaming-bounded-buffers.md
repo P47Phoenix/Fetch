@@ -4,7 +4,7 @@ Status: Accepted for the streaming pipeline. The rule 'size error vs early stop'
 Date: 2026-09-19
 
 ## Context
-Memory must be bounded by configuration, not by response size (FR-16, NFR-12). Spike: buffered pipeline costs ~10 MB for a 5 MB body (Vec + String, growth by doubling), 56 MB with a DOM converter; streaming with early stop: 6.1 MB / 8.7 MB deep; the buffered raw path was 11.1 MB and would not scale to the 50 MB case. Not exercised in the spike: gzip/br, redirects, non-UTF-8 charsets, TLS.
+Memory must be bounded by configuration, not by response size (FR-16, NFR-12). Spike: buffered pipeline costs ~10 MiB for a 5 MiB body (Vec + String, growth by doubling), 56 MiB with a DOM converter; streaming with early stop: 6.1 MiB / 8.7 MiB deep; the buffered raw path was 11.1 MiB and would not scale to the 50 MiB case. Not exercised in the spike: gzip/br, redirects, non-UTF-8 charsets, TLS.
 
 ## Options
 1. Buffer whole body (up to cap), then convert and paginate. Simple; ~2x body + converter. Rejected (measured).
@@ -42,7 +42,7 @@ Raw path cap:
 Content-type gate happens at headers, before reading the body, so binary bodies are never read.
 
 ## Consequences
-+ Memory independent of body size; 50 MB and 5 MB runs cost the same by construction.
++ Memory independent of body size; 50 MiB and 5 MiB runs cost the same by construction.
 + Deep pages cost time O(start_index) not memory.
 - Total content length is unknown for non-final pages (ADR-006).
 - Charset prescan delays the first decode until up to 1024 bytes arrive (negligible).
@@ -52,7 +52,7 @@ Content-type gate happens at headers, before reading the body, so binary bodies 
 - Not measured: gzip and TLS overhead; real emitter.
 
 ## What ARM data would flip it
-- Enable brotli only if native aarch64 peak with a 5 MB brotli page (window <= 16 MiB, or the decoder limited to a smaller window via lgwin cap) stays <= 25 MB and a real-URL set shows meaningful brotli-only failures.
+- Enable brotli only if native aarch64 peak with a 5 MiB brotli page (window <= 16 MiB, or the decoder limited to a smaller window via lgwin cap) stays <= 25 MiB and a real-URL set shows meaningful brotli-only failures.
 - Budgets (architecture.md 5.1): worst-case per-fetch delta W = 6.3 MiB, default concurrency 3, so 10 + 3 x 6.3 = 28.9 MiB versus the 40 gate (the gate is evaluated as G4a at the end of Sprint 4 and G4b at the end of Sprint 5, architecture.md 11.0; peak is measured on the `bench-loopback` build, idle on the shipped binary) (labelled budget, not measurement). Flip rule using MEASURED native aarch64 numbers: choose the largest n such that measured_idle + n x measured_worst_delta <= 32 (keeps >= 8 of the 40 as headroom). Lower n, or shrink chunk/step buffers, if the measured delta exceeds 6.3 MiB; raise n only from measurement (e.g. delta <= 3 MiB allows n = 7 at idle 10).
 - If 16K/64K page-size kernels inflate RSS per buffer, shrink chunk/step buffers (64 KiB -> 16 KiB) first.
 - Allocator effects (fragmentation from many small pushes) are handled in ADR-005.

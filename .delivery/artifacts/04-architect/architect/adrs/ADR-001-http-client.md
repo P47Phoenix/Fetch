@@ -8,7 +8,7 @@ Need TLS HTTP GET with streaming body, timeouts, gzip, custom DNS resolution (fo
 
 ## Options
 1. reqwest 0.13, `default-features=false`, rustls with `ring` provider (installed at start), features for streaming and gzip only.
-2. hyper 1.x + hyper-util + hyper-rustls directly: ~0.36 MB smaller binary (spike: 2799 vs 2436 kB), ~1.3 MB lower buffered peak (spike), but we own redirects, decompression, timeouts, resolver plumbing.
+2. hyper 1.x + hyper-util + hyper-rustls directly: ~0.36 MiB smaller binary (spike: 2799 vs 2436 kB), ~1.3 MiB lower buffered peak (spike), but we own redirects, decompression, timeouts, resolver plumbing.
 3. ureq 3.x: sync; blocking thread per fetch; less control over streaming cancel.
 
 ## Decision
@@ -25,14 +25,14 @@ Option 1 with these settings:
 ## Consequences
 + Less code to own (timeouts, gzip, TLS glue); resolver hook exists.
 + ring builds with zig cc (proven).
-- ~1.3 MB more peak and ~0.4 MB more binary than raw hyper (spike). Inside budget (worst-case per-fetch delta 6.3 MiB, architecture.md 5.1).
+- ~1.3 MiB more peak and ~0.4 MiB more binary than raw hyper (spike). Inside budget (worst-case per-fetch delta 6.3 MiB, architecture.md 5.1).
 - reqwest pulls more transitive crates (audit surface); direct-crate count is unaffected.
 - HTTP/1.1-only fails on rare h2-only origins.
 - webpki-roots freezes trust anchors at build time (release cadence needed).
 - Pool disabled means one TLS handshake per call and per redirect hop; CPU/latency cost on tiny pages, checked against NFR-02 (<= 500 ms overhead p95).
 
 ## What ARM data would flip it
-- Switch to hyper+hyper-util+hyper-rustls if native aarch64 measurements show idle > 8 MB (less than 20% headroom under the 10 MB target) AND hyper-direct recovers >= 1 MB idle or peak; or if binary > 10 MB (NFR-13).
+- Switch to hyper+hyper-util+hyper-rustls if native aarch64 measurements show idle > 8 MiB (less than 20% headroom under the 10 MiB target) AND hyper-direct recovers >= 1 MiB idle or peak; or if binary > 10 MiB (NFR-13).
 - Enable HTTP/2 only if a real-URL test set shows >= 2% failures traced to h2-only origins, and the ARM peak stays within budget with h2 on.
 - Switch roots to platform verifier if webpki-roots costs measurable idle RSS on ARM (compare idle with and without loading roots at start, lazily building the TLS config on first fetch is the first mitigation).
 - Re-enable pooling only if per-call latency fails NFR-02 due to handshakes and ADR-003 review confirms safety.
