@@ -9,7 +9,7 @@ Exit codes: 0 all targets met and report VALID; 1 a target missed; 2 INVALID, IN
 runs, fixture hash mismatch, wrong binary kind or missing/non-executable binary, unimplemented scenario, --gate override or
 incomplete gate set, a boundedness scenario without its 5 MiB reference); 3 --gate requested but host is not native aarch64
 (checked after every other --gate rule, so those refusals are exercisable anywhere).
-Without --gate the run is advisory (record has gating=false). MB = MiB (2**20). Linux only here (macOS: E-2).
+Without --gate the run is advisory (record has gating=false). Sizes are MiB (2**20). Linux only here (macOS: E-2).
 """
 import argparse, concurrent.futures as cf, datetime, json, math, os, platform, queue, statistics, subprocess, sys, threading, time
 import fixtures, serve

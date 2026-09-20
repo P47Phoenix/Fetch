@@ -65,7 +65,10 @@ Each term is explained here once. Later sections use the short form.
 | QEMU | Software that pretends to be another CPU. Its memory figures are not trusted, so QEMU never gates. |
 | ELF | The Linux program file format. The harness reads its header to see the CPU type. |
 | gnu, musl | Two versions of the C library the binary can be built with. Both are measured. |
-| p95 | 95% of results are at or below this value. |
+| p95 | 95% of results are at or below this value. Timings report it only with 20 or more valid samples (nearest-rank). |
+| Timings | Durations the harness records next to memory (section 12). Recorded, not gated. |
+| ready_ms | Time from starting the process to its first valid `initialize` answer. Evidence only; the PRD 250 ms readiness figure is not checked by the harness. |
+| tools_list_ms, first_byte_ms, fetch_ms, total_ms | Other recorded durations, all in milliseconds (section 12). |
 | OQ-n | An open question in the project plan, for example OQ-7 (licence). |
 | E-1, E-2, A-1 ... | Story IDs in `docs/EPICS.md`. |
 
@@ -388,3 +391,36 @@ Caveats, all still open:
 - The hosted VM is an Azure Neoverse-class machine with 4 vCPUs and 16 GB, not the Raspberry Pi 5. The core, memory system and kernel differ. Its page size is 4 KiB, while Pi OS uses 16 KiB pages, which can raise RSS. A pass at 4 KiB does not prove a pass on a Pi. Targets are unchanged.
 - Only two runner instances were sampled.
 - This is arm64 only. amd64 is NOT YET MEASURED on a hosted runner.
+
+## 12. Timings (recorded, not gated)
+
+Alongside memory, the harness records how long each step takes. **These timings are RECORDED, NOT GATED.** No timing changes a verdict, an exit code or whether a sample is valid. The self-test proves this: a server made 300 ms slower gets the same verdict and exit code.
+
+**The PRD 250 ms readiness figure is NOT checked by the harness.** `ready_ms` is evidence only. ADR-007 restates the readiness figure for the container case.
+
+All values are milliseconds from a monotonic clock. Wall-clock time appears only in the `*_utc` stamps.
+
+| Field | Meaning |
+|---|---|
+| `start_utc` | UTC time (ISO-8601, ending `Z`) when the sample started. |
+| `ready_ms` | From just before the process is spawned to the first valid `initialize` result. |
+| `tools_list_ms` | From sending `tools/list` to receiving a valid result. |
+| `first_byte_ms` | Fetch scenarios only. From sending `tools/call` to the fixture server first writing a body byte. It is the server's own stamp, so it approximates when the first byte reached the client. Absent when the server never writes a body (the 50 MiB `Content-Length` case, where the client stops at the headers). |
+| `fetch_ms` | Fetch scenarios only. From sending `tools/call` to receiving its result. |
+| `total_ms` | From sample start until the child process is closed. For the idle scenario this includes the settle wait (30 s by default), so do not compare it with the fetch scenarios. |
+
+How the numbers are summarised:
+
+- Statistics use valid samples only. Invalid samples are still listed in `sample_timings` (with `valid: false`) but do not count.
+- Per key the harness reports `n`, `median`, `min` and `max`. It adds `p95` (nearest-rank) only when there are 20 or more valid samples. Ten samples give no p95.
+- Each scenario carries a `timings` object with `unit`, `gated` (always false), `gating_run` (true only with `--gate`), `standin` (true when `--version` does not start with `fetch-mcp `) and a `label`: "advisory (not a gating run)" or "recorded, not gated". A stand-in run is not evidence about the product.
+
+New JSONL keys: `timings` and `sample_timings` on each scenario record, `run_start_utc` on the `host` record, and `run_start_utc` plus `run_end_utc` on the `summary` record. The hosted arm64 job summary shows a Timings table.
+
+Caveats:
+
+- Hosted cloud VMs are noisy neighbours. Expect a wide min to max range. Use medians and never trust one run.
+- Once a container image exists, `docker run -i` adds daemon, namespace and image-layer startup to `ready_ms`. Measure it as a separate binary kind or wrapper, label it, and do not compare it with a native spawn.
+- The harness reads `/proc` of the spawned process. For `docker run -i` that is the docker client, not the container, so memory would differ too. How to measure the container is a design decision for the container-measurement story.
+- The spawn timer starts before the process is started, so wrapper cost (such as the `sh` exec wrapper in the workflow) is included.
+- Not measured: client-observed first byte, TLS and DNS (loopback HTTP), CPU time, container start, page-cache and cold-start effects, time per idle settle phase.

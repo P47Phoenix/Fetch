@@ -113,10 +113,10 @@ with tempfile.TemporaryDirectory() as d:
         check(f"--gate refuses child env {kv.split('=')[0]}, exit 2 on any host", rc == 2 and "child env" in r[-1]["reason"], f"rc={rc}")
     rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--gate", settle=False)
     check("--gate with a partial G4a set refused as incomplete, exit 2", rc == 2 and "incomplete" in r[-1]["reason"], f"rc={rc}")
-    # boundedness reference absent must never PASS (the QA probe): 30 MiB blow-up on the 50 MB path alone
+    # boundedness reference absent must never PASS (the QA probe): 30 MiB blow-up on the 50 MiB path alone
     for g in ([], ["--smoke"]):
         rc, r = run(*F, *bk, "--scenario", "g4a-50mib-cl", "--peak-target-mib", "1000", "--child-env", "STANDIN_TOOLARGE_ALLOC_MIB=30", *g)
-        check("50 MB scenario without the 5 MiB reference -> INCOMPLETE, exit 2, not a pass",
+        check("50 MiB scenario without the 5 MiB reference -> INCOMPLETE, exit 2, not a pass",
               rc == 2 and r[-1]["verdict"] == "INCOMPLETE" and r[-1]["incomplete"], f"rc={rc} {r[-1]['verdict']}")
     # nonexistent binary and test-support-only marker
     p = subprocess.run([sys.executable, os.path.join(HERE, "measure.py"), "--binary", "/nonexistent/x", "--binary-kind", "shipped",
