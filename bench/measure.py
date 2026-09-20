@@ -223,7 +223,7 @@ def version_of(binary, env_extra):
         return f"unavailable: {e}"
 
 
-def main(argv=None):
+def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", required=True)
     ap.add_argument("--binary-kind", required=True, choices=["shipped", "bench"])
@@ -266,6 +266,10 @@ def main(argv=None):
     if a.runs < 10 and not a.smoke: return refuse(f"--runs {a.runs} < 10 valid runs required (use --smoke for a non-gating check)")
     for n in names:
         if not SCENARIOS[n]["implemented"]: return refuse(f"scenario {n} not implemented yet (needs E-2 fixtures/args or A-5/A-6)")
+    badenv = [kv for kv in a.child_env if "=" not in kv]
+    if badenv: return refuse(f"--child-env entries must be KEY=VAL: {badenv}")
+    nofloor = [n for n in names if SCENARIOS[n]["kind"] == "peak" and "min_bytes" not in SCENARIOS[n]]
+    if nofloor: return refuse(f"peak scenario(s) {nofloor} define no min_bytes early-stop floor (NB-2): refusing rather than defaulting to 0")
     env_extra = dict(kv.split("=", 1) for kv in a.child_env)
 
     bad = fixtures.verify(a.fixtures_dir)
@@ -345,6 +349,17 @@ def main(argv=None):
     summ["note"] = "" if a.gate else "advisory: not a gating run (no --gate); never valid for NFR claims"
     emit(summ)
     return finish(2 if invalid else 1 if missed else 2 if incomplete else 0)
+
+
+def main(argv=None):
+    """Any unexpected harness exception is a plumbing failure (exit 2), never the 'target missed' code 1 (NB-1)."""
+    try:
+        return _main(argv)
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({"kind": "summary", "verdict": "REFUSED", "reason": f"harness error: {type(e).__name__}: {e}"}), flush=True)
+        return 2
 
 
 if __name__ == "__main__":

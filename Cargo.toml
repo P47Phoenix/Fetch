@@ -3,7 +3,7 @@ name = "fetch-mcp"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Low-memory MCP fetch server (Sprint 0 skeleton; D-7)"
+description = "Low-memory MCP fetch server (Sprint 1 skeleton; A-2)"
 
 [features]
 default = []
@@ -15,6 +15,20 @@ test-support = []
 bench-loopback = []
 
 [dependencies]
+# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13 plans 14). A-2 adds 4 (4 of 15).
+# Versions match spikes/a1/Cargo.lock (architecture sec 9.1). NO HTTP client, TLS or network crate until A-3b.
+# 1. rmcp: MCP server, stdio transport, #[tool_router] macros (ADR-001). Exact pin: high-churn 3.x (R5).
+rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
+# 2. tokio: current_thread runtime, minimal features (no "net": nothing here opens a socket). Exact pin (sec 9.1).
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "macros", "io-std", "io-util"] }
+# 3. serde: FetchParams deserialisation.
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+# 4. schemars: JSON schema for the tool input (rmcp uses schemars 1.x).
+schemars = "1"
+
+[dev-dependencies]
+# Test-only, not shipped, not counted against NFR-05: the stdout-purity integration test speaks JSON-RPC.
+serde_json = "1"
 
 # Release profile pinned in D-7 (values from the A-1 spike; architecture sec 9).
 # D-1 (Sprint 8) finalises it (opt-level "s" vs 3) and re-measures on aarch64.

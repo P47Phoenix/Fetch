@@ -1,9 +1,47 @@
-//! fetch-mcp binary skeleton (D-7). `--version` prints the crate version plus a marker for every
-//! forbidden feature compiled in, which keeps the marker strings in the artifact so the release
-//! guard's grep is reliable (a clean release build prints no marker).
+//! fetch-mcp binary. `--version` prints the crate version plus a marker for every forbidden feature compiled
+//! in (keeps the marker strings in the artifact so the release guard's grep is reliable). Otherwise serves MCP
+//! over stdio on a `current_thread` runtime. Stdout carries only protocol frames; logs go to stderr.
 
-fn main() {
+use fetch_mcp::{config::Config, obs, policy::Policy, server::Fetch};
+use rmcp::ServiceExt;
+
+#[allow(clippy::print_stdout)] // --version is the one deliberate stdout print, and it exits before any MCP traffic
+fn print_version() {
+    println!("{}", fetch_mcp::version_line());
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> std::process::ExitCode {
     if std::env::args().any(|a| a == "--version") {
-        println!("{}", fetch_mcp::version_line());
+        print_version();
+        return std::process::ExitCode::SUCCESS;
     }
+    let cfg = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error config {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    obs::log(
+        cfg.log_level,
+        obs::Level::Info,
+        "startup",
+        format_args!("version={}", env!("CARGO_PKG_VERSION")),
+    );
+    match serve().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error serve {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+    let svc = Fetch::new(Policy::default())
+        .serve(rmcp::transport::stdio())
+        .await?;
+    svc.waiting().await?;
+    Ok(())
 }
