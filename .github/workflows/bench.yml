@@ -58,7 +58,7 @@ jobs:
             echo "runner: ${RUNNER_NAME:-unknown} arch=${RUNNER_ARCH:-unknown} image=${ImageOS:-unknown} ${ImageVersion:-unknown}"
             echo "matrix: ${{ matrix.arch }} ${{ matrix.libc }} on ${{ matrix.os }}"
             echo "uname: $(uname -a)"
-            echo "cpu: $(grep -m1 -E '^(model name|Model|Hardware)' /proc/cpuinfo || true)"
+            echo "cpu: $(grep -m1 -E '^(model name|Model|Hardware)' /proc/cpuinfo || true) "
             echo "nproc: $(nproc)"
             echo "MemTotal: $(grep MemTotal /proc/meminfo)"
             echo "PAGESIZE: $(getconf PAGESIZE)"

@@ -4,6 +4,8 @@
 
 Workflow file: `.github/workflows/ci.yml`. It uses hosted `ubuntu-latest` runners only, with no secrets and no `pull_request_target`. There is no self-hosted runner and none is planned (ADR-007).
 
+A third workflow, `.github/workflows/bench.yml` (E-2, E-3), runs job `bench-gate` (amd64 and arm64, gnu and musl, native hosted runners): `--gate` idle RSS on the shipped binary (strict 10 MiB) and the peak scenarios on the bench-loopback build. It fails on a missed target, INVALID/INCOMPLETE or a refusal. It is NOT a required check yet: the owner may add `bench-gate (amd64, gnu)`, `bench-gate (amd64, musl)`, `bench-gate (arm64, gnu)` and `bench-gate (arm64, musl)` after watching a few runs (it takes about 16 minutes and also runs nightly and on pushes to main; fork PRs skip it).
+
 A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurements on `ubuntu-24.04-arm`: job `bench` measures the A-1 spike, job `bench-product` (A-3a) builds and measures the real `fetch-mcp` release binary (idle RSS and `ready_ms`, recorded, not gated). Job `bench-product-peak` (A-3b) runs one 5 MiB fetch on the bench-loopback build and records VmHWM (BENCHMARK section 14). All three are advisory: do NOT add any of them to the required checks.
 
 ## Read this first: what has and has not been checked
