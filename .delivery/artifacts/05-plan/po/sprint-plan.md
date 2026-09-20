@@ -37,7 +37,7 @@ Exit: release profile pinned (D-7); hosted arm64 runner run recorded with OS, ke
 **Gate G0 STATUS: CLOSED AS GO on 2026-09-19 (user decision; see UAT report).** Evidence: hosted native aarch64 A-1 spike run (`.delivery/artifacts/06-dev/sprint-0/arm-bench-report.md`): idle 3.66 MiB gnu / 2.09 musl; 5 MiB page peak 16.3 / 10.49 MiB; 10/10 valid runs; advisory (not `--gate`), Azure aarch64 VM, 4 KiB pages, spike not the product; 50 MiB boundedness not run. Conditions carried forward: see UAT report section 5.
 **Gate G0 (go/no-go), rule as defined:** measurable rule: A-1 measured idle RSS <= 10 MiB and 5 MiB-fetch peak <= 40 MiB (MiB defined once in E-1 and used for every target, fixture and cap, each the median of 10 valid runs under the E-1 protocol on the D-7 profile; A-1 predates the protocol, so its binary is re-run under it or the deviation is recorded) on the GitHub-hosted arm64 runner (glibc, A-1 spike binary; the image build is not needed for G0), or a written gap analysis with a credible path; runner OS/RAM/page size recorded. G0 is now closable by a hosted-ARM run of the A-1 spike; no ARM-runner-access dependency remains. No-go: re-scope PRD Goal 1 before any feature work.
 
-### Sprint 1: Skeleton and SSRF core (8 pts)
+### Sprint 1: Skeleton and SSRF core (8 pts) - STATUS: DONE (PR #5 merged as 090e86c, 2026-09-20)
 **Goal:** A registered `fetch` tool that validates input, and a tested address-blocking core, with no network-capable code yet.
 Stories: A-2 (3), A-3a (5).
 Dependencies: A-1, D-7 (CI). Hosted arm64 runner for the 250 ms readiness check (restate the figure for process start; container start adds runtime latency, decide at Sprint 1). A-3a depends on A-2 (`config`, `error`, `Policy` skeleton).
@@ -229,3 +229,21 @@ Told numbers changed: none in points or counts (97 pts, 34 stories, MVP 73 pts i
 | Unit | "MB" replaced by "MiB" throughout this plan (10 MiB idle, 40 MiB peak, 5 MiB body). Historical log rows were converted mechanically; numeric values unchanged. |
 | Gate G0 | Closed as GO on hosted native aarch64 spike evidence; conditions carried forward in the UAT report (G4a/G4b product gates on BOTH linux/amd64 and linux/arm64; amd64 baseline still from the original x86_64 spike; Pi 5 16K-page pass optional and not done). |
 | Still OPEN | OQ-3 (before Sprint 10), OQ-4 (before Sprint 10), OQ-5 (before Sprint 2), OQ-7 (before Sprint 9 and before the first published image). |
+
+## Revision 9 (2026-09-20): Sprint 1 DONE, Sprint 2 started
+
+Sprint 1 (A-2 + A-3a, 8 pts) is DONE. PR #5 merged to main as 090e86c; hosted CI 8/8 green (as reported by the coordinator at merge). Exit criteria and evidence:
+
+| Exit criterion | Evidence |
+|---|---|
+| `tools/list` shows exactly `fetch` | `tests/stdio.rs` integration test spawns the real binary: one tool `fetch`, four schema properties, `required=["url"]` (A-2 dev-report) |
+| Stdout-purity test passes | A-2 stdout-purity test; `#![deny(clippy::print_stdout)]` in `src/main.rs` proven by probe (cleanup-report item 3) |
+| Ready within 250 ms on ARM | ready_ms median 1.058 ms (0.977 to 1.067) on hosted aarch64 (Azure, 4 KiB pages), A-3a dev-report; A-2 x86_64 median 0.99 ms |
+| A-3a tests pass for every range | table-driven tests per range incl. RFC 9780 `100:0:0:1::/64` added in cleanup (cleanup-report item 1) |
+| Default policy fail-closed | default `Policy` fail-closed; test constructor behind `test-support` |
+| Release guard required and passes | D-7 guard (no `test-support` via `cargo tree -e features` and symbol grep) is a required CI check; clippy also runs `--features test-support` |
+| Gate: no HTTP client crate | none in the dependency tree at end of Sprint 1 |
+
+Stage summary: `.delivery/artifacts/06-dev/sprint-1/stage-summary.md`.
+
+**Sprint 2 (A-3b 5, E-7 2, E-8 1 = 8 pts) started 2026-09-20** on branch `sprint-2/guarded-fetch`. Entry blockers: OQ-5 decision (plan entry criterion; owner: Michael), the 50-URL list and 10-URL smoke list (E-7 prerequisite; owner: project owner). E-8 has no blocker. No implementation has begun.
