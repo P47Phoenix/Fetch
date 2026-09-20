@@ -301,6 +301,10 @@ async fn relative_redirect_is_followed_and_every_hop_is_resolved_once() {
     let (res, text, _) = get(&c, &format!("http://public.test:{}/start", srv.port)).await;
     let f = res.unwrap();
     assert_eq!((f.redirects, text.as_str()), (1, "done"));
+    assert_eq!(
+        f.final_url,
+        format!("http://public.test:{}/final?x=1", srv.port)
+    );
     assert_eq!(r.count(), 2, "one lookup per hop, none more");
     assert_eq!(srv.accepted(), 2, "no connection reuse");
 }

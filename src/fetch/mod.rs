@@ -58,8 +58,10 @@ impl Limits {
 }
 
 /// What a completed fetch read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fetched {
+    /// The URL the body came from: the request URL, or the last redirect target (A-9).
+    pub final_url: String,
     /// Final HTTP status (2xx).
     pub status: u16,
     /// Redirect hops followed.
@@ -163,6 +165,7 @@ impl<R: Resolver> FetchClient<R> {
             }
             let wire_bytes = self.read_body(resp, sink).await?;
             return Ok(Fetched {
+                final_url: parsed.as_str().to_string(),
                 status: status.as_u16(),
                 redirects: hop,
                 wire_bytes,

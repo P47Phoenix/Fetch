@@ -10,7 +10,7 @@
 
 use crate::config::Config;
 use crate::fetch::dns::SystemResolver;
-use crate::fetch::{FetchClient, Limits};
+use crate::fetch::{FetchClient, Fetched, Limits};
 use crate::policy::Policy;
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -116,6 +116,16 @@ impl Fetch {
     }
 }
 
+/// FR-14 (A-9): when a redirect was followed the text begins with the final URL and HTTP status, one line each and a
+/// blank line; with no redirect nothing is added. The header sits outside the `max_length` window.
+#[must_use]
+pub fn with_header(f: &Fetched, body: String) -> String {
+    if f.redirects == 0 {
+        return body;
+    }
+    format!("URL: {}\nStatus: {}\n\n{body}", f.final_url, f.status)
+}
+
 #[tool_router(server_handler)]
 impl Fetch {
     #[tool(description = "Fetch a URL and return its content as markdown")]
@@ -133,7 +143,10 @@ impl Fetch {
             .fetch(&p.url, &mut |text: &str| window.push(text))
             .await;
         Ok(match result {
-            Ok(_) => CallToolResult::success(vec![ContentBlock::text(window.into_text())]),
+            Ok(f) => CallToolResult::success(vec![ContentBlock::text(with_header(
+                &f,
+                window.into_text(),
+            ))]),
             Err(e) => CallToolResult::error(vec![ContentBlock::text(e.tool_text())]),
         })
     }
@@ -141,7 +154,26 @@ impl Fetch {
 
 #[cfg(test)]
 mod tests {
-    use super::Window;
+    use super::{with_header, Window};
+    use crate::fetch::Fetched;
+
+    fn fetched(redirects: usize) -> Fetched {
+        Fetched {
+            final_url: "https://b.example/final".into(),
+            status: 200,
+            redirects,
+            wire_bytes: 4,
+        }
+    }
+
+    #[test]
+    fn header_is_added_only_after_a_redirect() {
+        assert_eq!(with_header(&fetched(0), "body".into()), "body");
+        assert_eq!(
+            with_header(&fetched(2), "body".into()),
+            "URL: https://b.example/final\nStatus: 200\n\nbody"
+        );
+    }
 
     fn win(start: u64, len: u64, parts: &[&str]) -> String {
         let mut w = Window::new(start, len);
