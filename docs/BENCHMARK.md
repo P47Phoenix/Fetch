@@ -10,8 +10,8 @@ Be careful not to read more into this document than it says.
 
 | Item | Status |
 |---|---|
-| Hosted GitHub Actions running this repository's workflow | Run once, on pull request #2. All five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) passed on commit 740c0fb (run 35470977286). One green run is not a trend. |
-| `cargo-deny` (the `deny` job) | Ran once, in that same hosted run, and passed. |
+| Hosted GitHub Actions running this repository's workflow | Has run on several pull requests (first #2, most recently #5); all five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) have passed each time. That is still not a trend claim, and branch protection is not configured yet. |
+| `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. |
 | `cargo-audit` | Never run (not installed on the dev host). |
 | The benchmark scripts | Run against the stand-in, and (advisory only, section 13) against the real `fetch-mcp` idle scenario. Never in a `--gate` run. |
 | The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2). Valid input returns a `not_implemented` error and no network code exists yet (A-3b), so the measured memory is for an early build and will rise. |
@@ -65,7 +65,7 @@ Each term is explained here once. Later sections use the short form.
 | Hosted runner | A short-lived GitHub Actions virtual machine: `ubuntu-24.04` (amd64) or `ubuntu-24.04-arm` (arm64). There is no self-hosted runner. |
 | QEMU | Software that pretends to be another CPU. Its memory figures are not trusted, so QEMU never gates. |
 | ELF | The Linux program file format. The harness reads its header to see the CPU type. |
-| gnu, musl | Two versions of the C library the binary can be built with. Both are measured. |
+| gnu, musl | Two versions of the C library the binary can be built with. Only gnu is measured for the product today (section 7 states the plan). |
 | p95 | 95% of results are at or below this value. Timings report it only with 20 or more valid samples (nearest-rank). |
 | Timings | Durations the harness records next to memory (section 12). Recorded, not gated. |
 | ready_ms | Time from starting the process to its first valid `initialize` answer. Evidence only; the PRD 250 ms readiness figure is not checked by the harness. |
@@ -346,7 +346,7 @@ Output is JSONL: one `host` line, one line per scenario, and one `summary` line 
 - ASLR (address randomisation) is left at its default and recorded.
 - One discarded dry run of the matrix per session, recorded as such.
 - Native-platform preflight (host and inside the container, section 3).
-- Both gnu and musl binaries are run.
+- The plan is to run both gnu and musl binaries. Today only the gnu product binary is measured; musl is built and measured for the A-1 spike only (advisory) and is not yet built for the product (see section 13).
 - No other load on the runner that the job itself starts. The hosted VM has a runner agent and other neighbours, so the load-average rule is recorded and applied, with the baseline taken in the same job.
 
 Skeleton status: the host record, pinned environment, hash check, preflight and binary sha are implemented. The load-average repeat rule, the dry-run discard, the libc/allocator/profile/commit fields (from `--version`) and macOS `/usr/bin/time -l` are E-2.

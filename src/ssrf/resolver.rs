@@ -11,7 +11,11 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 
 /// A name resolver. Implementations must not cache across calls in a way that hides a second lookup from tests.
-pub trait Resolver {
+///
+/// `Send + Sync` so one resolver can be shared (for example in an `Arc`) by concurrent tool tasks, and so the
+/// futures of [`resolve_validated`], [`validate_target`] and [`revalidate_hop`] are `Send` (rmcp requires it).
+/// The trait returns `impl Future`, so it is used through generics, not as `dyn Resolver`.
+pub trait Resolver: Send + Sync {
     /// Resolve `host` to its full answer set.
     fn resolve(&self, host: &str) -> impl Future<Output = io::Result<Vec<IpAddr>>> + Send;
 }
@@ -164,6 +168,25 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::FakeResolver;
     use super::*;
+
+    fn assert_send<T: Send>(_: &T) {}
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    /// Compile-time check: a resolver is shareable across tasks and every validation future is `Send`.
+    #[test]
+    fn resolver_and_validation_futures_are_send() {
+        assert_send_sync::<FakeResolver>();
+        let r = FakeResolver::new();
+        let p = Policy::default();
+        assert_send(&resolve_validated(&r, &p, "a.example", 80));
+        assert_send(&validate_target(
+            &r,
+            &p,
+            "http://a.example/",
+            Origin::Initial,
+        ));
+        assert_send(&revalidate_hop(&r, &p, "http://a.example/"));
+    }
 
     fn sa(s: &str, port: u16) -> SocketAddr {
         SocketAddr::new(s.parse().unwrap(), port)

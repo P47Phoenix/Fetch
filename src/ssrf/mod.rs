@@ -400,6 +400,7 @@ mod tests {
             "http://[3fff::1]/",
             "http://[3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff]/",
             "http://[5f00::1]/",
+            "http://[100:0:0:1::1]/", // RFC 9780 dummy prefix
             "http://[64:ff9b::a00:1]/",
             "http://[64:ff9b::10.0.0.1]/",
             "http://[2002:a00:1::]/",

@@ -36,6 +36,7 @@
 | ::/96 | deprecated IPv4-compatible, blocked whole | RFC 4291 2.5.5.1 | NEW (architect N-security, fail-closed) |
 | 3fff::/20 | documentation | RFC 9637 | NEW |
 | 5f00::/16 | SRv6 SIDs | RFC 9602 (IANA registry) | NEW (found in registry re-check; QA F-3 also named it) |
+| 100:0:0:1::/64 | dummy IPv6 prefix, RFC 9780 | added later in the A-3a cleanup commit (missed by this pass) | NEW |
 
 ### IPv6 embedded-IPv4 forms (judged by the IPv4 table after the rows above)
 | Prefix | Form | Source | Status |
@@ -65,3 +66,6 @@ IANA IPv6 special-purpose registry re-check: everything else listed is either co
 
 ## Verification (local, all exit 0)
 fmt; clippy -D warnings in default, bench-loopback, test-support; cargo test --locked in all three (42/43/42 unit + 10 integration); guard plain and --self-test; python3 bench/selftest.py; actionlint; cargo build --release --locked.
+
+## Correction (A-3a cleanup commit)
+The statement above that "everything else listed" in the IANA IPv6 special-purpose registry is covered was not fully true: `100:0:0:1::/64` (Dummy IPv6 Prefix, RFC 9780, not forwardable) was missing and is now blocked (found by developer DoD round 2, N1). After a further re-check of the registry, no other non-globally-reachable row is missing; the globally reachable rows (`2620:4f:8000::/48`, and parts of `2001::/23`) are handled as stated above. ISATAP and non-well-known NAT64 prefixes are documented as accepted residuals in docs/SSRF.md. History above is left unchanged.

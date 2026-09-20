@@ -64,3 +64,6 @@ Job `bench-product` in `arm-bench.yml` (run 35482584789), native aarch64, Ubuntu
 - No production `Resolver` implementation (needs tokio `net`, added with A-3b). The A-3b merge gate (`a3b_merge_gate`, client constructor taking a `Policy`) is A-3b work.
 - `::a.b.c.d` public-embedded compatible addresses allowed per ADR-003 (see above).
 - Not verified: `cargo deny` locally (not installed; runs in CI); A-2 AC "Claude Code lists fetch" remains a manual step.
+
+## Corrections (added in the A-3a cleanup commit; text above left as written)
+Superseded by fix-pass 1 (`../sprint-1/fix-pass-1-report.md`): `::/96` is now blocked whole, so `::8.8.8.8` and `http://[::8.8.8.8]/` are REFUSED (deviation 2 and the `::/96` embedded-forms row above are no longer true); test counts are now 42 unit + 10 integration (default) at the time of round 2, and 43 unit + 10 in the `bench-loopback` configuration. The IPv6 table also gained `3fff::/20`, `5f00::/16`, SIIT as an embedded form, and (cleanup) `100:0:0:1::/64`.

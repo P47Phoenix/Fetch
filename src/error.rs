@@ -15,7 +15,7 @@ pub enum FetchError {
     BlockedTarget(String),
     /// The name did not resolve (NXDOMAIN, resolver error, empty answer).
     DnsFailure(String),
-    /// Valid input, but fetching does not exist yet (Sprint 1 skeleton). Removed by A-3b.
+    /// Valid input, but fetching does not exist yet. Removed by A-3b.
     NotImplemented,
 }
 

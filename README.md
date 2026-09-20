@@ -78,6 +78,13 @@ Five reply lines, one for each request that has an `id` (the `notifications/init
 
 The error convention: a failed `fetch` is still a normal JSON-RPC `result`, with `"isError":true` and one text item that reads `error[<code>]: <message>`. For `invalid_argument` the message starts with the name of the bad field (here `url`). The codes today are `invalid_argument`, `blocked_target` and the temporary `not_implemented`, which goes away when A-3b lands. The blocked-target message names a category (such as loopback), never the address, so an error cannot reveal what is on your network. See ADR-006 (tool schema, with its dated amendment) for the design.
 
+Two shapes differ from that convention, because they are produced by the MCP library (rmcp 3.4) before our code runs:
+
+- **Wrong-typed or missing arguments** (for example no `url`, or `"max_length":-1`) return `isError: true` with text such as `failed to deserialize parameters: missing field \`url\``, or `failed to deserialize parameters: max_length: invalid value: integer \`-1\`, expected u64`. The field is named, but the text has no `error[invalid_argument]:` prefix. Our own checks (URL scheme, blocked address, and so on) do use the prefix.
+- **Frames the library cannot deserialise** get no reply at all (a client waiting for that `id` would wait forever), and the server keeps running. Examples: a `tools/call` whose `arguments` is nested about 200 levels deep. `"arguments": []` returns JSON-RPC error `-32601` with message `tools/call`, not `-32602`. Invalid UTF-8 or NUL bytes, and `notifications/initialized` sent before `initialize`, end the session (exit code 1, nothing on standard output). None of these can crash or hang the server.
+
+Unknown extra arguments are accepted and ignored, and `max_length` and `start_index` are parsed but not yet range-checked or used (that arrives with A-5 and later stories).
+
 ## Where to go next
 
 | I want to... | Read |

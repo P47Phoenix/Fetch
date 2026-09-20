@@ -541,6 +541,6 @@ Applies the user-approved Sprint Plan and the plan's "Required architecture chan
 
 ## Amendment 2026-09-19 (A-3a fix-pass 1)
 - `url` crate no longer mandated; hand-rolled strict WHATWG-style host parsing is used (ADR-003 amendment). Dependency count 13 of 15 planned; `url = "=2.5.8"` pin removed from 9.1.
-- The IPv6 table gained `::/96` (whole), SIIT `::ffff:0:0:0/96` (embedded v4), `3fff::/20`, `5f00::/16`; `src/ssrf/ranges.rs` is authoritative over the ADR-003 list.
+- The IPv6 table gained `::/96` (whole), SIIT `::ffff:0:0:0/96` (embedded v4), `3fff::/20`, `5f00::/16` (and later `100:0:0:1::/64`, RFC 9780); `src/ssrf/ranges.rs` is authoritative over the ADR-003 list.
 - A-3b merge gate additionally requires a differential test against `url::Url::parse` (dev-dependency only) for host classification, and that the client dials only `Validated.addrs`.
 - `policy` is a top-level module (`src/policy.rs`), not under `ssrf`; `Resolver` is a trait returning `Vec<IpAddr>` (async fn in trait), so A-3b's real resolver needs tokio `net`.

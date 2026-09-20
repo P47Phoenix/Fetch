@@ -11,12 +11,12 @@ A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native a
 | Item | Status |
 |---|---|
 | Rule on `main` (required checks) | NOT YET CONFIGURED. The first CI run has now happened, so the owner can set it. |
-| The workflow on hosted GitHub Actions | Run once, on pull request #2. All five checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) passed on commit 740c0fb (run 35470977286). One green run is not a trend. |
-| `cargo-deny` (the `deny` job) | Ran once, in that hosted run, and passed. It is still not installed on the dev host. |
+| The workflow on hosted GitHub Actions | Has run on several pull requests (first #2, most recently #5), and all five checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) have passed each time. That is still not a trend claim, and branch protection is not configured yet (see below). |
+| `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed.  It is still not installed on the dev host. |
 | `cargo-audit` | Never run anywhere. Not installed on the dev host. |
 | Everything else | Checked only by running its commands locally, plus `actionlint` (a tool that checks workflow files for mistakes). |
 
-Do not read "required checks" as "working checks". They passed once on hosted runners, which shows they can work there, not that they are stable.
+Do not read "required checks" as "working checks". They have passed on hosted runners in a handful of runs, which shows they can work there, not that they are stable.
 
 ## The checks
 
@@ -25,7 +25,7 @@ A "required status check" is a CI job that must pass before a change can be merg
 | Check | Command | Plain meaning |
 |---|---|---|
 | `fmt` | `cargo fmt --check` | Code is formatted the standard way. |
-| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default set and four feature sets (spread across three HTTP backends) | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
+| `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the same with `--features test-support`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default set and four feature sets (spread across three HTTP backends) | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
 | `test` | `cargo test --locked` (includes the SSRF range-table, `check_url`, resolver-filter and per-hop unit tests), then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
 | `deny` | `cargo deny --locked check` (`deny.toml`) | Dependencies have no known security problems and follow our rules. |
 | `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), (c) has no HTTP client crate (reqwest, hyper, ureq, h2 and others) or raw socket crate (mio, socket2 and others) anywhere in the dependency tree, and (d) has no tokio `net` (or `full`) feature enabled anywhere in the graph (checks c and d are Sprint 1 gates from A-3a; A-3b removes both when the client lands). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client and tokio-net checks fail on fake input and can see the real tree. |
@@ -34,7 +34,7 @@ A "required status check" is a CI job that must pass before a change can be merg
 
 ## Owner quickstart: turn on the rule
 
-Do this now that the first CI run (pull request #2) has happened. The check names only appear in GitHub once they have run.
+Do this now that CI has run (first on pull request #2). The check names only appear in GitHub once they have run.
 
 1. Open the repository on GitHub. Go to Settings, then Branches.
 2. Add a rule for `main`.
@@ -74,7 +74,7 @@ A-3a needed no new job: the existing `release-guard` job (id unchanged) is the r
 | `fmt` fails | Code is not formatted. | Run `cargo fmt`, commit the result. |
 | `clippy` fails | A warning was found. | Run the failing command from the table locally and fix what it prints. |
 | `test` fails | A Rust test or the benchmark self-test failed. | Run the four commands in the table locally, in order. |
-| `deny` fails | A dependency problem. This job has passed only once so far, so a failure may also be a set-up problem. | Read the job log. Do not assume the code is at fault. |
+| `deny` fails | A dependency problem. This job has passed only a few times so far, so a failure may also be a set-up problem. | Read the job log. Do not assume the code is at fault. |
 | `release-guard` fails | The message after `guard FAIL:` says which check: a feature outside the allowlist, a `FETCH_MCP_MARKER_` marker in the binary, an HTTP client or raw socket crate in the dependency tree, or a tokio `net`/`full` feature. | See "Release-feature guard" below. If it names an HTTP crate or tokio `net`, a dependency pulled in networking code before A-3b: remove or feature-gate it. Do not edit the ban lists to make it pass. |
 | The merge button is not locked | The rule is not configured yet (this is the current state). | Follow the Owner quickstart. |
 

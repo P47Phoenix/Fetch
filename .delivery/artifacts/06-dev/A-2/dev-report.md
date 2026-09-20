@@ -57,3 +57,6 @@ Use a THROWAWAY config so no real Claude Code setup is touched.
 3. Start Claude Code from that scratch directory (project-scoped `.mcp.json`, approve the server when prompted) and run `/mcp`.
 4. Expect: server `fetch` connected, exactly one tool `fetch`, with parameters `url` (required), `max_length`, `start_index`, `raw`. A call with a valid public URL returns `error[not_implemented]` (A-3b); `http://127.0.0.1/` returns `error[blocked_target]`.
 5. Record the result (pass/fail, Claude Code version, date) in the UAT notes, then delete the scratch directory.
+
+## Corrections (added in the A-3a cleanup commit; text above left as written)
+Superseded: the `validate_url` helper and the "11 default unit" test count describe the A-2 state. URL validation is now `ssrf::check_url` (A-3a, hardened in fix-pass 1) and the counts are 42 unit + 10 integration in the default configuration. See `../sprint-1/fix-pass-1-report.md`.

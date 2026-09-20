@@ -110,6 +110,13 @@ pub const V6_BLOCKED: &[(u128, u8, Kind, &str)] = &[
         Other,
         "reserved (SRv6 SIDs)",
     ),
+    // Cleanup: RFC 9780 dummy IPv6 prefix (IANA registry, not forwardable).
+    (
+        v6([0x0100, 0, 0, 1, 0, 0, 0, 0]),
+        64,
+        Other,
+        "reserved (dummy prefix)",
+    ),
 ];
 
 const fn mask32(prefix: u8) -> u32 {
@@ -355,7 +362,8 @@ mod tests {
             "2001:200::1", // just past 2001::/23
             "2001:db7::1",
             "2001:db9::1",
-            "100:0:0:1::1", // just past 100::/64
+            "100:0:0:2::1", // just past the 100:0:0:1::/64 dummy prefix
+            "100:1::1",     // just past 100::/64
             "fbff::1",      // just below fc00::/7
             "fe7f::1",      // just below fe80::/10
             "64:ff9a::1",
@@ -490,6 +498,12 @@ mod tests {
                 "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
                 Some("5eff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
                 Some("5f01::"),
+            ),
+            (
+                "100:0:0:1::",
+                "100:0:0:1:ffff:ffff:ffff:ffff",
+                None, // the address before it is inside 100::/64, also blocked
+                Some("100:0:0:2::"),
             ),
             (
                 "::ffff:0:0:0",

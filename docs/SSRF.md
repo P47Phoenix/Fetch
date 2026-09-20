@@ -2,13 +2,13 @@
 
 **What is this?** SSRF (server-side request forgery) is when a program is tricked into fetching an address inside a private network. Fetch defends against it by refusing to connect to any address on the lists below. **Who needs it?** Contributors changing the blocking code, and anyone asking "why was my URL refused?". **What to do first:** read "How the rule works", then find your address in the tables.
 
-The authoritative source is the code: [`src/ssrf/ranges.rs`](../src/ssrf/ranges.rs) (tables `V4_BLOCKED` and `V6_BLOCKED`, and the embedded-IPv4 handling in `classify_v6`). If this page and the code disagree, the code wins; please fix this page. The design and its reasons are in [ADR-003](../.delivery/artifacts/04-architect/architect/adrs/ADR-003-ssrf-dns-resolve-and-pin.md) (with its dated amendment). The list follows the IANA special-purpose address registries plus the cloud metadata addresses. Status today: A-3a (the checking code) is done; the download that will use it arrives in A-3b, so nothing is fetched yet.
+The authoritative source is the code: [`src/ssrf/ranges.rs`](../src/ssrf/ranges.rs) (tables `V4_BLOCKED` and `V6_BLOCKED`, and the embedded-IPv4 handling in `classify_v6`). If this page and the code disagree, the code wins; please fix this page. The design and its reasons are in [ADR-003](../.delivery/artifacts/04-architect/architect/adrs/ADR-003-ssrf-dns-resolve-and-pin.md) (with its dated amendment). The list is checked against the IANA special-purpose address registries (every IPv4 and IPv6 row that is not globally reachable is blocked, including the RFC 9780 dummy prefix) plus the cloud metadata addresses. Two globally reachable registry blocks are handled deliberately: `2620:4f:8000::/48` (AS112 delegation) passes, and the globally reachable parts of `2001::/23` are blocked whole (fail closed). Status today: A-3a (the checking code) is done; the download that will use it arrives in A-3b, so nothing is fetched yet.
 
 ## How the rule works
 
 - Fail closed: an address on these lists is refused, and anything the code cannot understand is refused too.
 - Every rule below applies to every request, on every redirect step, and to every address a host name resolves to. One blocked address is enough to refuse the whole host.
-- Only loopback (`127.0.0.0/8` and `::1`) can be relaxed, and only by a test or benchmark build policy (`test-support` or `bench-loopback`, which never ship in a release). The shipped program blocks loopback like everything else. Cloud metadata addresses are blocked under every policy.
+- Only loopback can be relaxed (`127.0.0.0/8`, `::1`, and loopback in any embedded form such as `::ffff:127.0.0.1`, SIIT, NAT64 or 6to4 of a `127.x` address), and only by a test or benchmark build policy (`test-support` or `bench-loopback`, which never ship in a release). The shipped program blocks loopback like everything else. Cloud metadata addresses are blocked under every policy.
 - A refusal is reported as `error[blocked_target]: ...` with a category word such as "private" or "loopback". The address itself is never shown.
 
 ## IPv4
@@ -47,6 +47,7 @@ The authoritative source is the code: [`src/ssrf/ranges.rs`](../src/ssrf/ranges.
 | ::/96 | deprecated IPv4-compatible, blocked whole (fail closed) | RFC 4291 section 2.5.5.1 |
 | 3fff::/20 | documentation | RFC 9637 |
 | 5f00::/16 | SRv6 segment identifiers | RFC 9602 and the IANA registry |
+| 100:0:0:1::/64 | dummy IPv6 prefix (not forwardable) | RFC 9780 |
 
 ## IPv6: addresses that contain an IPv4 address
 
@@ -59,9 +60,26 @@ These forms are judged by the IPv4 table above, using the IPv4 address inside th
 | 64:ff9b::/96 | NAT64; IPv4 address is the low 32 bits | RFC 6052 |
 | 2002::/16 | 6to4; IPv4 address is in bits 16 to 48 | RFC 3056 |
 
+## URL-level rules (applied before any address check)
+
+These are enforced by `check_url` in `src/ssrf/mod.rs`, under the shipped policy:
+
+- Only `http` and `https` URLs are accepted.
+- The names `localhost` and `*.localhost` are refused by name.
+- Every IPv4 spelling is folded to one address before the table is applied: decimal (`2130706433`), octal (`0177.0.0.1`), hex (`0x7f.1`), and 1 to 4 parts (`127.1`). A host whose last label is numeric is either a valid IPv4 address or refused, never treated as a name.
+- Userinfo (anything before an `@`) is refused, and so is a zone id (`%` in the host).
+- Non-ASCII hosts are refused whole: an internationalised name typed in Unicode is refused, not converted. Only the ASCII punycode form (`xn--...`) is accepted, and it is passed to the resolver like any name.
+- Port `0`, or a port that does not fit 16 bits, is refused. There is no port allowlist yet.
+- One trailing dot on a name is stripped; two are refused.
+
 ## Deliberately not blocked
 
 Public addresses pass, including neighbours of blocked ranges (for example `100.63.255.255`, `172.32.0.0` and `168.63.129.17`). Unallocated IPv6 space outside `2000::/3` is not blocked as a whole; that wider choice is flagged for story B-2. A private-host allowlist (OQ-4) is not decided and does not exist.
+
+Accepted residual risks (decision: do not over-block; fail-closed everywhere the code can tell the address is non-public):
+
+- **ISATAP.** An address such as `2606:4700::5efe:a00:1` (public prefix, interface id `::5efe:` plus a private IPv4) passes, because ISATAP has no fixed prefix and is only meaningful if the host has an ISATAP interface, which is not normal in a container. Blocking every `::5efe:` interface id was considered and not done, to avoid over-blocking; revisit if a deployment ever has an ISATAP interface.
+- **Non-well-known NAT64 prefixes.** Only `64:ff9b::/96` (RFC 6052) and `64:ff9b:1::/48` are recognised. A network-specific NAT64 prefix that embeds a private IPv4 cannot be detected from the address alone.
 
 ## Changing the table
 

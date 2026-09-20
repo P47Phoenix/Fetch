@@ -2,6 +2,9 @@
 //! in (keeps the marker strings in the artifact so the release guard's grep is reliable). Otherwise serves MCP
 //! over stdio on a `current_thread` runtime. Stdout carries only protocol frames; logs go to stderr.
 
+// FR-13: the binary crate is its own crate root, so lib.rs's deny does not reach it.
+#![deny(clippy::print_stdout)]
+
 use fetch_mcp::{config::Config, obs, policy::Policy, server::Fetch};
 use rmcp::ServiceExt;
 

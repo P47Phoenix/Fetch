@@ -1,4 +1,4 @@
-//! fetch-mcp library (A-2 walking skeleton, A-3a SSRF core): config, errors, stderr logger, fail-closed `Policy`, the
+//! fetch-mcp library (A-2 stdio server, A-3a SSRF core): config, errors, stderr logger, fail-closed `Policy`, the
 //! `ssrf` module (range table, URL and IP-literal checks, resolver filter) and the
 //! stdio MCP `fetch` tool with a validated schema. There is deliberately NO network code and NO HTTP
 //! client dependency yet (Sprint 1 gate); fetching arrives in A-3b behind A-3a's SSRF checks.
