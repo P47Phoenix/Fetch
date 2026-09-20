@@ -1,6 +1,6 @@
 # Epics and Stories: Fetch MCP Server (Rust, low-memory, ARM)
 
-Source: `docs/PRD.md` v0.4 (34 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19; D-7 and E-7 added in plan revision 1; E-8 added in plan revision 2 and CONFIRMED by the user on 2026-09-19). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features.
+Source: `docs/PRD.md` v0.4 (34 stories in total; A-3 was split into A-3a and A-3b on 2026-09-19; D-7 and E-7 added in plan revision 1; E-8 added in plan revision 2 and CONFIRMED by the user on 2026-09-19). Story IDs use the epic letter. Sizes are Fibonacci points (1,2,3,5,8); no story exceeds 8. "Spike" stories are time-boxed and produce a decision, not shipped features. **Revision (ADR-007, user decisions 2026-09-19):** memory gates run natively on GitHub-hosted runners for BOTH linux/amd64 (`ubuntu-24.04`) and linux/arm64 (`ubuntu-24.04-arm`), no self-hosted runner; the release artifact is a multi-arch GHCR image published only after both platform gates pass on the exact digests; standalone binary releases are dropped. D-2 re-estimated 5 to 8 (unvalidated); total 97 to 100 points, MVP 73 to 76, MVP now end of Sprint 10 (D-4 moves), v1.0 still Sprint 12; D-3 flagged for downward re-estimate; E-2, E-3, E-4, D-1 keep their points with the amd64 matrix noted as a risk (E-2 has zero slack in Sprint 3: A-9 moves to Sprint 5 first if needed).
 
 Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment capped at 80% (8 points).
 
@@ -9,7 +9,7 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 1. **Risk first.** The whole project is justified by a memory claim (PRD Goal 1). The benchmark harness and absolute targets (E-1) and the `rmcp`/crate spike (A-1) run first, because a failed memory case or an unworkable crate stack invalidates everything later. Cost of delay on these is negative: building features first risks wasted work.
 2. **Measure early, not last.** The benchmark harness (E-2 to E-4) lands right after the first streaming fetch, so memory regressions are caught while the code is small. Trade-off: some harness effort is spent before all features exist; accepted.
 3. **Value density.** Core fetch (A) delivers the core value. Network safety (B) is next because an unsafe fetcher is not acceptable. Config (C) and polish stories follow. robots.txt and content labelling are lowest value density and depend on open questions, so they go last.
-4. **Packaging (D) split.** The aarch64 cross-build is proven in A-1 (risk), automated in D-2 mid-project, and docs/release finish at the end.
+4. **Packaging (D) split.** The aarch64 cross-build is proven in A-1 (risk); D-2 (Sprint 9) builds, tests by digest and publishes the container image (ADR-007); docs/release finish at the end.
 5. **Interim safety.** Because the first fetch-capable build (A-3b, Sprint 2) precedes B-1 (Sprint 6), the full SSRF range table and checks land first in A-3a (Sprint 1), and A-3b cannot merge without them (architecture 14.1). B-1/B-2/B-3 own test depth and hardening.
 
 ## Release Rules (binding, from Stage 4 architecture)
@@ -60,7 +60,7 @@ Assumed capacity: solo part-time, about 10 points per 2-week sprint; commitment 
 Maps to: NFR-10, NFR-11, NFR-14, Goals 1a, 1b, 2, 3.
 As a solo developer, I want the measurement method and absolute memory targets fixed up front so that the go/no-go decision rests on agreed numbers.
 - Given the targets, when the spike ends, then a one-page result states idle RSS (VmRSS) <= 10 MB and peak RSS (VmHWM) <= 40 MB while fetching a 5 MB page, each as the median of 10 valid runs, and states once whether MB means 10^6 or 2^20 bytes for the 10 MB, 40 MB and 5 MB figures and the 5 MB fetch cap (one unit, applied consistently in the harness, fixtures, config default and report; other documents refer to this definition).
-- Given the benchmark host, when the spike ends, then the result records it as the author's native aarch64 runner, with OS and RAM captured (values to be filled in when known).
+- Given the benchmark host, when the spike ends, then the result records a per-platform host-facts table for the GitHub-hosted arm64 runner (`ubuntu-24.04-arm`) and amd64 runner (`ubuntu-24.04`) (public repo; ADR-007; cloud VMs, not the Pi 5 cluster), each with OS, kernel, CPU model, RAM and `getconf PAGESIZE` captured from the actual run. The A-1 spike is re-run on both under the protocol; the earlier x86 figure is preliminary.
 - Given the measurement protocol, when written, then it defines the handshake and 30 s idle procedure, the 5 MB, 50 MB (with and without `Content-Length`) and slow-drip fixtures, the MCP client script, and the `/proc/<pid>/status` read method.
 - Given plain-HTTP fixtures under-measure TLS, when the spike ends, then it decides the TLS benchmark approach (bench-only fixture-CA build feature absent from release builds, or a one-off manual run against real hosts); until decided, reports carry the caveat "NFR-11 measured over plain HTTP only".
 - [DEFERRED, owner: project owner, user decision Sprint 0 revision 4: the 50-URL list and the 10-URL smoke list are not produced in Sprint 0 and must exist before E-7 starts in Sprint 2] Given the 50-URL curated set, when defined, then it lists the URLs as offline snapshots used for conversion success rate and token reduction (Goals 2 and 3); the success metric is conversion success, not live fetch success, and a small non-gating live smoke run (10 URLs) covers network, TLS and redirect behaviour.
@@ -79,9 +79,9 @@ As the project owner, I want a one-command harness so that memory measurements a
 - Given fixtures, when the harness starts, then it provides a 5 MB HTML page, a 50 MB body served both with and without `Content-Length` (chunked), a gzip variant, and a slow-drip response; each fixture is generated from a fixed seed with a committed sha256 and size in a manifest, and the harness refuses to run on a hash mismatch.
 - Given the gating scenarios G1-G7 (5 MB HTML window at end; same gzip; `raw=true`; late-landmark holdback-full HTML; window beyond the 5 MiB cap expecting `too_large`; 10 concurrent calls; 50 MB with Content-Length, chunked window inside cap, chunked window beyond cap), when the harness runs, then the gating peak is the maximum of the per-scenario medians, excluding the 10-concurrent scenario, which is recorded and reported (see E-4) and does not gate. Assignment: G4a (end of Sprint 4) uses only full-consumption scenarios that need A-3b and A-4 (5 MB HTML fully read and converted, same page gzipped, late-landmark holdback-full HTML, 50 MB with Content-Length, 50 MB chunked read without a window beyond the cap); G4b (end of Sprint 5) adds the scenarios that need A-5 or A-6 (window at start, window at end, `raw=true`, chunked window inside the cap, window beyond the cap). This story keeps the scenario definitions and harness runnable for all of them; the G4b runs are owned by A-5 and A-6.
 - Given the validity rule, when a run early-stops before reading the expected amount (fixture server byte counter below the manifest `expected_min_bytes`), then that sample is invalid, and fewer than 10 valid samples for any scenario makes the whole report INVALID.
-- Given Sprint 3 precedes the D-2 pipeline, when the harness builds the gnu and musl binaries, then it uses a documented interim build script derived from the A-1 spike with `cargo-zigbuild` and `ziglang` versions pinned from the start (D-2 later adopts the same pins), and the native aarch64 runner is provisioned per architecture 9.2 (isolated, no fork PRs, no secrets) with OS and RAM recorded.
+- Given Sprint 3 precedes the D-2 pipeline, when the harness builds the gnu and musl candidate images for BOTH linux/amd64 and linux/arm64 (natively on the matching hosted runner, ADR-007), then it uses a documented interim build script derived from the A-1 spike with `cargo-zigbuild` and `ziglang` versions pinned from the start (D-2 later adopts the same pins), and the hosted amd64 and arm64 runner jobs follow architecture 9.2 (hosted, least-privilege token, no `pull_request_target`, no secrets on fork PRs) with OS, RAM, CPU model and page size recorded.
 - Given the shipped binary blocks loopback, when the harness runs peak-RSS scenarios, then it targets the `bench-loopback` build from E-8 (built from the same commit, Cargo.lock hash and release profile as pinned in D-7 by the same interim pinned script, and both binaries report commit and Cargo.lock hash in `--version` so the harness can assert they match), refuses a peak run against a binary lacking the bench marker, refuses a bench-marked binary for the shipped-binary idle check, and labels every figure with the binary used; idle RSS is also run on the shipped release binary (no fetch needed).
-- Given Sprints 3-8 have no D-2 pipeline, when this story closes, then it creates the minimal self-hosted workflow (nightly and manual dispatch; main and tag triggers are added by D-2) restricted per architecture 9.2, or documents that runs are manual until D-2.
+- Given Sprints 3-8 have no D-2 pipeline, when this story closes, then it creates the hosted benchmark workflow as a two-platform matrix (`ubuntu-24.04` and `ubuntu-24.04-arm`; nightly, manual dispatch and same-repo PRs; the tag trigger with the digest gate is added by D-2) per architecture 9.2, running the harness against the container image (process VmRSS/VmHWM read from `/proc/<pid>/status`, ADR-007 and 9.3), not a bare binary.
 - Given the determinism list (fresh process per sample, pinned child environment, recorded page size, THP, governor and load average, native-ARM preflight refusing QEMU, both gnu and musl binaries), when the harness runs, then it applies and records each item; idle samples may run in parallel processes; the full matrix runs nightly and on main and tag builds.
 
 ### E-3: Idle RSS measurement and target check (2 pts)
@@ -112,10 +112,10 @@ As the project owner, I want a written report so that I can decide to release an
 ### E-6: CI regression gate on aarch64 (3 pts)
 Maps to: NFR-14, NFR-15.
 As the project owner, I want CI to fail on memory regressions so that the saving persists.
-- Given a pull request, when CI runs on an aarch64 runner, then it executes the E-3 and E-4 checks against the built binary.
+- Given a pull request, when CI runs on the hosted amd64 and arm64 runners, then it executes the E-3 and E-4 checks against the built binary.
 - Given the median idle or peak RSS exceeds the absolute target, or regresses more than 10% against the stored last-main baseline, when CI runs, then the job fails and prints the figures. The 10% is relative to the baseline and never a licence to exceed the absolute target; E-6 is a regression tripwire, while the release gate (E-3/E-5) is the strict absolute target.
 - Given E-6 lands (this story creates the memory-gate job), when it is merged, then the memory-gate job is added as a required status check and the release workflow from D-2 is updated to depend on it (moved here from D-2, plan revision 1).
-- Given no aarch64 runner is available, when CI runs, then the job fails or blocks (a skipped job never reads as green: it is a required status check and the release workflow depends on it); a documented manual run of the same bench command on the same runner, attached to the release, is accepted as equivalent.
+- Given a hosted runner (either platform) is unavailable or its job is skipped, when CI runs, then the job fails or blocks (a skipped job never reads as green: it is a required status check and the release workflow depends on it); the only accepted fallback is a `workflow_dispatch` re-run against the same image digest; a local or Pi run is informational and is not accepted as release evidence (ADR-007).
 
 ### E-7: Offline 50-URL snapshot set (2 pts)
 Maps to: Goals 2 and 3 (inputs for A-4).
@@ -379,58 +379,60 @@ As a developer, I want to tune limits so that I can trade completeness against m
 
 # Epic D: Packaging, ARM builds and docs
 
-**Epic Goal:** A single-binary, dependency-light, ARM-first release with automated builds, tests on ARM, and documentation to install and register it.
+**Epic Goal:** A dependency-light, ARM-first release delivered as a tested container image on GHCR (ADR-007), with automated builds, tests on native arm64, and documentation to pull and register it.
 
-**Success Metric:** Release artifacts for aarch64-linux and macOS arm64; CI green on aarch64; a new user registers the server in Claude Code from the README in under 5 minutes.
+**Success Metric:** A multi-arch (`linux/amd64` + `linux/arm64`) image published to GHCR only after the memory gates pass natively on BOTH platforms for that exact manifest and per-platform digests; CI green on hosted amd64 and arm64; a new user registers the server in Claude Code (`docker run -i --rm`) from the README in under 5 minutes.
 
-**Out of Scope:** Windows, 32-bit ARM, package-manager distribution (brew, apt), registry publishing.
+**Out of Scope:** Windows, 32-bit ARM, standalone binary releases (gnu, musl, macOS; dropped by ADR-007), Windows containers, arm/v7, 386, riscv64, ppc64le, s390x (considered and DEFERRED, not rejected; a future platform that cannot be natively memory-verified may ship only with the label "memory targets not verified on this platform", never gated on QEMU), package-manager distribution (brew, apt), crates.io publishing, a self-hosted runner. Publishing the image to GHCR is IN scope of D-2 but is a distribution act gated by OQ-7.
 
 ### Story Map
 
 | # | Story | Value | Effort | Dependencies |
 |---|---|---|---|---|
 | D-1 | Size- and memory-optimized release profile | High | 2 | A-3b |
-| D-2 | ARM release pipeline (aarch64-linux, macOS arm64) | High | 5 | A-1, D-1, D-7, OQ-7 |
+| D-2 | Multi-arch image build and publish to GHCR (tested-digest gate, both platforms) | High | 8 | A-1, D-1, D-7, E-2, E-3, E-4, OQ-7 |
 | D-3 | Test suite on aarch64 | High | 3 | D-2 |
-| D-4 | README, install and migration guide | High | 2 | D-2, OQ-7 |
+| D-4 | README, install and migration guide (moves to Sprint 10 after the D-2 re-estimate) | High | 2 | D-2, OQ-7 |
 | D-5 | Tool description within 150 words | Low | 1 | A-5 |
 | D-6 | Licensing, dependency audit and release tag | Medium | 2 | D-3, OQ-7 |
 | D-7 | Hosted PR CI baseline (x86_64) | High | 2 | None |
 
-**MVP Slice:** D-7, D-1, D-2, D-4. Rationale: a release needs a buildable ARM binary and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
+**MVP Slice:** D-7, D-1, D-2, D-4. Rationale: a release needs a buildable, gated ARM image and install steps; D-3 can be manual until then, D-5 and D-6 are v1.0 hygiene.
 
 ### D-1: Size- and memory-optimized release profile (2 pts)
 Maps to: FR-15, NFR-13.
 As a developer on ARM, I want a lean release build so that the binary and footprint stay small.
 - Given `cargo build --release`, when it completes, then the profile uses LTO, `opt-level` chosen in A-1, `panic=abort` if compatible, and stripped symbols.
 - Given the aarch64-linux release binary, when measured, then it is at most 10 MB (provisional).
-- Given the profile pinned in D-7 (Sprint 0) is finalised here, when D-1 closes, then idle RSS and 5 MB peak RSS are re-measured on the shipped build (gnu and musl, native aarch64 runner, median of 10 valid runs, peak on the matching bench build, idle on the shipped binary) at the same 10 MB and 40 MB targets. This is a required precondition for MVP tagging: if either exceeds its target, no tag is created until it is fixed. Any change from the D-7 pin is recorded with the before and after figures. If the runner is unavailable, D-1 does not close.
+- Given the profile pinned in D-7 (Sprint 0) is finalised here, when D-1 closes, then idle RSS and 5 MB peak RSS are re-measured on the shipped build (gnu and musl, hosted native runners for BOTH amd64 and arm64, measured on the process inside the image, median of 10 valid runs per platform, peak on the matching bench image; a miss on either platform blocks tagging, idle on the shipped binary) at the same 10 MB and 40 MB targets. This is a required precondition for MVP tagging: if either exceeds its target, no tag is created until it is fixed. Any change from the D-7 pin is recorded with the before and after figures. If either hosted runner is unavailable, D-1 does not close.
 - Given the binary, when inspected with `ldd`, then it links no OpenSSL and no runtime beyond libc.
 
-### D-2: ARM build pipeline (5 pts)
+### D-2: Multi-arch image build and publish to GHCR with tested-digest gate (8 pts, re-estimated from 5) [REWRITTEN per ADR-007, user decision 2026-09-19]
 Maps to: NFR-15, NFR-06, FR-15.
-As a developer, I want CI to build ARM release binaries so that I can install without compiling.
-- Given a tag push, when CI runs, then it produces stripped binaries for `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`, with checksums.
-- Given the aarch64-linux artifact, when run on a clean aarch64 container, then it completes the MCP handshake.
-- Given an x86_64-linux build, when requested, then it is produced as best-effort and its failure does not block release.
-- Given the toolchain and pins from D-7, when the release pipeline is written, then it reuses them and adds the version-pinned cross-build tools (`cargo-zigbuild`, `ziglang`, same pins as the Sprint 3 interim build script) and asserts the hosted checks are green before a release job runs.
-- Given the runner topology (architecture 9.2), when the release workflow is written, then self-hosted aarch64 jobs run only on main, tags, nightly and maintainer dispatch and fork PRs never reach the self-hosted runner. Hosted PR checks already exist from D-7. The aarch64 test job (D-3) and memory-gate job (E-6) do not exist yet; until they land (Sprints 11 and 12) the MVP release depends on the documented manual bench run (E-6's equivalent) plus the E-5 report, and D-3 and E-6 add themselves as required checks the release workflow depends on. Tagged builds before M3 remain prohibited; D-6 is the v1.0 tagger.
-- Given OQ-7 is decided before Sprint 9, when artifacts are named and published, then the channel and licence follow that decision.
-- Given `deny.toml` (committed in D-7), when the release pipeline runs, then it still has `advisories`, `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`), `sources` (crates.io only) and `licenses` (permissive allow-list) sections, and CI asserts the release build has none of `test-support` and `bench-loopback`.
-- Given every D-2 release artifact (aarch64 and macOS cross-builds), when the release job runs, then the D-7 guard (`cargo tree -e features` plus a marker-string grep of `test-support` and `bench-loopback` on the actual artifact binary) runs on each artifact and a hit fails the release job.
-- Given the binary, when run with `--version`, then it prints crate version, commit, target triple and libc, and startup writes one `info` line to stderr.
+As a developer, I want CI to build, test and publish a container image so that I can run the server without compiling and the published artifact is exactly the tested one.
+- Given a tag push, when the release workflow runs on `ubuntu-24.04-arm`, then per-platform jobs on `ubuntu-24.04` and `ubuntu-24.04-arm` each build the `linux/amd64` / `linux/arm64` image natively from a multi-stage Dockerfile (`--locked`, D-7 profile, pinned toolchain), with a minimal non-root base pinned by digest (architecture 9.3), and push it by digest, untagged, as a private candidate to GHCR; a merge job then creates the manifest list M from the per-platform digests (untagged, private).
+- Given the candidate manifest digest M, when the per-platform test jobs run on their native runner, then each pulls `@sha256:M` (never a mutable tag), asserts the resolved platform digest equals the one built, and passes: MCP handshake in a clean container, `--version` (crate version, commit, libc, Cargo.lock hash), non-root user, FR-15 (no OpenSSL; static for musl or symbol floor check for gnu), the D-7 guard plus marker grep for `test-support` and `bench-loopback` on the binary extracted from that digest, and the platform's memory gates (idle on the shipped image, peak on that platform's never-pushed bench image built from the same commit, Cargo.lock hash and base digest).
+- Given BOTH platform gates are green on the exact per-platform digests and M, when the publish job runs, then it adds the version tag (and `latest` only if OQ-7 says so) to that SAME manifest digest M without rebuilding, attaches provenance and SBOM attestations (recommended, not blocking for MVP), and writes M and both per-platform digests into the release notes, plus any deferred-platform statement. No tag or public visibility exists before both gates pass on those digests; the release is blocked if either platform gate fails or is skipped.
+- Given OQ-7 is answered before Sprint 9 (still OPEN; not decided by this story), when the first image is to be published, then the channel, licence and package visibility follow that decision; until then only private candidates exist and the package is not made public.
+- Given the workflow, when written, then it follows architecture 9.2: default `contents: read`, `packages: write`/`id-token`/`attestations` only in the publish job, SHA-pinned actions, no `pull_request_target`, fork PRs never push. Skipped or absent gate jobs block the release (required checks; `needs:`).
+- Given `deny.toml` (committed in D-7), when the release pipeline runs, then it still has `advisories`, `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`), `sources` (crates.io only) and `licenses` (permissive allow-list) sections.
+- Given the base image digest or the toolchain changes, when the pin is bumped, then it is its own PR and re-runs the ARM gates.
+- Given the libc choice is made by ADR-005 on data from the image, when D-2 lands, then exactly one libc flavour is published; the other candidate image is built for measurement only.
+- Note (points): the original 5 pts covered gnu, macOS, checksums, codesign and a best-effort x86 build. Those are removed; image build, digest passing, the gate wiring and GHCR permissions are added. RE-ESTIMATED 5 to 8 pts (unvalidated, a planning judgment): the second platform, the manifest-list merge, per-platform digest assertions and two required gate jobs are real added work, only partly offset by removing macOS, checksums, codesign and the zig cross-build (both platforms build natively). Effect: Sprint 9 is D-2 alone at 8 pts; D-4 (2 pts) moves to Sprint 10 (9 pts with C-2, 7 without; over the 8-pt ceiling by 1 if OQ-4 is yes, PO/user to accept or defer C-3); MVP completes at the end of Sprint 10, not Sprint 9. Re-estimate again at Sprint 8 planning.
+- Given the aarch64 test job (D-3) and memory-gate job (E-6) may not exist yet, when the MVP is released, then the release workflow's own in-workflow ARM gate run (above) is the evidence; the manual-bench-run fallback is removed (ADR-007). D-3 and E-6 add their PR-level jobs as required checks when they land. Tagged builds before M3 remain prohibited; D-6 is the v1.0 tagger.
+
 
 ### D-3: Test suite on aarch64 (3 pts)
 Maps to: NFR-15, NFR-04.
 As a developer, I want tests to run on real ARM so that ARM-specific issues are caught.
-- Given a pull request, when CI runs, then unit and integration tests execute on an aarch64-linux runner.
-- Given no native runner, when CI runs, then tests run under QEMU and the job states that RSS figures come only from native runs.
+- Given a pull request, when CI runs, then unit and integration tests execute on the hosted native arm64 runner (`ubuntu-24.04-arm`) as well as x86_64 (`ubuntu-24.04`). Note: the D-7 developer work already adds an ARM CI job; at Sprint 11 planning, re-estimate D-3 downward for what already exists (not re-estimated here).
+- Given the hosted arm64 runner is unavailable, when CI runs, then the job fails (no QEMU substitute for required checks); QEMU may be used only for optional functional smoke and states that RSS figures come only from native runs.
 - Given a test failure on aarch64, when CI finishes, then the pipeline fails.
 
 ### D-4: README and install guide (2 pts)
 Maps to: US-8, Goal 6.
 As a developer, I want clear install steps so that I can register the server quickly.
-- Given the README, when followed on aarch64-linux and macOS arm64, then the server is registered in Claude Code and `fetch` works.
+- Given the README, when followed on a machine with Docker or Podman (Linux amd64 or arm64, macOS via Docker Desktop, Windows via WSL2), then the server is registered in Claude Code with `docker run -i --rm ghcr.io/<owner>/<repo>@sha256:...` (or version tag) and `fetch` works; the README states that a container runtime is required and that the image is a linux/amd64 + linux/arm64 manifest (other platforms not published). Publication-dependent wording follows OQ-7.
 - Given the README, when read, then it lists environment variables (defaults only at Sprint 9; the env-var and config-error sections are re-checked when C-1 lands in Sprint 10), defaults, limitations (no JS, prompt-injection note), and a section "Registering in Claude Code" with the config snippet.
 - Given the benchmark report exists, when linked, then the README states the measured idle and peak memory.
 - Given the README, when read, then it documents: config errors exit before the handshake with the variable named on stderr; proxies are unsupported (fixed no-proxy); hosts behind a local NAT64 gateway should note that NAT64/6to4 addresses with public embedded IPv4 are allowed; and the musl static build may not resolve `.local` or split-DNS names that glibc resolves.
@@ -457,8 +459,8 @@ As a solo developer, I want hosted PR checks from Sprint 0 so that "CI green" in
 - Given the crate, when CI runs, then a job skeleton builds the release profile and asserts absence of the `test-support` and `bench-loopback` (E-8) features and of their marker strings in the binary (fails if present; becomes meaningful once A-3a adds `test-support`). The guard has a self-test: a deliberately built binary with `bench-loopback` (and one with `test-support`) must fail it, so it cannot pass vacuously. The release build uses `-p <crate>` so a workspace bench member cannot unify `bench-loopback` into it; E-8 unit tests run with `--features bench-loopback` in hosted CI.
 - Given the release profile, when this story closes, then `Cargo.toml` fixes it (opt-level, lto, panic=abort where compatible, strip, codegen-units) with the values chosen from the A-1 spike, and G0, G4a, G4b and E-5 all measure it. D-1 (Sprint 8) finalises it. Also `publish = false` and `licenses.private.ignore` so `cargo deny` passes before OQ-7, and A-1 spike code passes clippy `-D warnings`.
 - Given the repository settings, when this story closes, then branch protection on `main` requires the fmt, clippy, test, deny and release-guard checks (configured by the owner and recorded in the PR), so 'required check' is real from Sprint 0.
-- Given fork pull requests, when CI runs, then only hosted jobs run; no self-hosted runner is used here (that is D-2/D-3/E-6).
-- Note: pushing the branch and opening the sprint PR is covered by the owner's sprint-start instruction; native aarch64 per-story benchmarks are manual on PRs because self-hosted jobs run only on main, tags, nightly and dispatch.
+- Given fork pull requests, when CI runs, then jobs run with no secrets and a read-only token, no image is pushed, and there is no `pull_request_target` trigger. All runners are GitHub-hosted (ADR-007); there is no self-hosted runner in this project.
+- Note: pushing the branch and opening the sprint PR is covered by the owner's sprint-start instruction; per-story benchmarks are manual on PRs until E-2 (Sprint 3) lands; from then the hosted arm64 workflow can run on same-repo PRs (ADR-007 removed the self-hosted restriction).
 
 ---
 
@@ -470,7 +472,7 @@ Included (73 points; was 72 before plan revision 2 added E-8 (1), 68 before plan
 
 Deferred to post-MVP (v1.0 completion, 24 points): A-8, A-9, C-1, C-2, C-3, B-4, B-6, D-3, D-5, D-6, E-6.
 
-Rationale: the MVP contains every story needed to (a) prove the memory case, (b) deliver the core fetch behavior, (c) refuse internal addresses, and (d) install on ARM. Charset handling, config knobs, robots.txt and labelling do not affect the release decision. Trade-off: MVP ships with fixed defaults and UTF-8-only decoding; acceptable for personal use. Cost of adding A-8 early is low (2 pts) and it can be pulled forward if the test set shows encoding failures.
+Rationale: the MVP contains every story needed to (a) prove the memory case, (b) deliver the core fetch behavior, (c) refuse internal addresses, and (d) install on ARM as a tested container image. Charset handling, config knobs, robots.txt and labelling do not affect the release decision. Trade-off: MVP ships with fixed defaults and UTF-8-only decoding; acceptable for personal use. Cost of adding A-8 early is low (2 pts) and it can be pulled forward if the test set shows encoding failures.
 
 **Decision gates:** (1) End of Sprint 0 (G0): go/no-go on the absolute memory targets from E-1 and A-1. (2) End of Sprint 4 (G4a): idle RSS (shipped binary) and the peak/boundedness scenarios that need only A-3b and A-4 (full-consumption 5 MB page, gzipped, late-landmark holdback-full, 50 MB Content-Length, 50 MB chunked read beyond the cap) at 10 MB idle and 40 MB peak; a pass means go on to Sprint 5, not that the memory gate is closed. (3) End of Sprint 5 (G4b, owned by A-5 and A-6): the scenarios that need the window or early stop (A-5) and `raw=true` (A-6) meet the same targets; the complete memory gate closes here. A fail at G4a stops before Sprint 5, a fail at G4b stops feature work before Sprint 6. Idle is gated on the shipped binary; peak on the `bench-loopback` build (E-8, confirmed). All gates measure the release profile pinned in D-7; D-1 (Sprint 8) re-measures the finalised profile and blocks MVP tagging on a miss.
 
@@ -493,6 +495,8 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 | 10 | Config and allowlist (C-2 if OQ-4 yes) | C-1, C-2, C-3 | 7 |
 | 11 | robots.txt, charset, ARM tests | B-4, A-8, D-3 | 8 |
 | 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 |
+
+ADR-007 revision: total is now 100 points (D-2 5 to 8), MVP 76 points reached at the end of Sprint 10 (D-2 alone fills Sprint 9 at 8 pts; D-4 moves to Sprint 10, 9 pts with C-2, 7 without: 1 over the ceiling if OQ-4 is yes, PO/user decision), v1.0 still Sprint 12. The figures below are the pre-ADR-007 record.
 
 Total 97 points over 13 sprints (0-12) (was 96; plan revision 2 added E-8, 1 pt; 92 before revision 1). Overall MVP (73 points) is reached at the end of Sprint 9 (D-2, D-4 land there, D-2 first; E-5 landed in Sprint 7), still Sprint 9. Non-MVP A-9 (Sprint 3) and D-5 (Sprint 8) fill slack; C-2 (Sprint 10) needs C-1. v1.0 moves from Sprint 11 to Sprint 12 because the re-estimate added 5 points. To reach MVP sooner, move D-1 into Sprint 7 and D-2 into Sprint 8, at the cost of delaying B-5.
 
@@ -542,7 +546,7 @@ Trade-off: Sprint 10 is 7 points with C-2 and 5 if OQ-4 is "no" (C-2 dropped).
 | OQ-3 | robots.txt default. DUE before Sprint 10 starts (C-1 parses the toggle with a placeholder; the default is decided by OQ-3, still OPEN) | Michael | C-1 default (Sprint 10), B-4 (Sprint 11) |
 | OQ-4 | Private-host allowlist needed. DUE before Sprint 10 | Michael | C-2 (Sprint 10) |
 | OQ-5 | Untrusted-content labelling. DUE before Sprint 2 (affects result envelope in A-3b/A-4) | Michael | B-6 |
-| OQ-7 | Distribution and licence. DUE before Sprint 9 starts (D-2 artifact naming/publication, D-4 install guide, LICENSE) | Michael | D-2, D-4, D-6 |
+| OQ-7 | Distribution and licence. DUE before Sprint 9 starts, and in any case BEFORE the first image is published to GHCR (D-2 naming/publication/visibility, D-4 install guide, LICENSE). Still OPEN; not decided by ADR-007 | Michael | D-2, D-4, D-6 |
 | E-8 | Bench-only loopback build. CONFIRMED by the user 2026-09-19 (does not decide OQ-4) | Michael | None (recorded; Sprint 2 E-8, E-2) |
 | OQ-8 | Resolved 2026-09-19: not a replacement; no incumbent; schema is default design | Michael | None |
-| OQ-9 | Resolved 2026-09-19: native aarch64 runner on author's cluster; RAM/OS to be recorded | Michael | None |
+| OQ-9 | Resolved 2026-09-19; AMENDED 2026-09-19 by the user (ADR-007): native aarch64 measurement runs on GitHub-hosted arm64 runners (`ubuntu-24.04-arm`, cloud VM), no self-hosted runner; OS/RAM/page size recorded per run | Michael | None |

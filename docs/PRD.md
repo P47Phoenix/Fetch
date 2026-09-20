@@ -22,7 +22,8 @@ The product is a small, local MCP server exposing one `fetch` tool. It is writte
 - OQ-1 (resolved): the goal is a new fetch MCP server with a small memory footprint on ARM. SSRF protection, determinism and code ownership are secondary benefits.
 - OQ-2 (resolved): Rust with the official SDK, https://github.com/modelcontextprotocol/rust-sdk (crate `rmcp`), stdio transport.
 - OQ-8 (resolved 2026-09-19): this is a brand-new server, not a replacement for `mcp__fetch__fetch`; there is no incumbent to baseline. The parameter schema (`url`, `max_length`, `start_index`, `raw`) is the default design, not a compatibility contract.
-- OQ-9 (resolved 2026-09-19): benchmarks run on the author's native aarch64 runner on their cluster. RAM and OS are to be recorded in the benchmark report. Trust model: the runner is ephemeral or destroyed after each job, unprivileged, holds no cluster credentials or secrets, is unreachable from fork pull requests, and has no route to the LAN or the protected home-lab hosts; a skipped or absent benchmark job blocks release (architecture 9.2).
+- OQ-9 (resolved 2026-09-19; amended by the user 2026-09-19, ADR-007): the native aarch64 measurement runs on GitHub-hosted arm64 runners (`ubuntu-24.04-arm`, public repo), not on the author's cluster. It is a cloud VM: OS, kernel, CPU model, RAM and page size are recorded in every report and the absolute targets are unchanged. No self-hosted runner. Trust model: hosted ephemeral VMs, least-privilege tokens, no `pull_request_target`, SHA-pinned actions, no secrets on fork PRs; a skipped or absent benchmark job blocks release (architecture 9.2).
+- Release artifact (user decision 2026-09-19, ADR-007): a tested multi-arch container image (`linux/amd64` + `linux/arm64`, each natively memory-gated) published to GHCR from GitHub Actions only, tagged and published only after the ARM gates pass on that exact digest. Standalone gnu, musl and macOS binary releases are dropped. Publishing an image publicly is a distribution act: OQ-7 must be answered before the first image is published.
 - Size rule (accepted 2026-09-19, architecture 6.4): a `Content-Length` above the max download size returns `too_large` immediately. With no `Content-Length` the body is streamed; the call succeeds if the requested window completes under the cap, and returns `too_large` if the cap is reached first.
 
 **Assumptions (adjustable)**
@@ -30,7 +31,7 @@ The product is a small, local MCP server exposing one `fetch` tool. It is writte
 - Memory targets are absolute (idle <= 10 MB RSS; peak <= 40 MB VmHWM fetching a 5 MB page; median of 10 runs). The benchmark harness and targets are defined in the Sprint 0 story E-1.
 - Transport is stdio; single user; runs locally.
 - Target clients are Claude Code and Claude Desktop.
-- Primary platforms: aarch64-linux and macOS arm64. x86_64-linux is best-effort.
+- Primary platforms (ADR-007, user 2026-09-19): the container image for linux/arm64 and linux/amd64, both native-memory-gated (Linux, macOS via Docker Desktop, Windows via WSL2). Standalone binaries are not released.
 
 ## 2. Goals & Success Metrics
 
@@ -69,7 +70,7 @@ Detailed, sized stories with full acceptance criteria are in `docs/EPICS.md`. Su
 - US-5: Blocked from internal network
 - US-6: Configure limits and policy
 - US-7: Run a small resident server on ARM (idle and peak memory targets)
-- US-8: Install as a single ARM binary
+- US-8: Install as a tested container image (arm64)
 - US-9: See proof that the memory targets are met
 
 ### US-1: Retrieve a page as markdown
@@ -107,9 +108,9 @@ As a solo developer on ARM hardware, I want the server to use little memory when
 - Given a 5 MB page is fetched, when peak RSS is measured, then it is within the NFR-11 target.
 - Given a server response larger than the max size, when `fetch` is called, then memory stays bounded and the call returns a size error, unless the response has no `Content-Length` and the requested window completes under the max size (then it succeeds, still bounded).
 
-### US-8: Install as a single ARM binary
-As a developer, I want one self-contained binary for aarch64-linux and macOS arm64 so that I can register it in Claude Code without installing a runtime.
-- Given a release artifact for my platform, when I copy it onto my PATH and register it, then Claude Code lists the `fetch` tool with no other installs.
+### US-8: Install as a tested container image (arm64)
+As a developer, I want a tested multi-arch (`linux/amd64`, `linux/arm64`) container image so that I can register the server in Claude Code with `docker run -i --rm` without installing a runtime or toolchain (a container runtime is required).
+- Given the published image, when I run it with my container runtime and register it, then Claude Code lists the `fetch` tool with no other installs; the image was tested, by digest, natively on both platforms before publication (Linux, macOS via Docker Desktop, Windows via WSL2; Windows containers, arm/v7, 386, riscv64, ppc64le, s390x deferred).
 
 ### US-9: See proof that the memory targets are met
 As the project owner, I want a reproducible benchmark so that I can release based on evidence.
@@ -158,7 +159,7 @@ Memory NFRs (NFR-10 to NFR-14) are the primary acceptance gates. Targets are abs
 | NFR-14 | Benchmark reproducibility | Quality | Harness runs from one command; reports median of >= 10 runs; method: `/proc/<pid>/status` VmHWM/VmRSS on Linux, `/usr/bin/time -l` on macOS; run in CI on an aarch64 runner |
 | NFR-15 | ARM build and test | Compatibility | CI builds release binaries for aarch64-linux and macOS arm64 and runs the full test suite on aarch64 (native runner or QEMU documented as fallback) |
 
-Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by a local HTTP server, one MCP client script; benchmark host (native aarch64 runner), OS, RAM, server version and commit recorded in the report.
+Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by a local HTTP server, one MCP client script; benchmark hosts (GitHub-hosted native arm64 and amd64 runners, both gated, ADR-007), OS, kernel, CPU model, RAM, page size, server version and commit recorded in the report.
 
 ## 7. Out of Scope
 
@@ -184,7 +185,7 @@ Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by
 | 5 | Prompt injection in fetched content | High | High | Michael | Cannot be eliminated by the server; document it and label output as untrusted content (see OQ-5). |
 | 6 | Sites block bots or need JS | Low | High | Michael | Accept for v1; document limitation. |
 | 7 | Solo developer time and no stated deadline | Low | Medium | Michael | Spike-first ordering; keep scope to the Must items first. |
-| 8 | No aarch64 CI runner available or QEMU RSS numbers unrepresentative | Medium | Medium | Michael | Use the author's native aarch64 runner for benchmark numbers; QEMU only for functional tests. |
+| 8 | No aarch64 CI runner available or QEMU RSS numbers unrepresentative | Medium | Medium | Michael | Use the GitHub-hosted arm64 runner (ADR-007) for benchmark numbers, measured on the process inside the image; QEMU only for functional tests. Residual risks: hosted CPU and 4 KiB page size differ from a Pi 5 (16 KiB). |
 | 9 | Allocator choice affects RSS (glibc vs musl vs mimalloc/jemalloc) | Medium | Medium | Michael | Include allocator comparison in spike; fix choice in E-4. |
 | 10 | Rust learning curve / build times for solo part-time dev | Low | Medium | Michael | Small crate set; incremental stories. |
 
@@ -211,6 +212,6 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 | 4 | Is a private-host allowlist needed for home-lab use, or is blanket blocking acceptable? | Michael | Before Sprint 10 (C-2) | Open |
 | 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before Sprint 2 (envelope of A-3b/A-4) | Open |
 | 6 | Is a v1.1 headless-browser mode wanted, and if so as a separate tool? | Michael | After v1.0 | Open |
-| 7 | Will this be distributed publicly (crates.io, GitHub releases, registry), which affects licensing and docs? | Michael | Before Sprint 9 (D-2, D-4; then D-6 in Sprint 12) | Open |
+| 7 | Will this be distributed publicly (GHCR image is the chosen artifact form per ADR-007; crates.io, other registries), which affects licensing and docs? Must be answered BEFORE the first image is published | Michael | Before Sprint 9 (D-2, D-4; then D-6 in Sprint 12) and before the first GHCR publish | Open |
 | 8 | (New) Which incumbent is being replaced, and is its parameter schema the compatibility target? | Michael | Before E-1 | **Resolved 2026-09-19:** not a replacement; no incumbent. Schema `url`, `max_length`, `start_index`, `raw` stays as the default design, not a compatibility contract. |
-| 9 | (New) Is a native aarch64-linux host or runner available for benchmarking, and what is its RAM? | Michael | Before E-1 | **Resolved 2026-09-19:** the author's native aarch64 runner on their cluster; RAM and OS to be recorded later. |
+| 9 | (New) Is a native aarch64-linux host or runner available for benchmarking, and what is its RAM? | Michael | Before E-1 | **Resolved 2026-09-19, amended by the user the same day (ADR-007):** GitHub-hosted arm64 runners (`ubuntu-24.04-arm`); no self-hosted runner; RAM, OS and page size recorded per run. |
