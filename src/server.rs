@@ -1,18 +1,24 @@
-//! rmcp stdio handler: registers the `fetch` tool and validates its input (FR-01, FR-02). Tool futures must be
-//! `Send` (A-1 spike). The URL goes through `ssrf::check_url` (scheme, userinfo, IP-literal checks; no DNS, no
-//! network). Every rejection is an `isError` result `error[<code>]: <message>` naming the field, the same shape
-//! rmcp 3.4 uses for schema-deserialisation failures (ADR-006 amendment 2026-09-19). A URL that passes still
-//! returns a clear "not implemented yet" tool error; no fetching.
+//! rmcp stdio handler: registers the `fetch` tool, validates its input (FR-01, FR-02) and runs it through the
+//! guarded [`FetchClient`] (A-3b). Tool futures must be `Send` (A-1 spike). Every failure is an `isError` result
+//! `error[<code>]: <message>` naming the field or cause, the same shape rmcp 3.4 uses for schema-deserialisation
+//! failures (ADR-006 amendment 2026-09-19). On success the text is returned as fetched: no label, wrapper or
+//! notice is added (OQ-5 decided NO on 2026-09-20, ADR-006 note).
+//!
+//! Interim scope: the body is decoded as UTF-8 and the requested character window (`start_index`,
+//! `max_length`) is kept while the whole body is still read and size-checked; HTML conversion, early stop,
+//! pagination messages and `raw` handling arrive with A-4, A-5 and A-6.
 
-use crate::error::FetchError;
+use crate::config::Config;
+use crate::fetch::dns::SystemResolver;
+use crate::fetch::{FetchClient, Limits};
 use crate::policy::Policy;
-use crate::ssrf::{check_url, Origin};
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
     schemars, tool, tool_router, ErrorData as McpError,
 };
 use serde::{Deserialize, Deserializer};
+use std::sync::Arc;
 
 /// Deserialise `T`, prefixing any error with the field name so a validation error always names the field.
 fn named<'de, D: Deserializer<'de>, T: Deserialize<'de>>(field: &str, d: D) -> Result<T, D::Error> {
@@ -47,16 +53,66 @@ pub struct FetchParams {
     pub raw: Option<bool>,
 }
 
+/// Default `max_length` (FR-02).
+const DEFAULT_MAX_LENGTH: u64 = 5000;
+
+/// Keeps the characters `[skip, skip + take)` of the text pushed through it; memory is bounded by `take`.
+#[derive(Debug)]
+pub struct Window {
+    skip: u64,
+    take: u64,
+    out: String,
+    taken: u64,
+}
+
+impl Window {
+    #[must_use]
+    pub fn new(start_index: u64, max_length: u64) -> Self {
+        Self {
+            skip: start_index,
+            take: max_length,
+            out: String::new(),
+            taken: 0,
+        }
+    }
+
+    pub fn push(&mut self, text: &str) {
+        for ch in text.chars() {
+            if self.skip > 0 {
+                self.skip -= 1;
+            } else if self.taken < self.take {
+                self.out.push(ch);
+                self.taken += 1;
+            } else {
+                return;
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn into_text(self) -> String {
+        self.out
+    }
+}
+
 #[derive(Clone)]
 pub struct Fetch {
-    // Fail-closed by default. A-3b routes every dial (and every redirect hop) through it.
-    policy: Policy,
+    client: Arc<FetchClient<SystemResolver>>,
+    max_length_cap: u64,
 }
 
 impl Fetch {
+    /// The guarded client for `policy` with the limits of `cfg`. The policy is required: there is no default.
     #[must_use]
-    pub fn new(policy: Policy) -> Self {
-        Self { policy }
+    pub fn new(policy: Policy, cfg: &Config) -> Self {
+        Self {
+            client: Arc::new(FetchClient::new(
+                policy,
+                Arc::new(SystemResolver),
+                Limits::from_config(cfg),
+            )),
+            max_length_cap: cfg.max_length_cap,
+        }
     }
 }
 
@@ -67,13 +123,41 @@ impl Fetch {
         &self,
         Parameters(p): Parameters<FetchParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Err(e) = check_url(&p.url, &self.policy, Origin::Initial) {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                e.tool_text(),
-            )]));
+        let max_length = p
+            .max_length
+            .unwrap_or(DEFAULT_MAX_LENGTH)
+            .min(self.max_length_cap);
+        let mut window = Window::new(p.start_index.unwrap_or(0), max_length);
+        let result = self
+            .client
+            .fetch(&p.url, &mut |text: &str| window.push(text))
+            .await;
+        Ok(match result {
+            Ok(_) => CallToolResult::success(vec![ContentBlock::text(window.into_text())]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(e.tool_text())]),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Window;
+
+    fn win(start: u64, len: u64, parts: &[&str]) -> String {
+        let mut w = Window::new(start, len);
+        for p in parts {
+            w.push(p);
         }
-        Ok(CallToolResult::error(vec![ContentBlock::text(
-            FetchError::NotImplemented.tool_text(),
-        )]))
+        w.into_text()
+    }
+
+    #[test]
+    fn window_counts_characters_across_chunk_boundaries() {
+        assert_eq!(win(0, 5, &["hello world"]), "hello");
+        assert_eq!(win(2, 5, &["he", "llo w", "orld"]), "llo w");
+        assert_eq!(win(1, 3, &["h\u{e9}", "llo"]), "\u{e9}ll");
+        assert_eq!(win(0, 100, &["short"]), "short");
+        assert_eq!(win(50, 5, &["short"]), "");
+        assert_eq!(win(0, 0, &["anything"]), "");
     }
 }

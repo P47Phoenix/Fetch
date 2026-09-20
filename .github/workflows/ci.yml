@@ -81,3 +81,25 @@ jobs:
         run: scripts/check-release-features.sh
       - name: Guard self-test (positive controls must fail the guard)
         run: scripts/check-release-features.sh --self-test
+
+  # A-3b merge gate (EPICS A-3b, sprint plan): the named test `a3b_merge_gate`, the four-refusal tests, the
+  # dial-once test and the parser differential, on the shipped (release) profile. Also part of the `test` job on
+  # the dev profile; this job exists so the gate is a separately required, separately named check.
+  a3b-merge-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - name: Run the gate tests on the release profile and prove they actually ran
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --lib -- a3b_merge_gate refusal_ dial_once differential 2>&1 | tee gate.log
+          for t in a3b_merge_gate refusal_loopback_ip_literal refusal_metadata_ip_literal \
+                   refusal_name_resolving_to_a_private_address refusal_redirect_to_a_private_address \
+                   dial_once_a_second_private_answer_is_never_looked_up_or_dialled \
+                   differential::encodings_corpus differential::every_ipv4_spelling_is_judged_like_the_reference \
+                   differential::deterministic_fuzz_corpus; do
+            grep -Eq "^test .*${t} \.\.\. ok$" gate.log || { echo "gate test missing or not ok: $t" >&2; exit 1; }
+          done

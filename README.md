@@ -1,22 +1,22 @@
 # Fetch
 
-**What is this?** Fetch is a small program, `fetch-mcp`, that will download a web page and turn it into text for an AI tool. Today it is an early build: it speaks the MCP protocol over standard input and output, offers one tool called `fetch`, checks the input and blocks unsafe addresses, but it does not download anything yet. **Who needs it?** Contributors who want to build, test or measure it. It is not ready for ordinary users. **What to do first:** read the status below, then follow "Build", "Test" and "Run over stdio".
+**What is this?** Fetch is a small program, `fetch-mcp`, that will download a web page and turn it into text for an AI tool. Today it is an early build: it speaks the MCP protocol over standard input and output, offers one tool called `fetch`, checks the input, blocks unsafe addresses, and downloads the page (streamed, size-limited, from public addresses only). It does not convert HTML to markdown yet: it returns the page text as fetched. **Who needs it?** Contributors who want to build, test or measure it. It is not ready for ordinary users. **What to do first:** read the status below, then follow "Build", "Test" and "Run over stdio".
 
 ## Status: pre-MVP (early, unfinished)
 
 **Do not register `fetch-mcp` in a real MCP client** (MCP, the Model Context Protocol, is how an AI tool talks to a helper program) before milestone M3. The only planned check with Claude Code is a manual one on the owner's machine, using a throwaway config, not your normal setup.
 
-What works today (stories A-2 and A-3a):
+What works today (stories A-2, A-3a and A-3b):
 
 - `fetch-mcp` is a real MCP server over stdio (built on the `rmcp` crate, version 3.4.0). It offers exactly one tool, `fetch`, with the inputs `url`, `max_length`, `start_index` and `raw`.
-- A valid `fetch` call returns an error result saying `not_implemented`. There is no HTTP client in the program yet, so it never touches the network. The real download arrives in story A-3b.
+- A valid `fetch` call downloads the URL (HTTP/1.1, https with the built-in trust anchors) and returns the text as fetched, cut to the requested character window. The body is read as a stream and never held whole: it stops with `too_large` past `FETCH_MAX_BYTES` (5 MiB), after 15 s with `timeout`, and gzip is unpacked in bounded steps. Every request and every redirect hop goes through the SSRF checks, and the client connects only to the addresses those checks approved. **Fetched content is returned as-is with no untrusted-content label (open question OQ-5 was decided "no label" on 2026-09-20).** Not yet done: HTML to markdown (A-4), early stop and continuation messages (A-5), `raw` and content-type handling (A-6), cause-specific errors (A-7), charsets other than UTF-8 (A-8).
 - Bad input, and web addresses that point at private or internal machines, are refused with a clear error. See [SSRF range table](docs/SSRF.md) for what is blocked and why.
 
 What has not been checked yet:
 
 - The automatic checks (CI) run on GitHub and pass on pull request #5, but branch protection on `main` is not switched on, and `cargo-audit` has never been run.
 - The memory gates for the product (10 MiB idle, 40 MiB peak) have not been run. There is no `--gate` run on amd64 or arm64. The only product numbers are advisory (recorded, not enforced): see [BENCHMARK.md section 13](docs/BENCHMARK.md#13-real-product-idle-numbers-advisory-sprint-1).
-- Open questions still undecided: OQ-3 (robots.txt on or off by default), OQ-4 (private-host allowlist), OQ-5 (labelling fetched content as untrusted) and OQ-7 (licence and distribution). An Apache-2.0 `LICENSE` file exists, and the project is marked `publish = false` (Cargo will refuse to publish it to crates.io) until OQ-7 is decided.
+- Open questions still undecided: OQ-3 (robots.txt on or off by default), OQ-4 (private-host allowlist), and OQ-7 (licence and distribution). An Apache-2.0 `LICENSE` file exists, and the project is marked `publish = false` (Cargo will refuse to publish it to crates.io) until OQ-7 is decided.
 - The release artifact will be a multi-arch container image (`linux/amd64` and `linux/arm64`) on GHCR, not standalone binaries (ADR-007).
 
 Details: [what has and has not been checked](docs/BENCHMARK.md#read-this-first-what-has-and-has-not-been-checked).
@@ -69,21 +69,20 @@ Five reply lines, one for each request that has an `id` (the `notifications/init
 
 1. `initialize`: a result with `"protocolVersion":"2025-06-18"`, `"capabilities":{"tools":{}}` and `"serverInfo":{"name":"rmcp","version":"3.4.0"}`. The name shown is the MCP library's, not `fetch-mcp`.
 2. `tools/list`: one tool, `fetch`, described as "Fetch a URL and return its content as markdown". `url` is required. `max_length`, `start_index` and `raw` are optional.
-3. A valid URL (id 3) gives a tool result with `"isError":true` and this text:
-   `error[not_implemented]: fetch is not implemented yet: this build validates input but performs no network requests`
+3. A valid URL (id 3) is downloaded, so this needs network access: you get the page text in one text item (`"isError"` false). Offline, you get `"isError":true` and `error[dns_failure]: hostname did not resolve`.
 4. A blocked address (id 4) gives `"isError":true` and this text:
    `error[blocked_target]: IP address is not public (loopback)`
 5. Bad input (id 5) gives `"isError":true` and this text:
    `error[invalid_argument]: url: must be an absolute http or https URL`
 
-The error convention: a failed `fetch` is still a normal JSON-RPC `result`, with `"isError":true` and one text item that reads `error[<code>]: <message>`. For `invalid_argument` the message starts with the name of the bad field (here `url`). The codes today are `invalid_argument`, `blocked_target` and the temporary `not_implemented`, which goes away when A-3b lands. The blocked-target message names a category (such as loopback), never the address, so an error cannot reveal what is on your network. See ADR-006 (tool schema, with its dated amendment) for the design.
+The error convention: a failed `fetch` is still a normal JSON-RPC `result`, with `"isError":true` and one text item that reads `error[<code>]: <message>`. For `invalid_argument` the message starts with the name of the bad field (here `url`). The codes today are `invalid_argument`, `blocked_target`, `dns_failure`, `too_large`, `timeout`, `unsupported_encoding`, `http_error`, `too_many_redirects`, `network_error`, `bad_response` and `internal`. The blocked-target message names a category (such as loopback), never the address, so an error cannot reveal what is on your network. See ADR-006 (tool schema, with its dated amendment) for the design.
 
 Two shapes differ from that convention, because they are produced by the MCP library (rmcp 3.4) before our code runs:
 
 - **Wrong-typed or missing arguments** (for example no `url`, or `"max_length":-1`) return `isError: true` with text such as `failed to deserialize parameters: missing field \`url\``, or `failed to deserialize parameters: max_length: invalid value: integer \`-1\`, expected u64`. The field is named, but the text has no `error[invalid_argument]:` prefix. Our own checks (URL scheme, blocked address, and so on) do use the prefix.
 - **Frames the library cannot deserialise** get no reply at all (a client waiting for that `id` would wait forever), and the server keeps running. Examples: a `tools/call` whose `arguments` is nested about 200 levels deep. `"arguments": []` returns JSON-RPC error `-32601` with message `tools/call`, not `-32602`. Invalid UTF-8 or NUL bytes, and `notifications/initialized` sent before `initialize`, end the session (exit code 1, nothing on standard output). None of these can crash or hang the server.
 
-Unknown extra arguments are accepted and ignored, and `max_length` and `start_index` are parsed but not yet range-checked or used (that arrives with A-5 and later stories).
+Unknown extra arguments are accepted and ignored, and `max_length` (default 5000, capped by `FETCH_MAX_LENGTH_CAP`) and `start_index` pick a character window of the fetched text; there is no continuation footer, no note when `max_length` is clamped and no early stop yet (A-5).
 
 ## Where to go next
 

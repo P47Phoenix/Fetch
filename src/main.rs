@@ -35,7 +35,7 @@ async fn main() -> std::process::ExitCode {
     for m in fetch_mcp::build_markers() {
         obs::stderr_line(format_args!("warn build marker {m}")); // bench/test builds announce themselves
     }
-    match serve().await {
+    match serve(&cfg).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             // rmcp's error text can echo the client's first frame verbatim; keep that out of stderr unless the
@@ -52,8 +52,8 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let svc = Fetch::new(Policy::for_build())
+async fn serve(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let svc = Fetch::new(Policy::for_build(), cfg)
         .serve(rmcp::transport::stdio())
         .await?;
     svc.waiting().await?;

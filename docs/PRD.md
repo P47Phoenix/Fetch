@@ -5,8 +5,8 @@
 | Product/Feature | Fetch MCP Server (`fetch` tool), Rust, low-memory MCP server for ARM |
 | Version | 0.4 (Draft) |
 | Author | Michael Connelly |
-| Status | Draft - OQ-1, OQ-2, OQ-8 and OQ-9 resolved; Stage 4 architecture changes applied (v0.4), E-4 size-error rule accepted; OQ-3, OQ-4, OQ-5 and OQ-7 still open |
-| Last Updated | 2026-09-19 |
+| Status | Draft - OQ-1, OQ-2, OQ-5, OQ-8 and OQ-9 resolved; Stage 4 architecture changes applied (v0.4), E-4 size-error rule accepted; OQ-3, OQ-4 and OQ-7 still open |
+| Last Updated | 2026-09-20 |
 
 ## 1. Problem Statement
 
@@ -182,7 +182,7 @@ Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by
 | 2 | DNS rebinding bypasses SSRF check | High | Low | Michael | Resolve once, connect to the validated IP (custom resolver/connector), re-check each redirect. Interim window: the full blocked-range table and checks land in A-3a (SSRF core, Sprint 1, before the first fetch-capable build A-3b), not B-1. Release rule: no tagged or distributed build before M3, and pre-M3 builds are not registered in a real MCP client. |
 | 3 | Rust HTML-to-markdown crate quality or memory use (DOM-based crates may hold several times the page size) | High | Medium | Michael | Spike A-1 evaluates crates on quality and RSS; consider streaming rewriter (e.g. `lol_html`) or a size-capped DOM; keep converter behind a trait. |
 | 4 | Absolute memory targets (10 MiB idle, 40 MiB peak) not achievable with the chosen crates | High | Low-Medium | Michael | Define harness and targets first (E-1) with go/no-go gate before feature work; stop or re-scope if 1a/1b cannot be met. |
-| 5 | Prompt injection in fetched content | High | High | Michael | Cannot be eliminated by the server; document it and label output as untrusted content (see OQ-5). |
+| 5 | Prompt injection in fetched content | High | High | Michael | Cannot be eliminated by the server; document it. The owner decided on 2026-09-20 that output is NOT labelled (OQ-5 resolved: no label), so the mitigation is documentation and the client's own handling of tool output. |
 | 6 | Sites block bots or need JS | Low | High | Michael | Accept for v1; document limitation. |
 | 7 | Solo developer time and no stated deadline | Low | Medium | Michael | Spike-first ordering; keep scope to the Must items first. |
 | 8 | No aarch64 CI runner available or QEMU RSS numbers unrepresentative | Medium | Medium | Michael | Use the GitHub-hosted arm64 runner (ADR-007) for benchmark numbers, measured on the process inside the image; QEMU only for functional tests. Residual risks: hosted CPU and 4 KiB page size differ from a Pi 5 (16 KiB). |
@@ -200,7 +200,7 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 | M2: Core fetch + memory gate | Sprints 3-6 (Weeks 7-14) | Harness live and idle RSS checked (Sprint 3); FR-03 and the memory gate G4a, NFR-10 to NFR-12, at the end of Sprint 4 (decision gate: if not met, stop or re-scope; G4a covers idle plus only scenarios that need A-3b and A-4, peak measured on the E-8 bench build, confirmed); FR-04, FR-08 (Sprint 5) and G4b at the end of Sprint 5, gating the window, early-stop and `raw=true` scenarios at the same targets, which is when the complete memory gate closes; D-7 pins the release profile in Sprint 0 and D-1 (Sprint 8) re-measures it before MVP tagging; FR-10 (Sprint 6). |
 | M3: Safety | Sprints 6-8 (Weeks 13-18) | FR-05 (B-3, Sprint 7), FR-06 (B-1/B-2, Sprints 6-7) pass; SSRF suite 100% and coverage gate (B-5) at the end of Sprint 8; NFR-04 met. Reached at the end of Sprint 8; no tagged build before it. |
 | M4: Config, packaging, ARM | Sprints 9-11 (Weeks 19-24) | FR-15 (D-2, Sprint 9, MVP complete), FR-12 (Sprint 10), FR-09 (Sprint 11) pass; hosted CI green since Sprint 0, aarch64 test job (Sprint 11); README with ARM install steps (Sprint 9). |
-| M5: v1.0 | Sprints 11-12 (Weeks 23-26) | FR-11 (B-4, Sprint 11), labelling per OQ-5 (Sprint 12), memory-gate CI (E-6), all Goals in Section 2 met; benchmark report published (E-5); NFR targets verified; tagged release (D-6, Sprint 12). |
+| M5: v1.0 | Sprints 11-12 (Weeks 23-26) | FR-11 (B-4, Sprint 11), (no labelling: OQ-5 resolved 2026-09-20 as no label), memory-gate CI (E-6), all Goals in Section 2 met; benchmark report published (E-5); NFR targets verified; tagged release (D-6, Sprint 12). |
 
 ## 10. Open Questions
 
@@ -210,7 +210,7 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 | 2 | TypeScript or Python SDK? | Michael | - | **Resolved 2026-09-19:** Rust with the official `rmcp` SDK, stdio transport. |
 | 3 | Should robots.txt be enforced by default for agent-initiated fetches? | Michael | Before Sprint 10 starts (C-1 default; B-4 in Sprint 11). C-1 uses a placeholder only; the OQ stays open | Open |
 | 4 | Is a private-host allowlist needed for home-lab use, or is blanket blocking acceptable? | Michael | Before Sprint 10 (C-2) | Open |
-| 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before Sprint 2 (envelope of A-3b/A-4) | Open |
+| 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before Sprint 2 (envelope of A-3b/A-4) | **Resolved 2026-09-20 (Michael): NO untrusted-content label.** Fetched content is returned as-is, with no label, wrapper, prefix or notice in the result envelope. B-6 is closed as won't-do. |
 | 6 | Is a v1.1 headless-browser mode wanted, and if so as a separate tool? | Michael | After v1.0 | Open |
 | 7 | Will this be distributed publicly (GHCR image is the chosen artifact form per ADR-007; crates.io, other registries), which affects licensing and docs? Must be answered BEFORE the first image is published | Michael | Before Sprint 9 (D-2, D-4; then D-6 in Sprint 12) and before the first GHCR publish | Open |
 | 8 | (New) Which incumbent is being replaced, and is its parameter schema the compatibility target? | Michael | Before E-1 | **Resolved 2026-09-19:** not a replacement; no incumbent. Schema `url`, `max_length`, `start_index`, `raw` stays as the default design, not a compatibility contract. |

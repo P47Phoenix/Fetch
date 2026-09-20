@@ -325,12 +325,13 @@ As the project owner, I want an automated SSRF suite so that safety is proven an
 - Given a new blocked-range case is added, when tests run, then it needs no harness change (table-driven cases).
 
 ### B-6: Untrusted-content labelling (2 pts)
+**CLOSED as won't-do (2026-09-20): OQ-5 was decided "no label" by the owner. Fetched content is returned as-is, so the result envelope carries no notice. The 2 points leave the plan (recorded by the Product Owner at the next planning update; not re-baselined here).**
 Maps to: Risk 5, OQ-5.
 As a developer, I want fetched content marked as untrusted so that the model treats embedded instructions with suspicion.
 - Given OQ-5 is decided as "label", when `fetch` returns content, then it is wrapped or prefixed with a fixed untrusted-content notice.
 - Given the notice, when pagination is used, then it does not shift `start_index` offsets.
 - Given OQ-5 is decided as "no label", when the story is reviewed, then it is closed as won't-do.
-- Blocked by OQ-5.
+- Blocked by OQ-5 (now resolved: no label, so this story is closed as won't-do).
 
 ---
 
@@ -546,7 +547,7 @@ Trade-off: Sprint 10 is 7 points with C-2 and 5 if OQ-4 is "no" (C-2 dropped).
 |---|---|---|---|
 | OQ-3 | robots.txt default. DUE before Sprint 10 starts (C-1 parses the toggle with a placeholder; the default is decided by OQ-3, still OPEN) | Michael | C-1 default (Sprint 10), B-4 (Sprint 11) |
 | OQ-4 | Private-host allowlist needed. DUE before Sprint 10 | Michael | C-2 (Sprint 10) |
-| OQ-5 | Untrusted-content labelling. DUE before Sprint 2 (affects result envelope in A-3b/A-4) | Michael | B-6 |
+| OQ-5 | Untrusted-content labelling. **RESOLVED 2026-09-20: no label** (result envelope unchanged; B-6 won't-do) | Michael | None |
 | OQ-7 | Distribution and licence. DUE before Sprint 9 starts, and in any case BEFORE the first image is published to GHCR (D-2 naming/publication/visibility, D-4 install guide, LICENSE). Still OPEN; not decided by ADR-007 | Michael | D-2, D-4, D-6 |
 | E-8 | Bench-only loopback build. CONFIRMED by the user 2026-09-19 (does not decide OQ-4) | Michael | None (recorded; Sprint 2 E-8, E-2) |
 | OQ-8 | Resolved 2026-09-19: not a replacement; no incumbent; schema is default design | Michael | None |

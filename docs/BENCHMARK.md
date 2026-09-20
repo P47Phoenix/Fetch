@@ -14,7 +14,7 @@ Be careful not to read more into this document than it says.
 | `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. |
 | `cargo-audit` | Never run (not installed on the dev host). |
 | The benchmark scripts | Run against the stand-in, and (advisory only, section 13) against the real `fetch-mcp` idle scenario. Never in a `--gate` run. |
-| The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2). Valid input returns a `not_implemented` error and no network code exists yet (A-3b), so the measured memory is for an early build and will rise. |
+| The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2) and, since A-3b, a guarded streaming download. Earlier idle numbers in this document were taken before A-3b (no network code); idle RSS must be re-measured with the client compiled in. |
 | Native aarch64 measurement | Advisory only: the A-1 spike (section 11) and the early real product idle (section 13) were measured on a GitHub-hosted arm64 runner, no `--gate`. No `--gate` run exists yet. |
 | Native amd64 measurement | NOT YET MEASURED on a hosted amd64 runner. The only amd64 product figure is one advisory idle run on the developer's own x86_64 machine (section 13), not a hosted runner. |
 | Product memory gates (G4a, G4b on amd64 and arm64) | NOT YET RUN. |
@@ -27,7 +27,7 @@ Each term is explained here once. Later sections use the short form.
 | Term | Plain meaning |
 |---|---|
 | MCP | Model Context Protocol. A way for an AI tool (a "client") to talk to a helper program (a "server") such as `fetch-mcp`. |
-| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` used to be one (it only printed its version). It is now a real stdio server, but its `fetch` tool is not implemented yet. Do not register it in a real MCP client. |
+| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` used to be one (it only printed its version). It is now a real stdio server with a guarded download, but no HTML conversion yet. Do not register it in a real MCP client. |
 | Stand-in | `bench/standin_mcp.py`. A fake server written in Python, used only to test the benchmark tools. It is NOT the product. Its memory figures say nothing about the product. |
 | MiB | Mebibyte, the unit for every memory figure in this project: 1 MiB = 2^20 = 1,048,576 bytes. |
 | kB | Kilobyte as Linux reports it in `/proc`: 1 kB = 1,024 bytes (strictly a KiB). So 10 MiB = 10,240 kB and 40 MiB = 40,960 kB. |
@@ -132,7 +132,7 @@ Success: it prints three JSON lines (a `host` line, one `scenario` line, then a 
 - A per-scenario line may say `"verdict": "PASS"` in an advisory run. Ignore it. Only the `summary` verdict is authoritative.
 - The exit codes are in the table in section 6.
 
-**What you can run on the real binary.** Story A-2 has landed, so the handshake works and `measure.py` can measure the real `fetch-mcp` in advisory mode (no `--gate`). The `idle` scenario works on the shipped build. The fetch scenarios (5 MiB and 50 MiB) cannot pass yet: `fetch` returns `not_implemented` until A-3b, and the peak scenarios need the `bench-loopback` build. A `--gate` run stays refused off a native aarch64 host (see "What can go wrong"). Example, after the release build of step 3:
+**What you can run on the real binary.** Story A-2 has landed, so the handshake works and `measure.py` can measure the real `fetch-mcp` in advisory mode (no `--gate`). The `idle` scenario works on the shipped build. The fetch scenarios (5 MiB and 50 MiB) need the E-2 fixtures and the harness wiring (Sprint 3); the peak scenarios need the `bench-loopback` build. (A-3b has landed, so `fetch` no longer returns `not_implemented`.) A `--gate` run stays refused off a native aarch64 host (see "What can go wrong"). Example, after the release build of step 3:
 
 ```
 python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle --runs 10

@@ -36,3 +36,8 @@ Option 1 with these settings:
 - Enable HTTP/2 only if a real-URL test set shows >= 2% failures traced to h2-only origins, and the ARM peak stays within budget with h2 on.
 - Switch roots to platform verifier if webpki-roots costs measurable idle RSS on ARM (compare idle with and without loading roots at start, lazily building the TLS config on first fetch is the first mitigation).
 - Re-enable pooling only if per-call latency fails NFR-02 due to handshakes and ADR-003 review confirms safety.
+
+## Amendment 2026-09-20 (A-3b implementation facts; decision unchanged)
+- reqwest 0.13.5 built with `rustls-no-provider` refuses to build ANY client (http included) until a process-wide crypto provider is installed; `fetch` installs `ring` once (`rustls::crypto::ring::default_provider().install_default()`). aws-lc stays banned in `deny.toml`. The TLS config is our own (`tls_backend_preconfigured`, ring provider, embedded `webpki-roots`), built lazily on the first https hop so idle RSS does not pay for it. `rustls-platform-verifier` is still compiled in by reqwest's `rustls-no-provider` feature but is not used at runtime.
+- reqwest 0.13.5 exposes `http1_max_headers` (set to 64) but not hyper's `http1_max_buf_size`, so the header BYTE limit is hyper's default (about 400 KiB read buffer) plus our post-parse check of 32 KiB (names plus values). Architecture row (a): a header block can transiently occupy up to the hyper default before being refused.
+- Verified in the built tree: no `h2`; `hyper` client with http1 only.

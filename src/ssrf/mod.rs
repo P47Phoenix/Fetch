@@ -10,6 +10,9 @@
 pub mod ranges;
 pub mod resolver;
 
+#[cfg(test)]
+mod differential;
+
 use crate::error::FetchError;
 use crate::policy::Policy;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

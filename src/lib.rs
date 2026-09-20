@@ -1,12 +1,13 @@
-//! fetch-mcp library (A-2 stdio server, A-3a SSRF core): config, errors, stderr logger, fail-closed `Policy`, the
-//! `ssrf` module (range table, URL and IP-literal checks, resolver filter) and the
-//! stdio MCP `fetch` tool with a validated schema. There is deliberately NO network code and NO HTTP
-//! client dependency yet (Sprint 1 gate); fetching arrives in A-3b behind A-3a's SSRF checks.
+//! fetch-mcp library (A-2 stdio server, A-3a SSRF core, A-3b guarded fetch): config, errors, stderr logger,
+//! fail-closed `Policy`, the `ssrf` module (range table, URL and IP-literal checks, resolver filter), the
+//! `fetch` module (streaming, size-bounded HTTP client that dials only SSRF-validated addresses) and the
+//! stdio MCP `fetch` tool.
 //! Stdout is reserved for MCP protocol frames (FR-13): application code never prints to it.
 #![deny(clippy::print_stdout)]
 
 pub mod config;
 pub mod error;
+pub mod fetch;
 pub mod obs;
 pub mod policy;
 pub mod server;

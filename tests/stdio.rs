@@ -173,26 +173,44 @@ fn bad_input_is_rejected_with_the_field_named() {
     s.finish_and_assert_pure();
 }
 
+/// A loopback port nothing listens on (bound, then released).
+fn closed_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 #[test]
 fn ssrf_checks_refuse_blocked_literals_and_userinfo_before_anything_else() {
     let mut s = Session::start();
     s.handshake();
-    // E-8: the loopback targets are refused by the shipped/default policy and pass the policy (reaching the
-    // not-yet-implemented fetch) only in a `bench-loopback` build. Everything else is refused in every build.
+    // E-8: the loopback targets are refused by the shipped/default policy and pass the policy (so the client
+    // dials, and the closed port refuses the connection) only in a `bench-loopback` build. Everything else is
+    // refused in every build.
     let loopback = if cfg!(feature = "bench-loopback") {
-        "not_implemented"
+        "network_error"
     } else {
         "blocked_target"
     };
+    let p = closed_port();
     for (u, code) in [
-        ("http://127.0.0.1/", loopback),
-        ("http://2130706433/", loopback),
-        ("http://[::1]:8080/", loopback),
-        ("http://169.254.169.254/latest/meta-data", "blocked_target"),
-        ("http://localhost/", loopback),
-        ("http://user:pw@example.com/", "invalid_argument"),
-        ("http://[fe80::1%25eth0]/", "invalid_argument"),
-        ("file:///etc/passwd", "invalid_argument"),
+        (format!("http://127.0.0.1:{p}/"), loopback),
+        (format!("http://2130706433:{p}/"), loopback),
+        (format!("http://[::1]:{p}/"), loopback),
+        (
+            "http://169.254.169.254/latest/meta-data".to_string(),
+            "blocked_target",
+        ),
+        ("http://10.0.0.1/".to_string(), "blocked_target"),
+        (format!("http://localhost:{p}/"), loopback),
+        (
+            "http://user:pw@example.com/".to_string(),
+            "invalid_argument",
+        ),
+        ("http://[fe80::1%25eth0]/".to_string(), "invalid_argument"),
+        ("file:///etc/passwd".to_string(), "invalid_argument"),
     ] {
         let r = s.tool_call(&json!({ "url": u }));
         let m = rejection_text(&r).unwrap_or_else(|| panic!("{u} must be rejected: {r}"));
@@ -201,20 +219,44 @@ fn ssrf_checks_refuse_blocked_literals_and_userinfo_before_anything_else() {
     s.finish_and_assert_pure();
 }
 
+/// End to end through the real binary: only a `bench-loopback` build may reach the loopback fixture. The body is
+/// returned as fetched (no untrusted-content label, OQ-5 decided NO) and the character window is applied.
+#[cfg(feature = "bench-loopback")]
 #[test]
-fn valid_input_reports_not_implemented_without_fetching() {
+fn bench_build_fetches_a_loopback_fixture_and_returns_the_window_unlabelled() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut c, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let _ = c.read(&mut buf);
+            let body = "0123456789 h\u{e9}llo";
+            let _ = write!(
+                c,
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
     let mut s = Session::start();
     s.handshake();
-    for args in [
-        json!({"url": "https://example.com"}),
-        json!({"url": "http://example.com/a", "max_length": 10, "start_index": 0, "raw": true}),
-    ] {
-        let r = s.tool_call(&args);
-        assert_eq!(r["result"]["isError"], true, "{r}");
-        let text = r["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("not implemented yet"), "{text}");
-        assert!(text.starts_with("error[not_implemented]"), "{text}");
-    }
+    let r = s.tool_call(
+        &json!({"url": format!("http://127.0.0.1:{port}/"), "start_index": 2, "max_length": 10}),
+    );
+    assert!(r["error"].is_null(), "{r}");
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert_eq!(
+        r["result"]["content"].as_array().map(Vec::len),
+        Some(1),
+        "{r}"
+    );
+    assert_eq!(r["result"]["content"][0]["text"], "23456789 h", "{r}");
+    let r = s.tool_call(&json!({"url": format!("http://127.0.0.1:{port}/")}));
+    assert_eq!(
+        r["result"]["content"][0]["text"], "0123456789 h\u{e9}llo",
+        "{r}"
+    );
     s.finish_and_assert_pure();
 }
 

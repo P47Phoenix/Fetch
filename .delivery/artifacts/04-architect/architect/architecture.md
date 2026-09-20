@@ -544,3 +544,9 @@ Applies the user-approved Sprint Plan and the plan's "Required architecture chan
 - The IPv6 table gained `::/96` (whole), SIIT `::ffff:0:0:0/96` (embedded v4), `3fff::/20`, `5f00::/16` (and later `100:0:0:1::/64`, RFC 9780); `src/ssrf/ranges.rs` is authoritative over the ADR-003 list.
 - A-3b merge gate additionally requires a differential test against `url::Url::parse` (dev-dependency only) for host classification, and that the client dials only `Validated.addrs`.
 - `policy` is a top-level module (`src/policy.rs`), not under `ssrf`; `Resolver` is a trait returning `Vec<IpAddr>` (async fn in trait), so A-3b's real resolver needs tokio `net`.
+
+## Amendment 2026-09-20 (A-3b)
+- Module layout as built: `src/fetch/mod.rs` (client, redirect loop, deadline, semaphore, header and encoding checks), `src/fetch/body.rs` (bounded gzip and UTF-8 pipeline), `src/fetch/dns.rs` (`SystemResolver`, `Pinned`). Tool handler `src/server.rs` keeps an interim character window; conversion, early stop and `raw` are A-4 to A-6.
+- Dependencies: 8 direct of 15 after A-3b (rmcp, tokio, serde, schemars, reqwest, rustls, webpki-roots, flate2); `url` is a dev-dependency only. tokio features: `rt, macros, io-std, io-util, net, time, sync` (`net` for `lookup_host`, `time` for the deadline, `sync` for the concurrency `Semaphore`); the Sprint 1 guard ban on `net` and on HTTP client crates is removed (`scripts/check-release-features.sh`).
+- N7 closed: CI job `a3b-merge-gate` (docs/ci-branch-protection.md). N5 closed: at most 16 answers, resolver order preserved.
+- OQ-5 decided no-label (2026-09-20): section 4/ADR-006 item 7 carries no label block.
