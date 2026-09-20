@@ -287,6 +287,8 @@ jobs:
           rc=0
           python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind bench --scenario g4a-5mib-full \
             --out out/results-peak.jsonl > /dev/null || rc=$?
+          # keep the results in the job log so they do not depend on the expiring artifact
+          cat out/results-peak.jsonl
           echo "peak exit=$rc" | tee out/exitcodes-peak.txt
           # exit 1 = target missed (a result, reported); 2/3 = invalid or refused (plumbing failure)
           [ "$rc" -le 1 ]
@@ -303,12 +305,12 @@ jobs:
                   o = json.loads(l)
                   if o.get("kind") == "scenario":
                       v = o.get("samples_kB") or [0]
-                      print(f"VmHWM after one 5 MiB fetch: {o['valid_runs']}/{o['runs']} valid, median {o.get('median_MiB','n/a')} MiB, "
-                            f"min-max {min(v)/1024:.2f}-{max(v)/1024:.2f} MiB (samples kB {v}), target 40 MiB, verdict {o['verdict']}\n")
+                      print(f"VmHWM after one 5 MiB fetch: {o.get('valid_runs','?')}/{o.get('runs','?')} valid, median {o.get('median_MiB','n/a')} MiB, "
+                            f"min-max {min(v)/1024:.2f}-{max(v)/1024:.2f} MiB (samples kB {v}), target 40 MiB, verdict {o.get('verdict','n/a')}\n")
                   elif o.get("kind") == "summary":
                       print(f"\nsummary: {o.get('verdict')} {o.get('reason','')} (gating={o.get('gating')})")
-          except OSError as e:
-              print(f"no results: {e}")
+          except (OSError, KeyError, ValueError) as e:
+              print(f"no results: {e!r}")
           PY
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

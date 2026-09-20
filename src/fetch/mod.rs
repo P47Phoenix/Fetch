@@ -277,6 +277,7 @@ fn map_transport(e: reqwest::Error) -> FetchError {
     if e.is_timeout() {
         return FetchError::Timeout("the request timed out".into());
     }
+    // The matched chain may contain the peer socket address, but it is only searched and never emitted.
     // Classify from the error's kind first and strip the URL before any text is inspected: reqwest's Debug output
     // embeds the request URL, and the URL (path, query or a redirect Location) is upstream-controlled text.
     let is_connect = e.is_connect();

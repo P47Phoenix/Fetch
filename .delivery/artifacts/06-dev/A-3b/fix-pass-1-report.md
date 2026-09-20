@@ -15,3 +15,10 @@ fmt OK; clippy -D warnings x3 clean; cargo test --locked default 91+9, bench-loo
 
 ## CI on PR #6 (head 5c9a0dd)
 All pass: fmt, clippy, test, deny, release-guard, a3b-merge-gate, bench (gnu), bench (musl), bench-product, bench-product-peak.
+
+## Cleanup pass (post round-2 reviews)
+- BENCHMARK s14 verified present and honestly labelled (advisory, single run, gating=false wording added). s13 lines say "describes the A-2 build; superseded by A-3b and section 14".
+- arm-bench.yml bench-product-peak: results jsonl is now cat'ed into the job log; job summary tolerates missing keys (.get, catches KeyError/ValueError).
+- ci-branch-protection.md names all three advisory arm64 jobs; src/fetch/mod.rs comment corrected (chain may contain peer address, never emitted); dev-report Honest gap #1 has a correction note.
+- architecture.md: OQ-5 resolved (no label), B-6 won't-do, stale "blocked/OPEN" text updated.
+- ADR-001 already has the rustls-platform-verifier/openssl-probe dependency note (line 44); no addition needed.

@@ -28,6 +28,7 @@ See the hand-off message for the final run; in the extract: `cargo fmt --check` 
 
 ## Honest gaps
 1. **Native aarch64 RSS smoke NOT done.** This host is x86_64. Substitute (not the AC, not evidence for G4): bench-loopback release build, one 5 MiB HTML fetch from a local Python server, VmHWM read from /proc: idle 3884 kB, after the fetch VmHWM 5760 kB. Needs a run on aarch64 (E-2/E-3 harness).
+   - Correction (cleanup, 2026-09-20): now measured on native aarch64: 10/10 valid, median VmHWM 4.77 MiB (advisory, single run, CI run 35523134933); see docs/BENCHMARK.md section 14. The x86_64 figure above is kept as history.
 2. **Idle RSS with the client compiled in is unmeasured on aarch64**; the Sprint 1 idle figures in docs/BENCHMARK.md predate the client (text says so). Release binary (x86_64, stripped) is 3.0 MB; not compared with the spike numbers. reqwest's `rustls-no-provider` also compiles `rustls-platform-verifier` (unused at runtime), a small binary and audit-surface cost (ADR-001 note).
 3. **TLS is not covered by any automated test** (no offline CA; a fixture-CA feature is not adopted). Certificate validation and webpki-roots were only exercised manually against real sites.
 4. **Header byte limit is not the explicit small limit the AC implies at the parser**: reqwest 0.13.5 does not expose hyper's `http1_max_buf_size`, so a head can occupy hyper's default (about 400 KiB) before our 32 KiB post-check refuses it. Count limit (64) is enforced by the parser.

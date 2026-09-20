@@ -434,7 +434,7 @@ Caveats:
 
 ## 13. Real-product idle numbers (advisory, Sprint 1)
 
-**Read this as an early, advisory record, not a gate result and not evidence that the targets are met.** These runs were not `--gate` runs, so the summary verdict is `ADVISORY_PASS`, which by this document never satisfies a target. The measured program is the A-2 build: a stdio MCP server with a `fetch` tool that returns `not_implemented`. It has no HTTP client, TLS or HTML converter, so the real number will be higher. No fetch scenario (5 MiB or 50 MiB) has been run on the product.
+**Read this as an early, advisory record, not a gate result and not evidence that the targets are met.** These runs were not `--gate` runs, so the summary verdict is `ADVISORY_PASS`, which by this document never satisfies a target. The measured program is the A-2 build: a stdio MCP server with a `fetch` tool that returns `not_implemented`. It has no HTTP client, TLS or HTML converter, so the real number will be higher. No fetch scenario (5 MiB or 50 MiB) has been run on the product. (This describes the A-2 build; superseded by A-3b and section 14.)
 
 Idle VmRSS median, 10 of 10 valid runs each, 30 s settle, shipped (release) binary, target 10 MiB:
 
@@ -448,12 +448,12 @@ What these do NOT show:
 
 - They are recorded, not enforced. `ready_ms` is not compared with the 250 ms figure (section 12).
 - Only the gnu build was measured, and the amd64 figure is from a developer machine, not a hosted amd64 runner.
-- The product memory gates G4a and G4b have not been run on amd64 or arm64. The peak (40 MiB) is completely unmeasured for the product.
+- The product memory gates G4a and G4b have not been run on amd64 or arm64. The peak (40 MiB) is completely unmeasured for the product. (This describes the A-2 build; superseded by A-3b and section 14, which has one advisory arm64 5 MiB peak run.)
 - The hosted arm64 job (`bench-product` in `.github/workflows/arm-bench.yml`) is advisory and is not a required check.
 
 ## 14. A-3b RSS smoke on native aarch64 (advisory, single run, not a gate)
 
-The A-3b acceptance criterion asks for one non-gating manual 5 MiB fetch on native aarch64 with `VmHWM` read from `/proc/<pid>/status`. It was run on the GitHub-hosted arm64 runner by the advisory job `bench-product-peak` in `.github/workflows/arm-bench.yml` (CI run 35523134933, PR #6 head 5c9a0dd; job is not a required check). Binary: `fetch-mcp` release profile built with `--features bench-loopback` (`--version` shows `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback`), aarch64 gnu, dynamically linked, stripped; fixture served by `bench/serve.py` on loopback; scenario `g4a-5mib-full` (`max_length` 5 MiB), 10 fresh processes, harness run without `--gate`.
+The A-3b acceptance criterion asks for one non-gating manual 5 MiB fetch on native aarch64 with `VmHWM` read from `/proc/<pid>/status`. It was run on the GitHub-hosted arm64 runner by the advisory job `bench-product-peak` in `.github/workflows/arm-bench.yml` (CI run 35523134933, PR #6 head 5c9a0dd; job is not a required check). Binary: `fetch-mcp` release profile built with `--features bench-loopback` (`--version` shows `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback`), aarch64 gnu, dynamically linked, stripped; fixture served by `bench/serve.py` on loopback; scenario `g4a-5mib-full` (`max_length` 5 MiB), 10 fresh processes, harness run without `--gate` (`gating=false`, advisory verdict).
 
 | Figure | Value |
 |---|---|

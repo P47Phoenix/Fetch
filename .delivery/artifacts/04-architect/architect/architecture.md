@@ -59,7 +59,7 @@ src/
   obs.rs         stderr logger, per-call log record, optional /proc/self/status memory sample
   server/
     mod.rs       rmcp #[tool_router] handler, FetchParams schema, concurrency semaphore, result rendering
-    render.rs    result assembly: optional header (final URL/status, FR-14), content, pagination footer, optional untrusted label (OQ-5 hook)
+    render.rs    result assembly: optional header (final URL/status, FR-14), content, pagination footer, no untrusted label (OQ-5 resolved; hook unused)
   fetch/
     mod.rs       orchestrator: deadline, redirect loop, per-hop policy check, body pump
     client.rs    reqwest client construction (rustls, http1, gzip, no proxy, no cookies, no pool)
@@ -381,7 +381,7 @@ Actors: prompt-injected LLM supplying malicious URLs; malicious web server; mali
 | Repudiation | No trace of what was fetched | stderr per-call log (host+path), local only |
 | Information disclosure | SSRF reads internal services/metadata and returns content to LLM; error text reveals topology; credentials leaked | ADR-003; blocked errors are categorical; no cookies/auth/proxy (NFR-07); no headers forwarded across redirects because none are set; query stripped in logs |
 | Denial of service | Huge/slow/compressed/deeply nested bodies exhaust memory or CPU | ADR-004: caps, deadline, semaphore (queue wait bounded), blocking-pool cap, lol_html memory limit, depth caps |
-| Elevation of privilege | Fetched content makes the LLM take actions | Out of server control; OQ-5 labelling; no code execution, no JS, no file scheme, output is text only |
+| Elevation of privilege | Fetched content makes the LLM take actions | Out of server control; no label (OQ-5 resolved); no code execution, no JS, no file scheme, output is text only |
 
 ### 13.1 SSRF (Security Architect view)
 
@@ -400,7 +400,7 @@ Attack paths and controls:
 
 ### 13.2 Prompt injection
 
-Cannot be eliminated. Server-side measures: text-only output, no active content, script/style/hidden-element stripping (also removes some hidden-text injection vectors), fixed pagination footer separated from content, optional untrusted label (OQ-5, human decision). The fixed pagination footer and 'Final URL' header are spoofable by page text; keep them structurally separate from content (OQ-5 option a) and, if OQ-5 stays unanswered, ship the label ON by default (Security recommendation, not decided here). Documentation (D-4) states the residual risk. Note the stripping of `[hidden]`, `aria-hidden` and CSS-hidden text is best-effort: inline `style="display:none"` can be matched, external CSS cannot.
+Cannot be eliminated. Server-side measures: text-only output, no active content, script/style/hidden-element stripping (also removes some hidden-text injection vectors), fixed pagination footer separated from content, no untrusted label (OQ-5 resolved: no label, owner decision 2026-09-20). The fixed pagination footer and 'Final URL' header are spoofable by page text; keep them structurally separate from content (OQ-5 option a) (the label-ON-by-default recommendation is moot: OQ-5 resolved as no label). Documentation (D-4) states the residual risk. Note the stripping of `[hidden]`, `aria-hidden` and CSS-hidden text is best-effort: inline `style="display:none"` can be matched, external CSS cannot.
 
 ### 13.3 Resource exhaustion
 
@@ -461,7 +461,7 @@ Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-g
 | B-3 | `fetch::redirect` | per-hop revalidation |
 | B-4 | `fetch::robots` | blocked by OQ-3 |
 | B-5 | tests, coverage gate | section 10 |
-| B-6 | `server::render` hook | blocked by OQ-5 |
+| B-6 | `server::render` hook | won't-do (OQ-5 resolved 2026-09-20: no label) |
 | C-1 | `config` | |
 | C-2 | `ssrf::Policy` allowlist | blocked by OQ-4 |
 | C-3 | `config`, `fetch::body` | |
@@ -482,7 +482,7 @@ Ordering (as adopted by the plan): A-3a lands first with no HTTP client, A-3b fo
 ## 16. Next Steps / Assumptions
 
 Assumptions: single user, trusted local operator; one client; no persistence; HTTP/1.1 acceptable; gzip-only acceptable; character-based pagination acceptable.
-Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner as part of E-1; (2) 6.4 is ACCEPTED (PO, 2026-09-19); the Required doc changes below are historical (applied via the plan); (3) human answers OQ-3/4/5/7 before B-4/C-2/B-6/D-6; (4) A-4 spike-in-story: converter quality on 10 real pages before committing to landmark thresholds.
+Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner as part of E-1; (2) 6.4 is ACCEPTED (PO, 2026-09-19); the Required doc changes below are historical (applied via the plan); (3) human answers OQ-3/4/7 before B-4/C-2/D-6 (OQ-5 resolved: no label, B-6 won't-do); (4) A-4 spike-in-story: converter quality on 10 real pages before committing to landmark thresholds.
 
 
 ## Required doc changes (for the orchestrator/PO; docs/ not edited here)
@@ -528,7 +528,7 @@ Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner
 
 ## Revision 2 (post-plan, 2026-09-19)
 
-Applies the user-approved Sprint Plan and the plan's "Required architecture change" note. No decision not approved by the plan or user was changed; OQ-3, OQ-4, OQ-5 and OQ-7 remain OPEN.
+Applies the user-approved Sprint Plan and the plan's "Required architecture change" note. No decision not approved by the plan or user was changed; OQ-3, OQ-4 and OQ-7 remained OPEN at this revision; OQ-5 has since been RESOLVED (no label, owner decision 2026-09-20).
 
 | Change | Where |
 |---|---|
