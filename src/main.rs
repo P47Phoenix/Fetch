@@ -32,6 +32,9 @@ async fn main() -> std::process::ExitCode {
         "startup",
         format_args!("version={}", env!("CARGO_PKG_VERSION")),
     );
+    for m in fetch_mcp::build_markers() {
+        obs::stderr_line(format_args!("warn build marker {m}")); // bench/test builds announce themselves
+    }
     match serve().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -50,7 +53,7 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let svc = Fetch::new(Policy::default())
+    let svc = Fetch::new(Policy::for_build())
         .serve(rmcp::transport::stdio())
         .await?;
     svc.waiting().await?;

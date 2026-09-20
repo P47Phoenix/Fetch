@@ -177,12 +177,19 @@ fn bad_input_is_rejected_with_the_field_named() {
 fn ssrf_checks_refuse_blocked_literals_and_userinfo_before_anything_else() {
     let mut s = Session::start();
     s.handshake();
+    // E-8: the loopback targets are refused by the shipped/default policy and pass the policy (reaching the
+    // not-yet-implemented fetch) only in a `bench-loopback` build. Everything else is refused in every build.
+    let loopback = if cfg!(feature = "bench-loopback") {
+        "not_implemented"
+    } else {
+        "blocked_target"
+    };
     for (u, code) in [
-        ("http://127.0.0.1/", "blocked_target"),
-        ("http://2130706433/", "blocked_target"),
-        ("http://[::1]:8080/", "blocked_target"),
+        ("http://127.0.0.1/", loopback),
+        ("http://2130706433/", loopback),
+        ("http://[::1]:8080/", loopback),
         ("http://169.254.169.254/latest/meta-data", "blocked_target"),
-        ("http://localhost/", "blocked_target"),
+        ("http://localhost/", loopback),
         ("http://user:pw@example.com/", "invalid_argument"),
         ("http://[fe80::1%25eth0]/", "invalid_argument"),
         ("file:///etc/passwd", "invalid_argument"),
@@ -305,6 +312,12 @@ fn non_initialize_first_message_exits_1_without_echoing_it() {
     assert!(out.stdout.is_empty(), "no stdout frames: {:?}", out.stdout);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("CLIENT_SECRET_MARKER"), "echoed: {err}");
+    // A bench build announces itself with a `warn build marker` line first; the default build has none.
+    let err = err
+        .lines()
+        .filter(|l| !l.starts_with("warn build marker "))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(err.starts_with("error serve"), "{err}");
 }
 

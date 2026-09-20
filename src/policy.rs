@@ -41,6 +41,21 @@ impl Policy {
         }
     }
 
+    /// The policy the binary serves with. Fail-closed ([`Policy::default`]) in every build except one compiled
+    /// with the compile-time-only `bench-loopback` feature (E-8), which additionally permits loopback. There is
+    /// no runtime switch: no env var or flag can change the result.
+    #[must_use]
+    pub fn for_build() -> Self {
+        #[cfg(feature = "bench-loopback")]
+        {
+            Self::permit_loopback_for_tests()
+        }
+        #[cfg(not(feature = "bench-loopback"))]
+        {
+            Self::default()
+        }
+    }
+
     /// Test/bench-only policy that permits loopback (fixture server on 127.0.0.1). Absent from release builds.
     #[cfg(any(test, feature = "test-support", feature = "bench-loopback"))]
     #[must_use]
@@ -100,6 +115,42 @@ mod tests {
         ] {
             assert!(p.check_ip(a.parse().unwrap()).is_err(), "{a}");
         }
+    }
+
+    #[cfg(not(feature = "bench-loopback"))]
+    #[test]
+    fn for_build_is_fail_closed_without_bench_feature() {
+        let p = Policy::for_build();
+        assert_eq!(p, Policy::default());
+        assert!(!p.allows_loopback());
+        for a in ["127.0.0.1", "127.9.9.9", "::1"] {
+            assert!(p.check_ip(a.parse().unwrap()).is_err(), "{a}");
+        }
+    }
+
+    #[cfg(feature = "bench-loopback")]
+    #[test]
+    fn for_build_permits_only_loopback_with_bench_feature() {
+        let p = Policy::for_build();
+        assert!(p.allows_loopback());
+        for a in ["127.0.0.1", "127.9.9.9", "::1"] {
+            assert!(p.check_ip(a.parse().unwrap()).is_ok(), "{a}");
+        }
+        for a in [
+            "0.0.0.0",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "::",
+            "fe80::1",
+            "fd00:ec2::254",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(p.check_ip(a.parse().unwrap()).is_err(), "{a}");
+        }
+        assert!(p.check_ip("8.8.8.8".parse().unwrap()).is_ok());
     }
 
     #[test]
