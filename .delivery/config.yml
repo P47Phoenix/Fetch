@@ -1,0 +1,86 @@
+config_version: "2.9"
+prose_style: caveman-lite
+routing:
+  force_type: null
+tech_stack:
+  languages: [Rust]
+  frameworks: [rmcp, tokio]
+  databases: []
+  ci_cd: github-actions
+  paradigm: auto
+  paradigm_by_language: {}
+  nx_workspace: false
+  clean_code_guide: ""
+  clean_code_enforcement: block
+architecture:
+  style: auto
+  style_overrides: {}
+  decomposition: auto
+enforcement:
+  source_code_hook: false   # hook install deferred; enable via `setup`
+  retro_frequency: every-run
+  retro_skip_allowed: false
+team:
+  size: 1
+  composition: [backend]
+deployment:
+  environment: edge
+  containerized: false
+timeline:
+  risk_tolerance: standard
+  deadline: null
+compliance:
+  frameworks: []
+pipeline:
+  scope: code-only
+  scope_include: []
+  scope_exclude: [".delivery/", ".git/", "target/"]
+  checkpoints: [refine, architect, plan, uat]
+  collaboration_patterns: [evaluator-optimizer, adversarial, review-board, debate, consensus, decision-routing]
+  max_self_correction: 3
+  max_dod_rounds: 3
+  max_parallel_agents: 3
+  parallel_stories: true
+  parallel_validators: true
+  enforce_self_write_block: true
+  verify_skill_loading: true
+  delegation_retry_max: 2
+  isolation_audit: warn
+  metadata_max_chars: 200
+  agent_timeout: 120
+  required_agent_retry_max: 2
+dod_validators:
+  idea: [po, architect]
+  refine: [po, architect, qa]
+  design: [ux, po, qa, architect]
+  architect: [architect, qa, devops, security]
+  plan: [sm, po, qa, devops]
+  development: [developer, qa, architect, tech-writer]
+  uat: [qa, devops, po, tech-writer]
+personas:
+  categories: []
+  selected: []
+  feedback_stages: []
+  count: 3
+  overlays: []
+  custom: []
+aliases:
+  theme: business
+  custom_path: .delivery/aliases/
+notifications:
+  channels: [console]
+  events: [complete, abort, escalation]
+monorepo:
+  enabled: false
+  tool: none
+  scope: root
+git:
+  branch_strategy: github-flow
+  auto_branch: true
+  commit_convention: conventional
+  clean_tree_check: true
+github:
+  create_issues: false
+  create_pr: false
+  link_commits: true
+wizard_completed: 2026-09-19

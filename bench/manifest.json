@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "unit": "MiB=2^20",
+  "seed": 1,
+  "fixtures": {
+    "html_5mib": {
+      "file": "html_5mib.html",
+      "size": 5241856,
+      "sha256": "f46efd63068525c1b61124c0ce1841ef5b1c8490aa8a0e4f870235fbc1d2e9d5"
+    },
+    "html_5mib_gz": {
+      "file": "html_5mib.html.gz",
+      "encoding": "gzip",
+      "decompressed_size": 5241856,
+      "decompressed_sha256": "f46efd63068525c1b61124c0ce1841ef5b1c8490aa8a0e4f870235fbc1d2e9d5",
+      "compressed_size_min": 262144,
+      "compressed_size_max": 2097152,
+      "compressed_size_reference": 776917
+    },
+    "html_50mib": {
+      "file": "html_50mib.html",
+      "size": 52428800,
+      "sha256": "e62c5fe5973d6f688accf67222078c14ca06497f988a18ef554545c031705f51"
+    }
+  }
+}

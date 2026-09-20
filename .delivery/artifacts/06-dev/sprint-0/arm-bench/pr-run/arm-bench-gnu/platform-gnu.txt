@@ -1,0 +1,16 @@
+uname -a: Linux runnervmec22z 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:12:01 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+kernel: 6.17.0-1022-azure
+machine: aarch64
+cpu: CPU part	: 0xd49
+cpu_part: CPU part	: 0xd49
+nproc: 4
+MemTotal: MemTotal:       16330124 kB
+PAGESIZE: 4096
+glibc: glibc 2.39
+thp: always [madvise] never
+os: Ubuntu 24.04.5 LTS
+runner image: ubuntu24-arm64 20260907.118.1
+runner name: GitHub Actions 1000003301 arch=ARM64
+binfmt: /proc/sys/fs/binfmt_misc/python3.12 /proc/sys/fs/binfmt_misc/llvm-18-runtime.binfmt /proc/sys/fs/binfmt_misc/llvm-17-runtime.binfmt /proc/sys/fs/binfmt_misc/llvm-16-runtime.binfmt /proc/sys/fs/binfmt_misc/register /proc/sys/fs/binfmt_misc/status 
+/home/runner/work/_temp/a1: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=2d366eaa329703bd898228f27cd836473ec83810, for GNU/Linux 3.7.0, stripped
+48aa14c6df48ad02138fed6f5f57064eca1bbe76cfd80f08bef6a14e630fe3c7  /home/runner/work/_temp/a1

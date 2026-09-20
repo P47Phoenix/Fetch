@@ -2,56 +2,60 @@
 
 | Field | Value |
 |---|---|
-| Product/Feature | Fetch MCP Server (`fetch` tool), Rust, low-memory replacement for `mcp__fetch__fetch` |
-| Version | 0.2 (Draft) |
+| Product/Feature | Fetch MCP Server (`fetch` tool), Rust, low-memory MCP server for ARM |
+| Version | 0.4 (Draft) |
 | Author | Michael Connelly |
-| Status | Draft - OQ-1 and OQ-2 resolved; remaining open questions pending |
+| Status | Draft - OQ-1, OQ-2, OQ-8 and OQ-9 resolved; Stage 4 architecture changes applied (v0.4), E-4 size-error rule accepted; OQ-3, OQ-4, OQ-5 and OQ-7 still open |
 | Last Updated | 2026-09-19 |
 
 ## 1. Problem Statement
 
 LLM clients cannot read live web pages on their own. They need a tool that takes a URL and returns content the model can use: clean text, bounded in size, and safe to run from the developer's machine or network.
 
-The author runs the existing `mcp__fetch__fetch` server on ARM hardware (aarch64 Linux and Apple Silicon). That server uses more memory than the job warrants, and on small ARM machines the memory cost of an always-resident MCP server matters. **The purpose of this project is to replace `mcp__fetch__fetch` with an implementation that uses measurably less memory on ARM**, with equal or better functional behavior.
+The author runs MCP servers on ARM hardware (aarch64 Linux and Apple Silicon). On small ARM machines the memory cost of an always-resident MCP server matters. **The purpose of this project is a new fetch MCP server that stays within absolute memory targets on ARM** (idle <= 10 MiB RSS; peak <= 40 MiB while fetching a 5 MiB page), with reliable functional behavior.
 
 Secondary concerns carry over from the original draft. Raw HTTP responses are a poor fit for LLMs: HTML is token-heavy, large pages overflow context, and a naive fetcher can be steered to internal network addresses (SSRF) by prompt-injected content.
 
-The product is a small, local MCP server exposing one `fetch` tool. It is written in Rust with the official MCP Rust SDK (`rmcp`), ships as a single binary, streams and bounds all buffering so memory is capped by the configured max download size, converts HTML to markdown, paginates large responses, and blocks unsafe targets by default.
+The product is a small, local MCP server exposing one `fetch` tool. It is written in Rust with the official MCP Rust SDK (`rmcp`), ships as a container image holding one self-contained server binary, streams and bounds all buffering so memory is capped by the configured max download size, converts HTML to markdown, paginates large responses, and blocks unsafe targets by default.
 
 **Decisions recorded**
-- OQ-1 (resolved): the goal is replacement of `mcp__fetch__fetch` to reduce memory use on ARM. SSRF protection, determinism and code ownership are secondary benefits.
+- OQ-1 (resolved): the goal is a new fetch MCP server with a small memory footprint on ARM. SSRF protection, determinism and code ownership are secondary benefits.
 - OQ-2 (resolved): Rust with the official SDK, https://github.com/modelcontextprotocol/rust-sdk (crate `rmcp`), stdio transport.
+- OQ-8 (resolved 2026-09-19): this is a brand-new server, not a replacement for `mcp__fetch__fetch`; there is no incumbent to baseline. The parameter schema (`url`, `max_length`, `start_index`, `raw`) is the default design, not a compatibility contract.
+- OQ-9 (resolved 2026-09-19; amended by the user 2026-09-19, ADR-007): the native aarch64 measurement runs on GitHub-hosted arm64 runners (`ubuntu-24.04-arm`, public repo), not on the author's cluster. It is a cloud VM: OS, kernel, CPU model, RAM and page size are recorded in every report and the absolute targets are unchanged. No self-hosted runner. Trust model: hosted ephemeral VMs, least-privilege tokens, no `pull_request_target`, SHA-pinned actions, no secrets on fork PRs; a skipped or absent benchmark job blocks release (architecture 9.2).
+- Release artifact (user decision 2026-09-19, ADR-007): a tested multi-arch container image (`linux/amd64` + `linux/arm64`, each natively memory-gated) published to GHCR from GitHub Actions only, tagged and published only after the ARM gates pass on that exact digest. Standalone gnu, musl and macOS binary releases are dropped. Publishing an image publicly is a distribution act: OQ-7 must be answered before the first image is published.
+- Size rule (accepted 2026-09-19, architecture 6.4): a `Content-Length` above the max download size returns `too_large` immediately. With no `Content-Length` the body is streamed; the call succeeds if the requested window completes under the cap, and returns `too_large` if the cap is reached first.
 
 **Assumptions (adjustable)**
 - Async runtime is `tokio`; HTTP client is `reqwest` or `hyper` with `rustls` (no OpenSSL); HTML-to-markdown crate is TBD. All crate choices are unvalidated and are decided in the spike (Epic A, story A-1).
-- The incumbent's memory numbers are unknown. They are captured in the baseline spike (Epic E, story E-1). Memory targets below are expressed relative to that baseline, with provisional absolute caps that the spike may revise.
+- Memory targets are absolute (idle <= 10 MiB RSS; peak <= 40 MiB VmHWM fetching a 5 MiB page; median of 10 runs). The benchmark harness and targets are defined in the Sprint 0 story E-1.
 - Transport is stdio; single user; runs locally.
 - Target clients are Claude Code and Claude Desktop.
-- Primary platforms: aarch64-linux and macOS arm64. x86_64-linux is best-effort.
+- Primary platforms (ADR-007, user 2026-09-19): the container image for linux/arm64 and linux/amd64, both native-memory-gated (Linux, macOS via Docker Desktop, Windows via WSL2). Standalone binaries are not released.
 
 ## 2. Goals & Success Metrics
 
-Goal 1 is the primary goal. Goals 2-6 are guardrails that the replacement must meet to be a usable substitute.
+Goal 1 is the primary goal. Goals 2-6 are guardrails that the server must meet to be usable.
 
 | # | Goal | Metric | Target | Baseline |
 |---|---|---|---|---|
-| 1a | **Lower idle memory on ARM** | Idle RSS (after MCP `initialize` + `tools/list`, 30 s settle) on aarch64-linux | <= 50% of incumbent; provisional absolute cap <= 15 MB | Measure incumbent (spike E-1) |
-| 1b | **Lower peak memory while fetching** | Peak RSS (VmHWM) fetching a 5 MB HTML page on aarch64-linux | <= 50% of incumbent; provisional absolute cap <= 64 MB | Measure incumbent (spike E-1) |
-| 1c | **Memory capped by max size** | Peak RSS growth when the server returns a 50 MB body with max size 5 MB | Within 10% of the 5 MB-page peak (no unbounded buffering) | none - new |
-| 1d | **Claim proven, not asserted** | Reproducible benchmark comparing new vs incumbent, published in repo | Report exists; run in CI on aarch64 | none - new |
-| 2 | Reliable page retrieval | Success rate on a 50-URL curated test set (static HTML, JSON, plain text, redirects) | >= 95% | Incumbent on same set (E-1) |
-| 3 | Token-efficient output | Median token reduction, HTML to markdown, on the test set | >= 50% and not worse than incumbent | Incumbent (E-1) |
+| 1a | **Lower idle memory on ARM** | Idle RSS (after MCP `initialize` + `tools/list`, 30 s settle) on aarch64-linux | <= 10 MiB RSS (VmRSS), median of 10 runs | none - new |
+| 1b | **Lower peak memory while fetching** | Peak RSS (VmHWM) fetching a 5 MiB HTML page on aarch64-linux | <= 40 MiB VmHWM, median of 10 runs | none - new |
+| 1c | **Memory capped by max size** | Peak RSS growth when the server returns a 50 MiB body with max size 5 MiB | Within 10% of the 5 MiB-page peak (no unbounded buffering) | none - new |
+| 1d | **Claim proven, not asserted** | Reproducible benchmark against the absolute targets, published in repo | Report exists; run in CI on aarch64 | none - new |
+| 2 | Reliable page retrieval | Offline HTML conversion success on a 50-URL curated snapshot set (checked in A-4, Sprint 4), plus a non-gating 10-URL live smoke of network, TLS, redirect, JSON and plain-text behaviour (owner E-5) | >= 95% | none - new |
+| 3 | Token-efficient output | Median token reduction, HTML to markdown, on the test set | >= 50% | none - new |
 | 4 | Safe by default | Private/loopback/link-local targets blocked in SSRF test suite | 100% of cases | none - new |
-| 5 | Responsive | p95 overhead for pages under 1 MB, excluding remote server time | <= 500 ms | none - new |
-| 6 | Drop-in in real clients | Server registers and tool call succeeds in Claude Code on aarch64-linux and macOS arm64, by v1.0 | Yes | none - new |
+| 5 | Responsive | p95 conversion overhead for a 1 MiB page, excluding remote server time (method defined in E-1, checked in A-4) | <= 500 ms | none - new |
+| 6 | Works in real clients | Server registers and tool call succeeds in Claude Code on aarch64-linux and macOS arm64, by v1.0 | Yes | none - new |
 
-Decision rule: if the spike shows the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped before Milestone M2 (see Section 9).
+Decision rule: if the spikes show the Rust server cannot reach 1a and 1b, the project is stopped or re-scoped at the go/no-go gate G0 (end of Sprint 0) or the memory gate G4 (G4a end of Sprint 4, idle plus scenarios needing only A-3b and A-4; G4b end of Sprint 5, the window, early-stop and `raw=true` scenarios, which completes the gate), before safety and packaging work (see Section 9).
 
 ## 3. User Personas
 
 **Primary: Solo developer on ARM hardware (Michael Connelly).** Runs Claude Code on aarch64 Linux and Apple Silicon, including memory-constrained machines. Wants a resident MCP server with a small footprint and a single binary to install. Cares about correctness, safety on a home network, and control over the code.
 
-**Secondary: MCP client LLM agent.** The programmatic consumer of the tool. Needs a clear schema, predictable output, actionable error messages and pagination hints, equivalent to or better than the incumbent's.
+**Secondary: MCP client LLM agent.** The programmatic consumer of the tool. Needs a clear schema, predictable output, actionable error messages and pagination hints.
 
 **Secondary: Home-lab operator.** The same person, with internal services (e.g. TrueNAS, Home Assistant) that the agent must not reach by accident.
 
@@ -66,8 +70,8 @@ Detailed, sized stories with full acceptance criteria are in `docs/EPICS.md`. Su
 - US-5: Blocked from internal network
 - US-6: Configure limits and policy
 - US-7: Run a small resident server on ARM (idle and peak memory targets)
-- US-8: Install as a single ARM binary
-- US-9: See proof of the memory saving against the incumbent
+- US-8: Install as a tested container image (arm64)
+- US-9: See proof that the memory targets are met
 
 ### US-1: Retrieve a page as markdown
 As a developer running an LLM agent, I want the agent to fetch a URL and receive markdown so that it can read the page cheaply.
@@ -101,61 +105,61 @@ As a developer, I want to set limits and an allowlist via environment variables 
 ### US-7: Run a small resident server on ARM
 As a solo developer on ARM hardware, I want the server to use little memory when idle and when fetching so that it does not compete with my other workloads.
 - Given the server has completed the MCP handshake on aarch64-linux, when it is idle for 30 s, then its RSS is within the NFR-10 target.
-- Given a 5 MB page is fetched, when peak RSS is measured, then it is within the NFR-11 target.
-- Given a server response larger than the max size, when `fetch` is called, then memory stays bounded and the call returns a size error.
+- Given a 5 MiB page is fetched, when peak RSS is measured, then it is within the NFR-11 target.
+- Given a server response larger than the max size, when `fetch` is called, then memory stays bounded and the call returns a size error, unless the response has no `Content-Length` and the requested window completes under the max size (then it succeeds, still bounded).
 
-### US-8: Install as a single ARM binary
-As a developer, I want one self-contained binary for aarch64-linux and macOS arm64 so that I can register it in Claude Code without installing a runtime.
-- Given a release artifact for my platform, when I copy it onto my PATH and register it, then Claude Code lists the `fetch` tool with no other installs.
+### US-8: Install as a tested container image (arm64)
+As a developer, I want a tested multi-arch (`linux/amd64`, `linux/arm64`) container image so that I can register the server in Claude Code with `docker run -i --rm` without installing a runtime or toolchain (a container runtime is required).
+- Given the published image, when I run it with my container runtime and register it, then Claude Code lists the `fetch` tool with no other installs; the image was tested, by digest, natively on both platforms before publication (Linux, macOS via Docker Desktop, Windows via WSL2; Windows containers, arm/v7, 386, riscv64, ppc64le, s390x deferred).
 
-### US-9: See proof of the memory saving
-As the project owner, I want a reproducible benchmark against the incumbent so that I can decide to replace it based on evidence.
-- Given the benchmark harness, when it is run on aarch64-linux, then it prints idle and peak RSS for both servers and the ratio.
+### US-9: See proof that the memory targets are met
+As the project owner, I want a reproducible benchmark so that I can release based on evidence.
+- Given the benchmark harness, when it is run on aarch64-linux, then it prints idle and peak RSS and whether each meets its absolute target.
 
 ## 5. Functional Requirements
 
 | ID | Requirement | Priority | Acceptance Criteria |
 |---|---|---|---|
 | FR-01 | The server must expose an MCP tool named `fetch` over stdio, implemented with the `rmcp` crate. | Must | `tools/list` returns exactly one tool `fetch` with a JSON schema; passes an MCP client handshake. |
-| FR-02 | `fetch` must accept `url` (required, http/https only), `max_length` (default 5000), `start_index` (default 0), and `raw` (default false). | Must | Schema validation rejects missing/invalid `url`, non-http(s) schemes (`file:`, `ftp:`), and negative or non-integer numbers. |
+| FR-02 | `fetch` must accept `url` (required, http/https only), `max_length` (default 5000, hard cap default 100,000 characters via `FETCH_MAX_LENGTH_CAP`; larger values are clamped and the result says so), `start_index` (default 0), and `raw` (default false). | Must | Schema validation rejects missing/invalid `url`, non-http(s) schemes (`file:`, `ftp:`), and negative or non-integer numbers; a `max_length` above the cap is clamped and the result states the clamp. |
 | FR-03 | The server must convert HTML responses to markdown, stripping scripts, styles and navigation chrome where detectable. | Must | On the test set, output contains no `<script>` text; headings, links, lists and code blocks are preserved. |
 | FR-04 | The server must truncate output at `max_length` characters from `start_index` and state the next `start_index` when truncated. | Must | For a 20,000-char page with `max_length=5000`, four sequential calls reproduce the full text with no overlap or gap. |
 | FR-05 | The server must follow up to 5 redirects and re-validate every hop against the SSRF policy. | Must | A redirect chain of 6 fails with a clear error; a redirect to `127.0.0.1` is refused. |
 | FR-06 | The server must block requests to loopback, private (RFC 1918), link-local (incl. 169.254.169.254), and unique-local IPv6 addresses by default, checked on the resolved IP. | Must | SSRF test suite passes for IPv4, IPv6, decimal/hex-encoded IPs, and a DNS name resolving to a private IP. |
-| FR-07 | The server must apply a request timeout (default 15 s) and a maximum download size (default 5 MB). | Must | A slow server returns a timeout error; a 10 MB response aborts at the limit with a size error. |
+| FR-07 | The server must apply a request timeout (default 15 s) and a maximum download size (default 5 MiB, counting wire and decompressed bytes). | Must | A slow server returns a timeout error. Size behaviour, three cases: (1) a response with `Content-Length` above the limit returns a size error (`too_large`) before the body is read; (2) a chunked response with no `Content-Length` whose requested window completes under the limit succeeds; (3) a chunked response whose requested window would extend beyond the limit returns a size error at the limit. |
 | FR-08 | The server must handle content types: convert `text/html`; return `text/*`, `application/json` and `application/xml` as text; reject other binary types with an error naming the type. | Must | A PNG and a PDF return `isError: true` with the content type; JSON returns as text. |
 | FR-09 | The server must send a descriptive `User-Agent` and decode responses by charset from headers or meta tags, defaulting to UTF-8. | Should | A test page in ISO-8859-1 renders correctly; the request carries the configured UA. |
 | FR-10 | The server must return errors as tool results with `isError: true` and a cause-specific message (HTTP status, DNS, timeout, blocked, too large, unsupported type). | Must | Each cause in the list has a test asserting the message and flag. |
-| FR-11 | The server must support an optional robots.txt check, enabled by default, that refuses disallowed URLs with an explanatory error. | Should | With a robots.txt disallowing `/private`, a fetch of `/private` is refused; `FETCH_IGNORE_ROBOTS=1` allows it. |
-| FR-12 | The server must read settings from environment variables: timeout, max size, user agent, allowed private hosts, robots toggle. | Should | Each variable changes behavior in a test; invalid values fail startup with a clear message. |
+| FR-11 | The server must support an optional robots.txt check (default on or off per OQ-3, open) that refuses disallowed URLs with an explanatory error. | Should | With a robots.txt disallowing `/private`, a fetch of `/private` is refused; the documented opt-out allows it (variable name per OQ-3 and C-1). |
+| FR-12 | The server must read settings from environment variables: timeout, max size, `max_length` cap, concurrency, user agent, allowed private hosts, robots toggle. | Should | Each variable changes behavior in a test; invalid values fail startup with a clear message naming the variable. |
 | FR-13 | The server must write logs to stderr only and must never write non-protocol output to stdout. | Must | A stdio test client receives no malformed messages while requests are logged. |
 | FR-14 | The server must include the final URL (after redirects) and HTTP status in the result header. | Could | Result text begins with the final URL and status when redirects occurred. |
-| FR-15 | The server must build as a single self-contained binary with no runtime (no Node, Python or system OpenSSL) required. | Must | `ldd`/`otool -L` on the release binary shows only libc/system libraries; the binary runs on a clean aarch64-linux container. |
-| FR-16 | The server must read response bodies as a stream and stop reading at the max download size; it must not buffer more than max size plus a documented conversion overhead. | Must | A test server sending an unbounded/50 MB body causes an abort at max size and peak RSS stays within NFR-12. |
+| FR-15 | The released image must contain a single self-contained server binary and need no language runtime (no Node, Python or system OpenSSL) inside the image. | Must | For each platform (`linux/amd64`, `linux/arm64`), the server binary extracted from the image shows only libc/system libraries (`ldd`) or none (static), the image has no shell, package manager or interpreter, and the image starts and completes the MCP handshake on that platform. |
+| FR-16 | The server must read response bodies as a stream and stop reading at the max download size; it must not buffer more than max size plus a documented conversion overhead. | Must | A test server sending an unbounded/50 MiB body causes an abort at max size and peak RSS stays within NFR-12. |
 
 ## 6. Non-Functional Requirements
 
-Memory NFRs (NFR-10 to NFR-14) are the primary acceptance gates. Relative targets are fixed; absolute caps are provisional until the E-1 baseline is captured.
+Memory NFRs (NFR-10 to NFR-14) are the primary acceptance gates. Targets are absolute.
 
 | ID | Requirement | Type | Target |
 |---|---|---|---|
 | NFR-01 | Server startup time | Performance | <= 250 ms to ready on aarch64 (tighter than the original 1 s, since no runtime boot) |
-| NFR-02 | Conversion overhead for a 1 MB HTML page | Performance | <= 500 ms p95 |
+| NFR-02 | Conversion overhead for a 1 MiB HTML page | Performance | <= 500 ms p95 |
 | NFR-03 | Peak memory during a max-size fetch | Resource | Superseded by NFR-11 |
 | NFR-04 | Unit and integration test coverage of SSRF, redirect, and pagination logic | Quality | >= 90% line coverage |
 | NFR-05 | Direct dependencies | Maintainability | <= 15 crates (provisional, from spike); `cargo audit` and `cargo deny` clean at release |
-| NFR-06 | Supported platforms | Compatibility | Primary: aarch64-linux (glibc, musl optional) and macOS arm64. Best-effort: x86_64-linux. Stable Rust, MSRV pinned |
+| NFR-06 | Supported platforms | Compatibility | Container image platforms `linux/arm64` and `linux/amd64`, both primary and both native-memory-gated (ADR-007). Linux runs the image directly; macOS via Docker Desktop and Windows via WSL2 run it in a Linux VM. No standalone binary release. One libc flavour is published, chosen under ADR-005 criteria inside the image. Stable Rust, MSRV pinned |
 | NFR-07 | Cookies, credentials and auth headers | Security | Not sent or stored; no persistent state |
-| NFR-08 | Concurrent fetch calls | Reliability | 10 in flight without errors or cross-contamination; peak RSS with 10 in flight documented |
+| NFR-08 | Concurrent fetch calls | Reliability | 10 in flight without errors or cross-contamination; peak RSS with 10 in flight documented. Design default `FETCH_MAX_CONCURRENCY` = 3: excess calls queue (at most one timeout for a permit) and all complete |
 | NFR-09 | Tool description | Usability | States purpose, parameters, and pagination usage in <= 150 words |
-| NFR-10 | Idle RSS on aarch64-linux | Resource (primary) | <= 50% of incumbent baseline; provisional cap <= 15 MB |
-| NFR-11 | Peak RSS fetching a 5 MB HTML page on aarch64-linux | Resource (primary) | <= 50% of incumbent baseline; provisional cap <= 64 MB |
-| NFR-12 | Memory boundedness | Resource (primary) | Peak RSS with a 50 MB response and 5 MB max size within 10% of NFR-11 measurement |
-| NFR-13 | Release binary size | Resource | <= 10 MB stripped, aarch64-linux (provisional) |
+| NFR-10 | Idle RSS on aarch64-linux | Resource (primary) | <= 10 MiB RSS (VmRSS), median of 10 runs |
+| NFR-11 | Peak RSS fetching a 5 MiB HTML page on aarch64-linux | Resource (primary) | <= 40 MiB VmHWM, median of 10 runs |
+| NFR-12 | Memory boundedness | Resource (primary) | Peak RSS with a 50 MiB response and 5 MiB max size within 10% of NFR-11 measurement |
+| NFR-13 | Server binary size in the image | Resource | <= 10 MiB stripped, per platform (`linux/arm64`, `linux/amd64`) (provisional); compressed image size recorded, not gated |
 | NFR-14 | Benchmark reproducibility | Quality | Harness runs from one command; reports median of >= 10 runs; method: `/proc/<pid>/status` VmHWM/VmRSS on Linux, `/usr/bin/time -l` on macOS; run in CI on an aarch64 runner |
-| NFR-15 | ARM build and test | Compatibility | CI builds release binaries for aarch64-linux and macOS arm64 and runs the full test suite on aarch64 (native runner or QEMU documented as fallback) |
+| NFR-15 | Multi-platform build and test | Compatibility | CI builds a per-platform image for `linux/amd64` and `linux/arm64` on native GitHub-hosted runners (`ubuntu-24.04`, `ubuntu-24.04-arm`) and runs the full test suite and memory gates on both. QEMU or emulated runs are not accepted as a gate |
 
-Measurement protocol (applies to NFR-10 to NFR-12): same host, same fixture served by a local HTTP server, same MCP client script driving both servers; incumbent version and command recorded in the report.
+Measurement protocol (applies to NFR-10 to NFR-12): same host, fixture served by a local HTTP server, one MCP client script; benchmark hosts (GitHub-hosted native arm64 and amd64 runners, both gated, ADR-007), OS, kernel, CPU model, RAM, page size, server version and commit recorded in the report.
 
 ## 7. Out of Scope
 
@@ -169,20 +173,19 @@ Measurement protocol (applies to NFR-10 to NFR-12): same host, same fixture serv
 - Multi-URL batch fetching and crawling.
 - Publishing to an MCP registry (revisit after v1.0).
 - Windows and 32-bit ARM builds.
-- Optimizing the incumbent itself.
 
 ## 8. Dependencies & Risks
 
 | # | Dependency / Risk | Impact | Likelihood | Owner | Mitigation |
 |---|---|---|---|---|---|
 | 1 | `rmcp` API changes or missing features (pre-1.0 SDK) | Medium | Medium | Michael | Spike A-1; pin version; keep the transport layer thin. |
-| 2 | DNS rebinding bypasses SSRF check | High | Low | Michael | Resolve once, connect to the validated IP (custom resolver/connector), re-check each redirect. |
+| 2 | DNS rebinding bypasses SSRF check | High | Low | Michael | Resolve once, connect to the validated IP (custom resolver/connector), re-check each redirect. Interim window: the full blocked-range table and checks land in A-3a (SSRF core, Sprint 1, before the first fetch-capable build A-3b), not B-1. Release rule: no tagged or distributed build before M3, and pre-M3 builds are not registered in a real MCP client. |
 | 3 | Rust HTML-to-markdown crate quality or memory use (DOM-based crates may hold several times the page size) | High | Medium | Michael | Spike A-1 evaluates crates on quality and RSS; consider streaming rewriter (e.g. `lol_html`) or a size-capped DOM; keep converter behind a trait. |
-| 4 | Memory target not achievable, or incumbent is already small, so no gain | High | Low-Medium | Michael | Baseline first (E-1) with go/no-go gate before feature work; stop or re-scope if 1a/1b cannot be met. |
+| 4 | Absolute memory targets (10 MiB idle, 40 MiB peak) not achievable with the chosen crates | High | Low-Medium | Michael | Define harness and targets first (E-1) with go/no-go gate before feature work; stop or re-scope if 1a/1b cannot be met. |
 | 5 | Prompt injection in fetched content | High | High | Michael | Cannot be eliminated by the server; document it and label output as untrusted content (see OQ-5). |
 | 6 | Sites block bots or need JS | Low | High | Michael | Accept for v1; document limitation. |
 | 7 | Solo developer time and no stated deadline | Low | Medium | Michael | Spike-first ordering; keep scope to the Must items first. |
-| 8 | No aarch64 CI runner available or QEMU RSS numbers unrepresentative | Medium | Medium | Michael | Use GitHub arm runners or a local ARM host for benchmark numbers; QEMU only for functional tests. |
+| 8 | No aarch64 CI runner available or QEMU RSS numbers unrepresentative | Medium | Medium | Michael | Use the GitHub-hosted arm64 runner (ADR-007) for benchmark numbers, measured on the process inside the image; QEMU only for functional tests. Residual risks: hosted CPU and 4 KiB page size differ from a Pi 5 (16 KiB). |
 | 9 | Allocator choice affects RSS (glibc vs musl vs mimalloc/jemalloc) | Medium | Medium | Michael | Include allocator comparison in spike; fix choice in E-4. |
 | 10 | Rust learning curve / build times for solo part-time dev | Low | Medium | Michael | Small crate set; incremental stories. |
 
@@ -192,23 +195,23 @@ No deadline stated; durations assume part-time solo work (about 10 story points 
 
 | Milestone | Target | Exit Criteria |
 |---|---|---|
-| M0: Decisions and spikes | Sprint 0 (Weeks 1-2) | OQ-1 and OQ-2 resolved (done). Incumbent baseline captured (E-1). `rmcp` and crate choices validated, aarch64 cross-build proven (A-1). Go/no-go on memory target recorded. |
-| M1: Walking skeleton | Sprint 1 (Weeks 3-4) | FR-01, FR-02, FR-13 pass; streaming bounded fetch (FR-16); text returned in Claude Code. |
-| M2: Core fetch + memory gate | Sprints 2-4 (Weeks 5-10) | FR-03, FR-04, FR-07, FR-08, FR-10 pass; benchmark harness live; NFR-10 to NFR-12 meet targets. Decision gate: if not met, stop or re-scope. |
-| M3: Safety | Sprints 5-6 (Weeks 11-14) | FR-05, FR-06 pass; SSRF suite 100%; NFR-04 met. |
-| M4: Config, packaging, ARM | Sprints 7-9 (Weeks 15-20) | FR-09, FR-12, FR-15 pass; NFR-15 CI green; README with ARM install steps. |
-| M5: v1.0 | Sprints 10-11 (Weeks 21-24) | FR-11, all Goals in Section 2 met; benchmark report published; NFR targets verified; tagged release; incumbent replaced in Claude Code config. |
+| M0: Decisions and spikes | Sprint 0 (Weeks 1-2) | OQ-1, OQ-2, OQ-8 and OQ-9 resolved (done). Benchmark harness and absolute memory targets defined (E-1). `rmcp` and crate choices validated, aarch64 cross-build proven (A-1). Hosted PR CI baseline live (D-7). Go/no-go on memory target recorded (G0). |
+| M1: Walking skeleton | Sprints 1-2 (Weeks 3-6) | FR-01, FR-02, FR-13 pass (Sprint 1); SSRF core tested (A-3a); streaming bounded, SSRF-guarded fetch (FR-16, A-3b, Sprint 2); text returned in Claude Code via a throwaway config; 50-URL snapshots captured (E-7); bench-only loopback build for the memory benchmark (E-8, confirmed by the user 2026-09-19; OQ-4 unaffected). |
+| M2: Core fetch + memory gate | Sprints 3-6 (Weeks 7-14) | Harness live and idle RSS checked (Sprint 3); FR-03 and the memory gate G4a, NFR-10 to NFR-12, at the end of Sprint 4 (decision gate: if not met, stop or re-scope; G4a covers idle plus only scenarios that need A-3b and A-4, peak measured on the E-8 bench build, confirmed); FR-04, FR-08 (Sprint 5) and G4b at the end of Sprint 5, gating the window, early-stop and `raw=true` scenarios at the same targets, which is when the complete memory gate closes; D-7 pins the release profile in Sprint 0 and D-1 (Sprint 8) re-measures it before MVP tagging; FR-10 (Sprint 6). |
+| M3: Safety | Sprints 6-8 (Weeks 13-18) | FR-05 (B-3, Sprint 7), FR-06 (B-1/B-2, Sprints 6-7) pass; SSRF suite 100% and coverage gate (B-5) at the end of Sprint 8; NFR-04 met. Reached at the end of Sprint 8; no tagged build before it. |
+| M4: Config, packaging, ARM | Sprints 9-11 (Weeks 19-24) | FR-15 (D-2, Sprint 9, MVP complete), FR-12 (Sprint 10), FR-09 (Sprint 11) pass; hosted CI green since Sprint 0, aarch64 test job (Sprint 11); README with ARM install steps (Sprint 9). |
+| M5: v1.0 | Sprints 11-12 (Weeks 23-26) | FR-11 (B-4, Sprint 11), labelling per OQ-5 (Sprint 12), memory-gate CI (E-6), all Goals in Section 2 met; benchmark report published (E-5); NFR targets verified; tagged release (D-6, Sprint 12). |
 
 ## 10. Open Questions
 
 | # | Question | Owner | Due | Status |
 |---|---|---|---|---|
-| 1 | Why build this instead of using the existing `mcp__fetch__fetch`? | Michael | - | **Resolved 2026-09-19:** replace the incumbent with an implementation that uses less memory on ARM. |
+| 1 | Why build this instead of using the existing `mcp__fetch__fetch`? | Michael | - | **Resolved 2026-09-19:** build a new fetch MCP server with a small memory footprint on ARM. |
 | 2 | TypeScript or Python SDK? | Michael | - | **Resolved 2026-09-19:** Rust with the official `rmcp` SDK, stdio transport. |
-| 3 | Should robots.txt be enforced by default for agent-initiated fetches? Note the incumbent's behavior is captured in E-1 for parity. | Michael | Before M4 | Open |
-| 4 | Is a private-host allowlist needed for home-lab use, or is blanket blocking acceptable? | Michael | Before M3 | Open |
-| 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before M2 | Open |
+| 3 | Should robots.txt be enforced by default for agent-initiated fetches? | Michael | Before Sprint 10 starts (C-1 default; B-4 in Sprint 11). C-1 uses a placeholder only; the OQ stays open | Open |
+| 4 | Is a private-host allowlist needed for home-lab use, or is blanket blocking acceptable? | Michael | Before Sprint 10 (C-2) | Open |
+| 5 | Should output be wrapped or labelled as untrusted external content to mitigate prompt injection? | Michael | Before Sprint 2 (envelope of A-3b/A-4) | Open |
 | 6 | Is a v1.1 headless-browser mode wanted, and if so as a separate tool? | Michael | After v1.0 | Open |
-| 7 | Will this be distributed publicly (crates.io, GitHub releases, registry), which affects licensing and docs? | Michael | Before M5 | Open |
-| 8 | (New) Which incumbent is being replaced (exact command, version, runtime), and is its parameter schema (`url`, `max_length`, `start_index`, `raw`) the compatibility target? | Michael | Before E-1 | Open |
-| 9 | (New) Is a native aarch64-linux host or runner available for benchmarking, and what is its RAM? | Michael | Before E-1 | Open |
+| 7 | Will this be distributed publicly (GHCR image is the chosen artifact form per ADR-007; crates.io, other registries), which affects licensing and docs? Must be answered BEFORE the first image is published | Michael | Before Sprint 9 (D-2, D-4; then D-6 in Sprint 12) and before the first GHCR publish | Open |
+| 8 | (New) Which incumbent is being replaced, and is its parameter schema the compatibility target? | Michael | Before E-1 | **Resolved 2026-09-19:** not a replacement; no incumbent. Schema `url`, `max_length`, `start_index`, `raw` stays as the default design, not a compatibility contract. |
+| 9 | (New) Is a native aarch64-linux host or runner available for benchmarking, and what is its RAM? | Michael | Before E-1 | **Resolved 2026-09-19, amended by the user the same day (ADR-007):** GitHub-hosted arm64 runners (`ubuntu-24.04-arm`); no self-hosted runner; RAM, OS and page size recorded per run. |
