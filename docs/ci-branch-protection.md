@@ -4,7 +4,7 @@
 
 Workflow file: `.github/workflows/ci.yml`. It uses hosted `ubuntu-latest` runners only, with no secrets and no `pull_request_target`. There is no self-hosted runner and none is planned (ADR-007).
 
-A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurement of the A-1 spike on `ubuntu-24.04-arm`. Its job id is `bench`. It is advisory: do NOT add it to the required checks.
+A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurements on `ubuntu-24.04-arm`: job `bench` measures the A-1 spike, job `bench-product` (A-3a) builds and measures the real `fetch-mcp` release binary (idle RSS and `ready_ms`, recorded, not gated). Both are advisory: do NOT add either to the required checks.
 
 ## Read this first: what has and has not been checked
 
@@ -26,9 +26,9 @@ A "required status check" is a CI job that must pass before a change can be merg
 |---|---|---|
 | `fmt` | `cargo fmt --check` | Code is formatted the standard way. |
 | `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default set and four feature sets (spread across three HTTP backends) | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
-| `test` | `cargo test --locked`, then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
+| `test` | `cargo test --locked` (includes the SSRF range-table, `check_url`, resolver-filter and per-hop unit tests), then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
 | `deny` | `cargo deny --locked check` (`deny.toml`) | Dependencies have no known security problems and follow our rules. |
-| `release-guard` | `scripts/check-release-features.sh` and `--self-test` | A release build has no test-only features in it. |
+| `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), and (c) has no HTTP client crate (reqwest, hyper, ureq, h2 and others) anywhere in the dependency tree (Sprint 1 gate, A-3a; A-3b removes this one check when the client lands). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client check fails on a fake tree and can see the real one. |
 
 "Locked" (`--locked`) means the build must use exactly the versions in `Cargo.lock`. A "feature" is an optional switch compiled into the program.
 
@@ -57,7 +57,7 @@ Per ADR-007 the release image is multi-arch and both platforms are hard-gated on
 | Platform gate for `linux/amd64` | `ubuntu-24.04` | NOT YET EXISTING. Job id not chosen; match it exactly once it exists. |
 | Platform gate for `linux/arm64` | `ubuntu-24.04-arm` | NOT YET EXISTING. Job id not chosen; match it exactly once it exists. |
 
-Today the required set is still `fmt`, `clippy`, `test`, `deny`, `release-guard`, matching the job ids in `ci.yml`. Do not add the two gate names until they have run once, because GitHub only offers names it has seen. A skipped required job counts as a failure for the release: the publish job needs both gates, and the release is blocked unless both pass.
+A-3a needed no new job: the existing `release-guard` job (id unchanged) is the required release-build check for `test-support` and `bench-loopback`, and now also carries the no-HTTP-client assertion. Today the required set is still `fmt`, `clippy`, `test`, `deny`, `release-guard`, matching the job ids in `ci.yml`. Do not add the two gate names until they have run once, because GitHub only offers names it has seen. A skipped required job counts as a failure for the release: the publish job needs both gates, and the release is blocked unless both pass.
 
 ### Publish job and image visibility (planned)
 

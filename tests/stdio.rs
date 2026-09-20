@@ -100,12 +100,13 @@ impl Session {
     }
 }
 
-/// The rejection text. rmcp 3.4 reports schema-deserialisation failures as an `isError` tool result and our own
-/// scheme check as a JSON-RPC invalid-params error; both count as rejected, and both must name the field.
+/// The rejection text. Every validation failure is an `isError` tool result (rmcp 3.4 does this for schema
+/// failures; our own checks match it, ADR-006 amendment 2026-09-19); a JSON-RPC error would fail this helper.
 fn rejection_text(r: &Value) -> Option<String> {
-    if let Some(m) = r["error"]["message"].as_str() {
-        return Some(m.to_owned());
-    }
+    assert!(
+        r["error"].is_null(),
+        "validation must not be a protocol error: {r}"
+    );
     (r["result"]["isError"] == true).then(|| {
         r["result"]["content"][0]["text"]
             .as_str()
@@ -168,6 +169,27 @@ fn bad_input_is_rejected_with_the_field_named() {
         let r = s.tool_call(&args);
         let m = rejection_text(&r).unwrap_or_else(|| panic!("{args} must be rejected: {r}"));
         assert!(m.contains(field), "{args}: error must name {field}: {m}");
+    }
+    s.finish_and_assert_pure();
+}
+
+#[test]
+fn ssrf_checks_refuse_blocked_literals_and_userinfo_before_anything_else() {
+    let mut s = Session::start();
+    s.handshake();
+    for (u, code) in [
+        ("http://127.0.0.1/", "blocked_target"),
+        ("http://2130706433/", "blocked_target"),
+        ("http://[::1]:8080/", "blocked_target"),
+        ("http://169.254.169.254/latest/meta-data", "blocked_target"),
+        ("http://localhost/", "blocked_target"),
+        ("http://user:pw@example.com/", "invalid_argument"),
+        ("http://[fe80::1%25eth0]/", "invalid_argument"),
+        ("file:///etc/passwd", "invalid_argument"),
+    ] {
+        let r = s.tool_call(&json!({ "url": u }));
+        let m = rejection_text(&r).unwrap_or_else(|| panic!("{u} must be rejected: {r}"));
+        assert!(m.starts_with(&format!("error[{code}]")), "{u}: {m}");
     }
     s.finish_and_assert_pure();
 }

@@ -15,7 +15,7 @@ test-support = []
 bench-loopback = []
 
 [dependencies]
-# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13 plans 14). A-2 adds 4 (4 of 15).
+# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13 plans 14). A-2 adds 4 (4 of 15); A-3a adds none (std::net parsing, own range tables; no `url`/`ipnet` crate).
 # Versions match spikes/a1/Cargo.lock (architecture sec 9.1). NO HTTP client, TLS or network crate until A-3b.
 # 1. rmcp: MCP server, stdio transport, #[tool_router] macros (ADR-001). Exact pin: high-churn 3.x (R5).
 rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }

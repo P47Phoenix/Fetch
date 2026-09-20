@@ -1,4 +1,5 @@
-//! fetch-mcp library (A-2 walking skeleton): config, errors, stderr logger, fail-closed `Policy` and the
+//! fetch-mcp library (A-2 walking skeleton, A-3a SSRF core): config, errors, stderr logger, fail-closed `Policy`, the
+//! `ssrf` module (range table, URL and IP-literal checks, resolver filter) and the
 //! stdio MCP `fetch` tool with a validated schema. There is deliberately NO network code and NO HTTP
 //! client dependency yet (Sprint 1 gate); fetching arrives in A-3b behind A-3a's SSRF checks.
 //! Stdout is reserved for MCP protocol frames (FR-13): application code never prints to it.
@@ -9,6 +10,7 @@ pub mod error;
 pub mod obs;
 pub mod policy;
 pub mod server;
+pub mod ssrf;
 
 /// Marker strings embedded only when a forbidden feature is compiled in.
 /// Contract (architecture 9 R12, ADR-003, EPICS E-8): each marker starts with the fixed token

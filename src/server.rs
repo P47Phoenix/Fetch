@@ -1,8 +1,12 @@
 //! rmcp stdio handler: registers the `fetch` tool and validates its input (FR-01, FR-02). Tool futures must be
-//! `Send` (A-1 spike). Valid input currently returns a clear "not implemented yet" tool error; no fetching.
+//! `Send` (A-1 spike). The URL goes through `ssrf::check_url` (scheme, userinfo, IP-literal checks; no DNS, no
+//! network). Every rejection is an `isError` result `error[<code>]: <message>` naming the field, the same shape
+//! rmcp 3.4 uses for schema-deserialisation failures (ADR-006 amendment 2026-09-19). A URL that passes still
+//! returns a clear "not implemented yet" tool error; no fetching.
 
 use crate::error::FetchError;
 use crate::policy::Policy;
+use crate::ssrf::{check_url, Origin};
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
@@ -43,31 +47,9 @@ pub struct FetchParams {
     pub raw: Option<bool>,
 }
 
-/// Scheme check without a URL parser (the `url` crate arrives with A-3a): only `http://` and `https://`.
-///
-/// # Errors
-/// `InvalidArgument` naming `url` for any other scheme or a missing host part.
-pub fn validate_url(url: &str) -> Result<(), FetchError> {
-    let bad = |m: &str| FetchError::InvalidArgument {
-        field: "url",
-        message: m.to_string(),
-    };
-    let Some((scheme, rest)) = url.split_once(':') else {
-        return Err(bad("must be an absolute http or https URL"));
-    };
-    if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) {
-        return Err(bad("scheme must be http or https"));
-    }
-    match rest.strip_prefix("//") {
-        Some(host) if !host.is_empty() => Ok(()),
-        _ => Err(bad("must be an absolute http or https URL with a host")),
-    }
-}
-
 #[derive(Clone)]
 pub struct Fetch {
-    // Held for A-3a/A-3b, which route every dial through it. Fail-closed by default.
-    #[allow(dead_code)]
+    // Fail-closed by default. A-3b routes every dial (and every redirect hop) through it.
     policy: Policy,
 }
 
@@ -85,44 +67,13 @@ impl Fetch {
         &self,
         Parameters(p): Parameters<FetchParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Err(e) = validate_url(&p.url) {
-            return Err(McpError::invalid_params(e.to_string(), None));
+        if let Err(e) = check_url(&p.url, &self.policy, Origin::Initial) {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                e.tool_text(),
+            )]));
         }
         Ok(CallToolResult::error(vec![ContentBlock::text(
             FetchError::NotImplemented.tool_text(),
         )]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_url;
-
-    #[test]
-    fn accepts_http_and_https() {
-        for u in [
-            "http://example.com",
-            "https://example.com/a?b=c",
-            "HTTPS://Example.com",
-        ] {
-            assert!(validate_url(u).is_ok(), "{u}");
-        }
-    }
-
-    #[test]
-    fn rejects_other_schemes_and_junk() {
-        for u in [
-            "file:///etc/passwd",
-            "ftp://example.com",
-            "gopher://x",
-            "javascript:alert(1)",
-            "example.com",
-            "",
-            "http:",
-            "http://",
-        ] {
-            let e = validate_url(u).unwrap_err();
-            assert!(e.to_string().starts_with("url:"), "{u}: {e}");
-        }
     }
 }

@@ -8,6 +8,9 @@
 # Usage: check-release-features.sh [--features <list>]   guard a release build
 #        check-release-features.sh --self-test          positive controls (must fail)
 #        check-release-features.sh --binary <path>      marker grep on an existing artifact
+#        check-release-features.sh --no-http-client     Sprint 1 gate (A-3a): no HTTP client crate in the tree
+#   The plain run (no args) does the feature/marker guard AND the no-HTTP-client check. A-3b deliberately removes
+#   the no-HTTP-client check (delete HTTP_CLIENT_BAN and its calls) when the client lands.
 set -euo pipefail
 
 PKG=fetch-mcp
@@ -17,6 +20,28 @@ ALLOWED_FEATURES=(default)
 # Forbidden features that exist today (self-test builds each one; it must fail the guard).
 FORBIDDEN_FEATURES=(test-support bench-loopback)
 MARKER_PREFIX=FETCH_MCP_MARKER_
+
+# Crates that are (or pull in) an HTTP client. Sprint 1 gate: none may appear anywhere in the dependency tree
+# (normal, build and dev edges, all features), so the crate is testable without network code.
+HTTP_CLIENT_BAN='reqwest|hyper|hyper-util|hyper-tls|hyper-rustls|ureq|isahc|surf|attohttpc|minreq|curl|curl-sys|awc|h2|http-body|http-body-util|tower-http|tungstenite|tokio-tungstenite|reqwest-middleware|httpc|nyquest'
+
+# <tree text, "name vX.Y.Z" per line>: fails if any banned crate name appears.
+check_no_http_client_text() {
+  local hits
+  hits=$(grep -E "^($HTTP_CLIENT_BAN) v" <<<"$1" || true)
+  if [[ -n $hits ]]; then
+    echo "guard FAIL: HTTP client crate in the dependency tree (Sprint 1 gate):" >&2
+    echo "$hits" >&2
+    return 1
+  fi
+}
+
+check_no_http_client() {
+  local tree
+  tree=$(cargo tree -p "$PKG" --locked -e all --all-features --prefix none --format '{p}')
+  [[ $tree == "$PKG "* ]] || { echo "guard FAIL: cannot read cargo tree output" >&2; return 1; }
+  check_no_http_client_text "$tree"
+}
 
 check_markers() { # <binary>
   local bin=$1
@@ -84,6 +109,19 @@ self_test() {
   echo "self-test: unknown marker in a binary must FAIL the marker check"
   printf 'x%sNEW_THING_V1y' "$MARKER_PREFIX" >"$tmp/fake.bin"
   if check_markers "$tmp/fake.bin" 2>/dev/null; then echo "self-test FAIL: unknown marker passed" >&2; rc=1; fi
+  echo "self-test: an HTTP client crate in the tree must FAIL the no-HTTP-client check"
+  for c in reqwest hyper ureq h2 hyper-util; do
+    if check_no_http_client_text "$(printf 'fetch-mcp v0.0.0 (/x)\nserde v1.0.0\n%s v0.1.0\n' "$c")" 2>/dev/null; then
+      echo "self-test FAIL: $c passed the no-HTTP-client check" >&2; rc=1
+    fi
+  done
+  echo "self-test: a tree without HTTP client crates must PASS (similarly named crates are not banned)"
+  check_no_http_client_text "$(printf 'fetch-mcp v0.0.0 (/x)\nserde v1.0.0\nhttparse v1.0.0\nhyperlink v1.0.0\n')" \
+    || { echo "self-test FAIL: clean tree rejected" >&2; rc=1; }
+  echo "self-test: the real tree must pass, and the check must be able to see it (non-vacuous)"
+  check_no_http_client || { echo "self-test FAIL: real tree rejected" >&2; rc=1; }
+  [[ $(cargo tree -p "$PKG" --locked -e all --all-features --prefix none --format '{p}' | wc -l) -gt 10 ]] \
+    || { echo "self-test FAIL: cargo tree output implausibly small (check would be vacuous)" >&2; rc=1; }
   [[ $rc -eq 0 ]] && echo "self-test OK"
   return "$rc"
 }
@@ -91,7 +129,8 @@ self_test() {
 case "${1:-}" in
   --self-test) self_test ;;
   --binary) check_markers "${2:?path}" ;;
+  --no-http-client) check_no_http_client && echo "no-http-client OK" ;;
   --features) guard_build "${2:?csv}" "${CARGO_TARGET_DIR:-target}" ;;
-  "") guard_build "" "${CARGO_TARGET_DIR:-target}"; echo "guard OK" ;;
-  *) echo "usage: $0 [--self-test | --binary PATH | --features CSV]" >&2; exit 2 ;;
+  "") guard_build "" "${CARGO_TARGET_DIR:-target}"; check_no_http_client; echo "guard OK" ;;
+  *) echo "usage: $0 [--self-test | --binary PATH | --features CSV | --no-http-client]" >&2; exit 2 ;;
 esac

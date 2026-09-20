@@ -174,7 +174,7 @@ Consequence for measurement: early stop makes the default call cheap, so a bench
 
 | code | Cause | Notes |
 |---|---|---|
-| `invalid_argument` | schema/param violation, INCLUDING non-http(s) scheme or userinfo in the initial `url` (single rule, matches ADR-006) | protocol-level validation error (JSON-RPC invalid params) naming the field; not an `isError` result |
+| `invalid_argument` | schema/param violation, INCLUDING non-http(s) scheme or userinfo in the initial `url` (single rule, matches ADR-006) | `isError` result `error[invalid_argument]: <field>: <message>` naming the field (amended 2026-09-19, ADR-006 Amendment: rmcp 3.4 reports schema failures this way; ours match); not a JSON-RPC error |
 | `blocked_target` | port policy, private/loopback/link-local/metadata address, redirect to blocked, redirect `Location` with non-http(s) scheme | message gives category only ("resolves to a non-public address"), never the resolved IP or internal detail |
 | `robots_disallowed` | robots.txt (only if OQ-3 enables) | |
 | `dns_failure` | NXDOMAIN, resolver error | |

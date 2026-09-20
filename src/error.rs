@@ -10,6 +10,11 @@ pub enum FetchError {
         field: &'static str,
         message: String,
     },
+    /// Port policy, non-public address, blocked redirect (architecture 6.1). The message gives a category only,
+    /// never the resolved address, and is produced before any connection.
+    BlockedTarget(String),
+    /// The name did not resolve (NXDOMAIN, resolver error, empty answer).
+    DnsFailure(String),
     /// Valid input, but fetching does not exist yet (Sprint 1 skeleton). Removed by A-3b.
     NotImplemented,
 }
@@ -20,6 +25,8 @@ impl FetchError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidArgument { .. } => "invalid_argument",
+            Self::BlockedTarget(_) => "blocked_target",
+            Self::DnsFailure(_) => "dns_failure",
             Self::NotImplemented => "not_implemented",
         }
     }
@@ -35,6 +42,7 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidArgument { field, message } => write!(f, "{field}: {message}"),
+            Self::BlockedTarget(m) | Self::DnsFailure(m) => f.write_str(m),
             Self::NotImplemented => f.write_str(
                 "fetch is not implemented yet: this build validates input but performs no network requests",
             ),
@@ -57,6 +65,9 @@ mod tests {
         assert_eq!(e.code(), "invalid_argument");
         assert_eq!(e.tool_text(), "error[invalid_argument]: url: missing");
         assert_eq!(FetchError::NotImplemented.code(), "not_implemented");
+        let b = FetchError::BlockedTarget("host is not public".into());
+        assert_eq!(b.tool_text(), "error[blocked_target]: host is not public");
+        assert_eq!(FetchError::DnsFailure("x".into()).code(), "dns_failure");
         assert!(FetchError::NotImplemented
             .tool_text()
             .contains("not implemented yet"));
