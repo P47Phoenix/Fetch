@@ -186,8 +186,11 @@ jobs:
           sha256sum target/release/fetch-mcp | tee -a out/platform-product.txt
           target/release/fetch-mcp --version | tee -a out/platform-product.txt
 
-      - name: Harness self-test
-        run: python3 bench/selftest.py
+      - name: Generate fixtures and self-test the harness
+        run: |
+          set -eu
+          python3 bench/fixtures.py generate
+          python3 bench/selftest.py
 
       - name: Idle RSS and ready_ms (advisory, 10 runs, 30 s settle)
         run: |
@@ -195,7 +198,7 @@ jobs:
           : > out/results-product.jsonl
           rc=0
           python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle \
-            --out out/results-product.jsonl > /dev/null || rc=$?
+            --out out/results-product.jsonl || rc=$?
           echo "idle exit=$rc" | tee out/exitcodes-product.txt
           # exit 1 = target missed (a result, reported); 2/3 = invalid or refused (plumbing failure)
           [ "$rc" -le 1 ]
