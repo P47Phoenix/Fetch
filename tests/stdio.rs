@@ -254,3 +254,84 @@ fn invalid_config_exits_nonzero_before_handshake() {
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("FETCH_LOG"));
 }
+
+/// Regression (fix-pass 1): `eprintln!` on a broken-pipe stderr panics, and under `panic = abort` that kills the
+/// process. The child sleeps in `sh` until the parent has dropped the read end of the stderr pipe, then execs the
+/// server with `FETCH_LOG=info` so the startup log line hits EPIPE. The exit must be a normal code (stdin is
+/// closed, so the server ends with the "connection closed" path, code 1), never a signal or a panic (101).
+#[test]
+fn closed_stderr_pipe_does_not_abort_or_panic() {
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "sleep 0.5; exec \"$0\"",
+            env!("CARGO_BIN_EXE_fetch-mcp"),
+        ])
+        .env("FETCH_LOG", "debug")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    drop(child.stderr.take()); // read end closed: every stderr write is EPIPE
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "must exit normally (1), not abort/panic: {:?}",
+        out.status
+    );
+}
+
+/// F-2 (QA): a first message that is not `initialize` ends the session (exit 1, rmcp behaviour, kept), but the
+/// client's frame must not be echoed to stderr at the default log level.
+#[test]
+fn non_initialize_first_message_exits_1_without_echoing_it() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fetch-mcp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized","params":{{"note":"CLIENT_SECRET_MARKER"}}}}"#
+    )
+    .unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "no stdout frames: {:?}", out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("CLIENT_SECRET_MARKER"), "echoed: {err}");
+    assert!(err.starts_with("error serve"), "{err}");
+}
+
+/// F-1 (QA), pins rmcp 3.4.0 behaviour: a frame nested beyond serde_json's recursion limit cannot be parsed, so
+/// rmcp cannot recover its id and sends no reply (a client waits for its own timeout). The server must stay
+/// alive and keep stdout pure: a following request is answered. Known limitation, see fix-pass-1 report.
+#[test]
+fn too_deeply_nested_frame_gets_no_reply_but_server_survives() {
+    let mut s = Session::start();
+    s.handshake();
+    let depth = 5000;
+    let frame = format!(
+        r#"{{"jsonrpc":"2.0","id":900,"method":"tools/call","params":{{"name":"fetch","arguments":{}{}}}}}"#,
+        "[".repeat(depth),
+        "]".repeat(depth)
+    );
+    let stdin = s.stdin.as_mut().unwrap();
+    writeln!(stdin, "{frame}").unwrap();
+    stdin.flush().unwrap();
+    let r = s.tool_call(&json!({"url":"http://127.0.0.1/"}));
+    assert_eq!(
+        r["result"]["isError"], true,
+        "server must still answer: {r}"
+    );
+    assert!(
+        s.raw.iter().all(|l| !l.contains("\"id\":900")),
+        "pinned rmcp behaviour changed (a reply to the deep frame now exists): revisit F-1"
+    );
+    s.finish_and_assert_pure();
+}

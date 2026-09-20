@@ -392,6 +392,14 @@ mod tests {
             "http://[::ffff:7f00:1]/",
             "http://[::ffff:169.254.169.254]/",
             "http://[::10.0.0.1]/",
+            "http://[::8.8.8.8]/", // ::/96 blocked whole, public embedded included
+            "http://[::808:808]/",
+            "http://[::ffff:0:127.0.0.1]/", // SIIT
+            "http://[::ffff:0:a00:1]/",
+            "http://[0:0:0:0:ffff:0:7f00:1]/",
+            "http://[3fff::1]/",
+            "http://[3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff]/",
+            "http://[5f00::1]/",
             "http://[64:ff9b::a00:1]/",
             "http://[64:ff9b::10.0.0.1]/",
             "http://[2002:a00:1::]/",
@@ -509,10 +517,28 @@ mod tests {
                     format!("http://0{n:o}/"),
                     format!("http://[{m}]/"),
                     format!("http://[::{}]/", a),
+                    format!("http://[::ffff:0:{}]/", a),
                 ] {
                     assert!(init(&u).is_err(), "{cat}: {u} must be refused");
                 }
             }
+        }
+    }
+
+    /// Public addresses embedded in mapped/SIIT/NAT64/6to4 forms, and public IPv6 neighbours of the new rows,
+    /// still pass; only ::/96 refuses a public embedded address.
+    #[test]
+    fn public_addresses_still_pass_after_table_hardening() {
+        for u in [
+            "http://[::ffff:8.8.8.8]/",
+            "http://[::ffff:0:8.8.8.8]/",
+            "http://[64:ff9b::8.8.8.8]/",
+            "http://[2002:808:808::1]/",
+            "http://[3fff:1000::1]/",
+            "http://[2606:4700:4700::1111]/",
+            "http://[::1:0:0]/",
+        ] {
+            assert!(init(u).is_ok(), "{u} must pass");
         }
     }
 }

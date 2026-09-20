@@ -82,7 +82,7 @@ src/
 
 Dependency rule: `server -> fetch -> {ssrf, convert, config, error}`. `convert` and `ssrf::ranges` are pure (no I/O, no tokio) and unit-testable without a runtime. `convert` never imports `fetch`. `error` is a leaf.
 
-Direct dependency budget (NFR-05 <= 15, provisional): rmcp, tokio, reqwest, rustls (ring), lol_html, encoding_rs, serde, schemars, url, futures-util, an HTML entity decoder (crate TBD at A-4), webpki-roots (if ADR-001 root choice holds), one error helper (thiserror or hand-rolled). plus `flate2` (pure-Rust backend, push-style bounded gzip decode; reqwest's own `gzip` feature is OFF, see ADR-004). That is 14, leaving 1 spare. `ring` and `webpki-roots` pins in 9.1: `ring` is a transitive dependency of `rustls` (not a direct dependency; it is pinned through the committed `Cargo.lock` and `--locked` builds, not as a Cargo.toml direct requirement), so it does not change the count; `rustls` is the counted entry. If a direct `ring` line is ever added, the count becomes 15 of 15 and needs an ADR note. serde_json only if rmcp requires it directly. No direct `tracing`, no `anyhow`, no `regex`, no `ipnet` (own tables). rmcp may pull `tracing` transitively: not counted as direct, but A-2 must confirm with `cargo tree -i tracing` and record its idle-RSS and binary-size effect; if it is pulled in, no subscriber is installed so it is inert. Dev-deps are not counted.
+Direct dependency budget (NFR-05 <= 15, provisional): rmcp, tokio, reqwest, rustls (ring), lol_html, encoding_rs, serde, schemars, futures-util, an HTML entity decoder (crate TBD at A-4), webpki-roots (if ADR-001 root choice holds), one error helper (thiserror or hand-rolled). plus `flate2` (pure-Rust backend, push-style bounded gzip decode; reqwest's own `gzip` feature is OFF, see ADR-004). That is 13, leaving 2 spare (amended 2026-09-19: the `url` crate is no longer a direct dependency, see ADR-003 amendment; it may return as a dev-dependency for the A-3b differential test, uncounted). `ring` and `webpki-roots` pins in 9.1: `ring` is a transitive dependency of `rustls` (not a direct dependency; it is pinned through the committed `Cargo.lock` and `--locked` builds, not as a Cargo.toml direct requirement), so it does not change the count; `rustls` is the counted entry. If a direct `ring` line is ever added, the count becomes 15 of 15 and needs an ADR note. serde_json only if rmcp requires it directly. No direct `tracing`, no `anyhow`, no `regex`, no `ipnet` (own tables). rmcp may pull `tracing` transitively: not counted as direct, but A-2 must confirm with `cargo tree -i tracing` and record its idle-RSS and binary-size effect; if it is pulled in, no subscriber is installed so it is inert. Dev-deps are not counted.
 
 ## 4. Data Flow
 
@@ -92,7 +92,7 @@ MCP client --stdio--> rmcp --> server::fetch(params)
    |
    v
 fetch::run (single deadline = FETCH_TIMEOUT_MS covers everything below)
-   1. ssrf::check_url(url): scheme in {http,https}; url-crate host parse (normalises decimal/hex/octal/short IPv4);
+   1. ssrf::check_url(url): scheme in {http,https}; strict hand-rolled WHATWG-style host parse (numeric IPv4 folding, fail closed; ADR-003 amendment 2026-09-19);
       IP-literal hosts checked here (connectors skip DNS for literals); port policy
    2. [optional OQ-3] robots check (same client, same policy, <= 512 KB)
    3. reqwest GET (redirects OFF) --> ssrf::resolver: resolve ONCE, validate ALL IPs, return validated set only
@@ -190,7 +190,7 @@ Consequence for measurement: early stop makes the default call cheap, so a bench
 
 ### 6.2 Mapping
 
-Runtime failures become `CallToolResult { isError: true, content: [text] }` with text `error[<code>]: <message>. <hint>`. Only parameter validation uses the protocol error path. Stdout is never written by application code; a clippy `print_stdout`/`print_stderr`-aware deny keeps `println!` out (FR-13). `panic = "abort"` (spike profile) means a panic terminates the process after a stderr message; the MCP client restarts it. Accepted trade-off for size/RSS; reviewed at D-1 if crash frequency matters.
+Runtime failures become `CallToolResult { isError: true, content: [text] }` with text `error[<code>]: <message>. <hint>`. Parameter validation is also an `isError` result (ADR-006 amendment 2026-09-19); nothing on the tool path uses the JSON-RPC error channel except what rmcp itself rejects before the tool runs (malformed frames, unknown methods). Stdout is never written by application code; a clippy `print_stdout`/`print_stderr`-aware deny keeps `println!` out (FR-13). `panic = "abort"` (spike profile) means a panic terminates the process after a stderr message; the MCP client restarts it. Accepted trade-off for size/RSS; reviewed at D-1 if crash frequency matters.
 
 ### 6.3 Oracle avoidance
 
@@ -245,7 +245,7 @@ Fixed constants (not configurable): max redirects 5, robots cap 512 KB, HTTP/1.1
 | Rust toolchain | `rust-toolchain.toml` with an exact `channel = "1.94.1"` (the version this design was reviewed on; `rustc 1.94.1 (e408947bf 2026-03-25)`), profile minimal, components `clippy`, `rustfmt`, plus the aarch64/macOS targets. `rust-version` (MSRV) in `Cargo.toml` set in D-2. |
 | Toolchain bump procedure | bump is its own PR; it must re-run the full benchmark (section 11) on the hosted arm64 runner and attach the report; binary size and RSS deltas recorded; merge only if gates hold. |
 | Cargo.lock | committed (binary crate); every CI/release command uses `--locked`. |
-| High-churn direct deps | exact requirements (`=`): `rmcp = "=3.4.0"`, `reqwest = "=0.13.5"`, `lol_html = "=2.9.0"`, `rustls = "=0.23.45"`, `ring = "=0.17.14"`, `tokio = "=1.53.1"`, `encoding_rs = "=0.8.41"`, `webpki-roots = "=1.0.9"`, `url = "=2.5.8"`. Values are the versions in `spikes/a1/Cargo.lock`; changing any of them is a bump PR that re-runs the benchmark. `flate2` is pinned when first added in A-3. |
+| High-churn direct deps | exact requirements (`=`): `rmcp = "=3.4.0"`, `reqwest = "=0.13.5"`, `lol_html = "=2.9.0"`, `rustls = "=0.23.45"`, `ring = "=0.17.14"`, `tokio = "=1.53.1"`, `encoding_rs = "=0.8.41"`, `webpki-roots = "=1.0.9"`. Values are the versions in `spikes/a1/Cargo.lock`; changing any of them is a bump PR that re-runs the benchmark. `flate2` is pinned when first added in A-3. |
 | Cross-build tools | `cargo-zigbuild` 0.23.4 and `ziglang` 0.16.0 pinned in the CI workflow (`cargo install --locked cargo-zigbuild --version 0.23.4`; `pip install ziglang==0.16.0`). |
 | GitHub Actions | every `uses:` pinned by full commit SHA with a version comment; Dependabot (github-actions and cargo ecosystems) proposes bumps. |
 | Bit-for-bit reproducibility | NOT a goal for v1. Builds use `--remap-path-prefix` and `SOURCE_DATE_EPOCH` to reduce noise, but the image digest and its provenance attestation attest only "what CI built", stated in the release notes. The benchmark reproducibility requirement (NFR-14) is met by the pinned toolchain plus the committed lockfile plus the report recording the binary sha. |
@@ -387,7 +387,7 @@ Actors: prompt-injected LLM supplying malicious URLs; malicious web server; mali
 
 Attack paths and controls:
 1. Direct private/loopback/link-local/metadata host, name or literal: `check_url` + resolver validation (ADR-003).
-2. IP encodings (decimal, hex, octal, short forms, IPv4-mapped/compatible IPv6, IPv6 zone ids, trailing-dot hosts, userinfo tricks `http://public@127.0.0.1`): the `url` crate applies WHATWG host parsing, normalising numeric IPv4 forms to a real address; we check the parsed `Host` enum, never the raw string. Zone-id and userinfo hosts rejected by policy. Userinfo in URLs is rejected outright (credentials are out of scope, NFR-07).
+2. IP encodings (decimal, hex, octal, short forms, IPv4-mapped/compatible IPv6, IPv6 zone ids, trailing-dot hosts, userinfo tricks `http://public@127.0.0.1`): our own strict parser applies WHATWG-style numeric IPv4 folding (amended 2026-09-19, ADR-003 amendment); we check the parsed address, never the raw string, and refuse anything ambiguous. Zone-id and userinfo hosts rejected by policy. Userinfo in URLs is rejected outright (credentials are out of scope, NFR-07).
 3. DNS pointing to private: resolver validates every returned address; ANY blocked address in the answer set -> refuse (mixed public/private, B-1).
 4. DNS rebinding (TOCTOU): resolver is the connector's only lookup path; the validated addresses are what gets dialed. No `IP-literal after validation` rewriting of the URL is needed, so SNI/Host header remain correct for TLS.
 5. Redirect to internal/`file:`/`ftp:`: reqwest redirect policy is `none`; our loop re-runs steps 1-3 per hop, max 5.
@@ -432,7 +432,7 @@ Cannot be eliminated. Server-side measures: text-only output, no active content,
 | R10 | HTTP/1.1-only fails for the rare h2-only origin | Low | ADR-001 revisit trigger |
 | R11 | webpki-roots embeds roots in binary; staleness and RSS effect unmeasured | Low | ARM measure; release cadence |
 | R12 | Test-only or bench-only policy hooks (`test-support`, `bench-loopback`) could leak into release | High (security) | cfg/feature guards; D-7 and D-2 guard asserts both features and the `bench-loopback` marker string absent (cargo tree plus marker grep on every release artifact, self-tested); default `Policy` fail-closed; E-8 |
-| R13 | Dependency count near NFR-05 ceiling | Low | 14 of 15 (flate2 added); add nothing without an ADR note |
+| R13 | Dependency count near NFR-05 ceiling | Low | 13 of 15 planned after `url` dropped (flate2 added); add nothing without an ADR note |
 | R14 | rmcp clone count for result copies unverified; transitive `tracing` | Low-Medium | A-2 allocation-count test and `cargo tree -i tracing`; revise 5.1 row j |
 
 ### 14.1 Binding interim mitigation for R6 (resolves Security B-1)
@@ -449,7 +449,7 @@ Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-g
 | A-1 | done (spike) | inputs to ADR-001, 002, 005 |
 | A-2 | `main`, `server`, `config` (skeleton), `error`, `obs` | schema per ADR-006; stdout purity test |
 | A-3a (SSRF core, 5 pts, Sprint 1) | `ssrf::ranges` full table, `ssrf::resolver` (resolve once, refuse on any blocked answer, return validated set), `ssrf::check_url` and per-hop revalidation function, `ssrf::Policy` fail-closed default plus test-only constructor (14.1) | ADR-003; no HTTP client dependency yet; unit tests with injectable resolver |
-| A-3b (fetch client, 5 pts, Sprint 2) | `fetch` (client, redirect loop wired to A-3a, body, deadline), `config`, flate2 gzip, UTF-8 decoder, semaphore, header limits | ADR-001, 003, 004; merge gate: non-defaulted `Policy` in client constructor, required check `a3b_merge_gate` plus four-refusal integration tests |
+| A-3b (fetch client, 5 pts, Sprint 2) | `fetch` (client, redirect loop wired to A-3a, body, deadline), `config`, flate2 gzip, UTF-8 decoder, semaphore, header limits | ADR-001, 003, 004; merge gate: non-defaulted `Policy` in client constructor, required check `a3b_merge_gate` plus four-refusal integration tests, plus a differential test of `check_url` host/port/scheme classification against `url::Url::parse` over the encodings corpus (`url` as a dev-dependency only) and a proof that the dial route accepts only `Validated.addrs` |
 | A-4 | `convert::html`, `boilerplate`, `mod` | ADR-002; entity decoder crate chosen here |
 | A-5 | `convert::window`, `server::render` | ADR-006; owns G4b window scenarios |
 | A-6 | `fetch::ctype`, `convert::text` | raw path streamed (ADR-004); records combined G4b result |
@@ -538,3 +538,9 @@ Applies the user-approved Sprint Plan and the plan's "Required architecture chan
 | Release profile pinned in D-7 (Sprint 0), D-1 (Sprint 8) re-measures on shipped build, miss blocks MVP tag | sec 9, sec 11 item 9, ADR-005 |
 | Stale wording: ADR-006 200,000 -> 100,000 char cap; MiB defined once in E-1, median of 10 valid runs; `ring` is transitive (count 14 unchanged); ADR-001 "~1 MiB" -> ~1.3 MiB; G7 pairing stated; 13.1 item order | sec 3, 5.1, 11.1, 13.1, ADR-001, ADR-006 |
 | Story map: 34 stories, A-3a/A-3b split, D-7, E-7, E-8 added; A-8 decoder note aligned | sec 15, 14.1 |
+
+## Amendment 2026-09-19 (A-3a fix-pass 1)
+- `url` crate no longer mandated; hand-rolled strict WHATWG-style host parsing is used (ADR-003 amendment). Dependency count 13 of 15 planned; `url = "=2.5.8"` pin removed from 9.1.
+- The IPv6 table gained `::/96` (whole), SIIT `::ffff:0:0:0/96` (embedded v4), `3fff::/20`, `5f00::/16`; `src/ssrf/ranges.rs` is authoritative over the ADR-003 list.
+- A-3b merge gate additionally requires a differential test against `url::Url::parse` (dev-dependency only) for host classification, and that the client dials only `Validated.addrs`.
+- `policy` is a top-level module (`src/policy.rs`), not under `ssrf`; `Resolver` is a trait returning `Vec<IpAddr>` (async fn in trait), so A-3b's real resolver needs tokio `net`.

@@ -49,3 +49,11 @@ Verified locally: fmt, clippy (default, bench-loopback, test-support) with -D wa
 - A-2 AC 250 ms on aarch64: not measured on aarch64 (only x86_64 above); needs the hosted arm64 run.
 - Architecture 5.1 row j / R14 allocation-count test (rmcp result clones) not built: meaningful only with real result sizes; suggest A-5.
 - NB-3 (deny/Dependabot coverage of spikes/a1) untouched; Sprint 3 as reviewed.
+
+## Manual check checklist: "Claude Code lists `fetch`" (added in fix-pass 1; owner runs it, nothing was run or registered by the developer)
+Use a THROWAWAY config so no real Claude Code setup is touched.
+1. Build: `cargo build --release --locked`; note the absolute path of `target/release/fetch-mcp`.
+2. Make an empty scratch directory and a scratch config file in it (for example `/tmp/fetch-check/.mcp.json`) containing one stdio server named `fetch` whose `command` is that absolute binary path. Do not use `~/.claude*` or any existing project config.
+3. Start Claude Code from that scratch directory (project-scoped `.mcp.json`, approve the server when prompted) and run `/mcp`.
+4. Expect: server `fetch` connected, exactly one tool `fetch`, with parameters `url` (required), `max_length`, `start_index`, `raw`. A call with a valid public URL returns `error[not_implemented]` (A-3b); `http://127.0.0.1/` returns `error[blocked_target]`.
+5. Record the result (pass/fail, Claude Code version, date) in the UAT notes, then delete the scratch directory.

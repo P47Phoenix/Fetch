@@ -19,7 +19,7 @@ async fn main() -> std::process::ExitCode {
     let cfg = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error config {e}");
+            obs::stderr_line(format_args!("error config {e}"));
             return std::process::ExitCode::from(2);
         }
     };
@@ -32,7 +32,15 @@ async fn main() -> std::process::ExitCode {
     match serve().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error serve {e}");
+            // rmcp's error text can echo the client's first frame verbatim; keep that out of stderr unless the
+            // operator opted into debug logging.
+            if obs::enabled(cfg.log_level, obs::Level::Debug) {
+                obs::stderr_line(format_args!("error serve {e}"));
+            } else {
+                obs::stderr_line(format_args!(
+                    "error serve session ended abnormally (details withheld; FETCH_LOG=debug shows them)"
+                ));
+            }
             std::process::ExitCode::FAILURE
         }
     }

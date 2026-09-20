@@ -5,7 +5,7 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
-    /// Parameter violation. Surfaces as a protocol-level invalid-params error naming the field.
+    /// Parameter violation. Surfaces as an `isError` tool result (`error[invalid_argument]: field: msg`), per the ADR-006 amendment.
     InvalidArgument {
         field: &'static str,
         message: String,

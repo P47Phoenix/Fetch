@@ -2,6 +2,7 @@
 //! stdout, which carries only MCP frames (FR-13). Line format: `level event key=value ...`.
 
 use std::fmt;
+use std::io::Write;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -42,8 +43,14 @@ pub fn enabled(max: Level, msg: Level) -> bool {
 /// Write one line to stderr if `msg` is enabled under `max`.
 pub fn log(max: Level, msg: Level, event: &str, detail: fmt::Arguments<'_>) {
     if enabled(max, msg) {
-        eprintln!("{} {event} {detail}", msg.as_str());
+        stderr_line(format_args!("{} {event} {detail}", msg.as_str()));
     }
+}
+
+/// Write one line to stderr, ignoring write errors. `eprintln!` panics when stderr is a broken pipe, and the
+/// release profile is `panic = abort`, so a closed stderr would kill the server; losing a log line must not.
+pub fn stderr_line(line: fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }
 
 #[cfg(test)]

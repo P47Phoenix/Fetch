@@ -91,6 +91,25 @@ pub const V6_BLOCKED: &[(u128, u8, Kind, &str)] = &[
         Other,
         "reserved (local-use NAT64)",
     ),
+    // Fix-pass 1 additions. ::/96 comes after `::` and `::1` so those keep their own category and kind.
+    (
+        v6([0, 0, 0, 0, 0, 0, 0, 0]),
+        96,
+        Other,
+        "deprecated IPv4-compatible",
+    ),
+    (
+        v6([0x3fff, 0, 0, 0, 0, 0, 0, 0]),
+        20,
+        Other,
+        "documentation",
+    ),
+    (
+        v6([0x5f00, 0, 0, 0, 0, 0, 0, 0]),
+        16,
+        Other,
+        "reserved (SRv6 SIDs)",
+    ),
 ];
 
 const fn mask32(prefix: u8) -> u32 {
@@ -121,7 +140,8 @@ pub fn classify_v4(ip: Ipv4Addr) -> Option<Blocked> {
 
 /// Classify an IPv6 address: `Some` if blocked. Order: the whole-range table first (so `::1` stays loopback
 /// and `::` unspecified), then addresses that embed an IPv4 address, which are judged by the IPv4 table:
-/// IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96`, NAT64 `64:ff9b::/96` and 6to4 `2002::/16`.
+/// IPv4-mapped `::ffff:0:0/96`, IPv4-translated (SIIT) `::ffff:0:0:0/96`, NAT64 `64:ff9b::/96` and 6to4
+/// `2002::/16`. IPv4-compatible `::/96` is blocked whole by the table (fail closed, even for public embedded).
 #[must_use]
 pub fn classify_v6(ip: Ipv6Addr) -> Option<Blocked> {
     let n = u128::from(ip);
@@ -139,7 +159,7 @@ fn embedded_v4(n: u128) -> Option<Ipv4Addr> {
     let low32 = |n: u128| Ipv4Addr::from((n & 0xffff_ffff) as u32);
     let in_prefix = |net: u128, p: u8| n & mask128(p) == net;
     if in_prefix(v6([0, 0, 0, 0, 0, 0xffff, 0, 0]), 96)
-        || in_prefix(v6([0, 0, 0, 0, 0, 0, 0, 0]), 96)
+        || in_prefix(v6([0, 0, 0, 0, 0xffff, 0, 0, 0]), 96)
         || in_prefix(v6([0x0064, 0xff9b, 0, 0, 0, 0, 0, 0]), 96)
     {
         Some(low32(n))
@@ -303,8 +323,24 @@ mod tests {
             "2001::1",
             "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
             "2001:1ff::1",
+            "2001:4:112::1", // AS112-v6 is globally reachable but sits inside 2001::/23: blocked (fail closed)
             "64:ff9b:1::1",
             "64:ff9b:1:ffff::1",
+            // ::/96 IPv4-compatible: first, last, public-embedded, bracket-free spellings
+            "::2",
+            "::8.8.8.8",
+            "::808:808",
+            "::ffff:ffff",
+            // 3fff::/20 (RFC 9637)
+            "3fff::",
+            "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "3fff:abc::1",
+            // 5f00::/16 (RFC 9602)
+            "5f00::",
+            "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+            // SIIT ::ffff:0:0:0/96 with private embedded
+            "::ffff:0:0:0",
+            "::ffff:0:ffff:ffff",
         ] {
             assert!(blocked(a), "{a} must be blocked");
         }
@@ -326,6 +362,13 @@ mod tests {
             "64:ff9b:2::1",
             "2003::1",
             "2001:4860::1",
+            "::1:0:0",         // just past ::/96
+            "::ffff:1:0:0",    // outside both mapped and SIIT /96
+            "3fff:1000::1",    // just past 3fff::/20
+            "3ffe::1",         // just below 3fff::/20
+            "5eff:ffff::1",    // just below 5f00::/16
+            "5f01::1",         // just past 5f00::/16
+            "2620:4f:8000::1", // direct delegation AS112, globally reachable
         ] {
             assert!(!blocked(a), "{a} must pass");
         }
@@ -346,7 +389,12 @@ mod tests {
             ("::10.0.0.1", true),
             ("::127.0.0.1", true),
             ("::192.168.1.1", true),
-            ("::8.8.8.8", false),
+            ("::8.8.8.8", true), // ::/96 is blocked whole, even with a public embedded address
+            // IPv4-translated (SIIT) ::ffff:0:0:0/96
+            ("::ffff:0:127.0.0.1", true),
+            ("::ffff:0:a00:1", true),
+            ("::ffff:0:169.254.169.254", true),
+            ("::ffff:0:8.8.8.8", false),
             // NAT64 64:ff9b::/96
             ("64:ff9b::10.0.0.1", true),
             ("64:ff9b::169.254.169.254", true),
@@ -365,7 +413,7 @@ mod tests {
     }
 
     /// Property-style, exhaustive over the table: for every blocked IPv4 range, its first, last and a middle
-    /// address are blocked in every embedded form (mapped, compatible, NAT64, 6to4), and the embedded form of the
+    /// address are blocked in every embedded form (mapped, SIIT, NAT64, 6to4), and the embedded form of the
     /// address just outside the range is blocked only if that neighbour is itself blocked.
     #[test]
     fn every_blocked_v4_range_is_blocked_in_every_embedded_form() {
@@ -374,7 +422,7 @@ mod tests {
             let lo = (n & 0xffff) as u16;
             [
                 Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, hi, lo),
-                Ipv6Addr::new(0, 0, 0, 0, 0, 0, hi, lo),
+                Ipv6Addr::new(0, 0, 0, 0, 0xffff, 0, hi, lo),
                 Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, hi, lo),
                 Ipv6Addr::new(0x2002, hi, lo, 0, 0, 0, 0, 1),
             ]
@@ -396,7 +444,6 @@ mod tests {
                 let want = classify_v4(Ipv4Addr::from(n)).is_some();
                 for e in embed(n) {
                     // 6to4 form with a public embedded v4 is allowed; mapped/compatible/NAT64 likewise.
-                    // Exception: ::/96 also holds ::a.b.c.d for a=0, blocked by 0.0.0.0/8 anyway.
                     assert_eq!(
                         classify_v6(e).is_some(),
                         want,
@@ -425,6 +472,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn new_v6_rows_first_last_and_outside() {
+        // (first, last, one before first, one after last); None where the neighbour is meaningless.
+        let cases = [
+            ("::", "::ffff:ffff", None, Some("::1:0:0")),
+            (
+                "3fff::",
+                "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+                Some("3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+                Some("3fff:1000::"),
+            ),
+            (
+                "5f00::",
+                "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                Some("5eff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+                Some("5f01::"),
+            ),
+            (
+                "::ffff:0:0:0",
+                "::ffff:0:ffff:ffff",
+                Some("::fffe:ffff:ffff:ffff"),
+                Some("::ffff:1:0:0"),
+            ),
+        ];
+        for (first, last, before, after) in cases {
+            assert!(blocked(first) && blocked(last), "{first} {last}");
+            for o in before.into_iter().chain(after) {
+                assert!(!blocked(o), "{o} must pass");
+            }
+        }
+        assert_eq!(classify(ip("::1")).unwrap().kind, Kind::Loopback);
+        assert_eq!(classify(ip("::")).unwrap().category, "unspecified");
+        assert_eq!(classify(ip("::8.8.8.8")).unwrap().kind, Kind::Other);
     }
 
     #[test]

@@ -9,8 +9,10 @@
 #        check-release-features.sh --self-test          positive controls (must fail)
 #        check-release-features.sh --binary <path>      marker grep on an existing artifact
 #        check-release-features.sh --no-http-client     Sprint 1 gate (A-3a): no HTTP client crate in the tree
-#   The plain run (no args) does the feature/marker guard AND the no-HTTP-client check. A-3b deliberately removes
-#   the no-HTTP-client check (delete HTTP_CLIENT_BAN and its calls) when the client lands.
+#   The plain run (no args) does the feature/marker guard AND the no-HTTP-client / no-network-transport checks.
+#   A-3b MUST remove these Sprint 1 checks when the client lands (they would otherwise fail its legitimate
+#   dependencies): delete HTTP_CLIENT_BAN, RAW_NET_BAN, check_no_http_client_text, check_no_tokio_net_text,
+#   check_no_http_client, their calls in the plain run, `--no-http-client`, and their self-test blocks.
 set -euo pipefail
 
 PKG=fetch-mcp
@@ -25,10 +27,14 @@ MARKER_PREFIX=FETCH_MCP_MARKER_
 # (normal, build and dev edges, all features), so the crate is testable without network code.
 HTTP_CLIENT_BAN='reqwest|hyper|hyper-util|hyper-tls|hyper-rustls|ureq|isahc|surf|attohttpc|minreq|curl|curl-sys|awc|h2|http-body|http-body-util|tower-http|tungstenite|tokio-tungstenite|reqwest-middleware|httpc|nyquest'
 
+# Raw socket crates: a client hand-built on these (or on tokio `net`, which pulls mio and socket2 in) has no HTTP
+# client crate name for the ban above to catch. Same Sprint 1 gate, removed by A-3b together with HTTP_CLIENT_BAN.
+RAW_NET_BAN='mio|socket2|net2|async-io|polling|smol|async-std|async-net'
+
 # <tree text, "name vX.Y.Z" per line>: fails if any banned crate name appears.
 check_no_http_client_text() {
   local hits
-  hits=$(grep -E "^($HTTP_CLIENT_BAN) v" <<<"$1" || true)
+  hits=$(grep -E "^($HTTP_CLIENT_BAN|$RAW_NET_BAN) v" <<<"$1" || true)
   if [[ -n $hits ]]; then
     echo "guard FAIL: HTTP client crate in the dependency tree (Sprint 1 gate):" >&2
     echo "$hits" >&2
@@ -36,11 +42,26 @@ check_no_http_client_text() {
   fi
 }
 
+# <`cargo tree -e features -i tokio` text>: fails if tokio's `net` (or `full`, which implies it) feature is enabled
+# anywhere in the graph, by us or transitively. The name-based ban cannot see a client built directly on it.
+check_no_tokio_net_text() {
+  local hits
+  hits=$(grep -E '^tokio feature "(net|full)"' <<<"$1" || true)
+  if [[ -n $hits ]]; then
+    echo "guard FAIL: tokio feature enabled that provides sockets (Sprint 1 gate, removed by A-3b):" >&2
+    echo "$hits" >&2
+    return 1
+  fi
+}
+
 check_no_http_client() {
-  local tree
+  local tree toktree
   tree=$(cargo tree -p "$PKG" --locked -e all --all-features --prefix none --format '{p}')
   [[ $tree == "$PKG "* ]] || { echo "guard FAIL: cannot read cargo tree output" >&2; return 1; }
-  check_no_http_client_text "$tree"
+  check_no_http_client_text "$tree" || return 1
+  toktree=$(cargo tree -p "$PKG" --locked -e features --all-features -i tokio --prefix none)
+  [[ $toktree == *'tokio feature "rt"'* ]] || { echo "guard FAIL: cannot read tokio features (check would be vacuous)" >&2; return 1; }
+  check_no_tokio_net_text "$toktree"
 }
 
 check_markers() { # <binary>
@@ -115,6 +136,20 @@ self_test() {
       echo "self-test FAIL: $c passed the no-HTTP-client check" >&2; rc=1
     fi
   done
+  echo "self-test: a raw socket crate in the tree must FAIL (client built on sockets, no HTTP crate name)"
+  for c in mio socket2; do
+    if check_no_http_client_text "$(printf 'fetch-mcp v0.0.0 (/x)\nserde v1.0.0\n%s v0.1.0\n' "$c")" 2>/dev/null; then
+      echo "self-test FAIL: $c passed the no-HTTP-client check" >&2; rc=1
+    fi
+  done
+  echo "self-test: tokio net or full feature must FAIL; the current feature set must PASS"
+  for f in net full; do
+    if check_no_tokio_net_text "$(printf 'tokio feature "rt"\ntokio feature "%s"\ntokio v1.53.1\n' "$f")" 2>/dev/null; then
+      echo "self-test FAIL: tokio $f passed" >&2; rc=1
+    fi
+  done
+  check_no_tokio_net_text "$(printf 'tokio feature "rt"\ntokio feature "io-std"\ntokio feature "netlike"\ntokio v1.53.1\n')" \
+    || { echo "self-test FAIL: clean tokio features rejected" >&2; rc=1; }
   echo "self-test: a tree without HTTP client crates must PASS (similarly named crates are not banned)"
   check_no_http_client_text "$(printf 'fetch-mcp v0.0.0 (/x)\nserde v1.0.0\nhttparse v1.0.0\nhyperlink v1.0.0\n')" \
     || { echo "self-test FAIL: clean tree rejected" >&2; rc=1; }
