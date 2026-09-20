@@ -35,6 +35,7 @@ jobs:
       - run: rustup show active-toolchain
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo clippy --locked --all-targets --features bench-loopback -- -D warnings
+      - run: cargo clippy --locked --all-targets --features test-support -- -D warnings
       # D-7 AC: the A-1 spike code passes clippy -D warnings. spikes/a1 is a separate crate, so root clippy never covers it.
       - name: Clippy the A-1 spike (default and one feature set per HTTP backend)
         working-directory: spikes/a1

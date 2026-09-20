@@ -10,13 +10,14 @@ Be careful not to read more into this document than it says.
 
 | Item | Status |
 |---|---|
-| Hosted GitHub Actions running this repository's workflow | Run once, on pull request #2. All five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) passed on commit 740c0fb (run 35470977286). One green run is not a trend. |
-| `cargo-deny` (the `deny` job) | Ran once, in that same hosted run, and passed. |
+| Hosted GitHub Actions running this repository's workflow | Has run on several pull requests (first #2, most recently #5); all five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) have passed each time. That is still not a trend claim, and branch protection is not configured yet. |
+| `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. |
 | `cargo-audit` | Never run (not installed on the dev host). |
-| The benchmark scripts | Only run against the stand-in and the skeleton binary. Never against a real MCP server. |
-| The `fetch-mcp` binary | A skeleton. It has no MCP server yet. |
-| Native aarch64 measurement | Advisory only: the A-1 spike (not the product) was measured on a GitHub-hosted arm64 runner, no `--gate` (section 11). No product measurement, and no `--gate` run, exists yet. |
-| Native amd64 measurement | NOT YET MEASURED on a hosted amd64 runner (the earlier A-1 x86_64 figures predate this protocol). |
+| The benchmark scripts | Run against the stand-in, and (advisory only, section 13) against the real `fetch-mcp` idle scenario. Never in a `--gate` run. |
+| The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2). Valid input returns a `not_implemented` error and no network code exists yet (A-3b), so the measured memory is for an early build and will rise. |
+| Native aarch64 measurement | Advisory only: the A-1 spike (section 11) and the early real product idle (section 13) were measured on a GitHub-hosted arm64 runner, no `--gate`. No `--gate` run exists yet. |
+| Native amd64 measurement | NOT YET MEASURED on a hosted amd64 runner. The only amd64 product figure is one advisory idle run on the developer's own x86_64 machine (section 13), not a hosted runner. |
+| Product memory gates (G4a, G4b on amd64 and arm64) | NOT YET RUN. |
 | Branch protection on `main` | Not configured yet (see `docs/ci-branch-protection.md`). |
 
 ## Glossary
@@ -26,7 +27,7 @@ Each term is explained here once. Later sections use the short form.
 | Term | Plain meaning |
 |---|---|
 | MCP | Model Context Protocol. A way for an AI tool (a "client") to talk to a helper program (a "server") such as `fetch-mcp`. |
-| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` today only prints its version. It has no MCP server yet. Do not register it in a real MCP client. |
+| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` used to be one (it only printed its version). It is now a real stdio server, but its `fetch` tool is not implemented yet. Do not register it in a real MCP client. |
 | Stand-in | `bench/standin_mcp.py`. A fake server written in Python, used only to test the benchmark tools. It is NOT the product. Its memory figures say nothing about the product. |
 | MiB | Mebibyte, the unit for every memory figure in this project: 1 MiB = 2^20 = 1,048,576 bytes. |
 | kB | Kilobyte as Linux reports it in `/proc`: 1 kB = 1,024 bytes (strictly a KiB). So 10 MiB = 10,240 kB and 40 MiB = 40,960 kB. |
@@ -64,7 +65,7 @@ Each term is explained here once. Later sections use the short form.
 | Hosted runner | A short-lived GitHub Actions virtual machine: `ubuntu-24.04` (amd64) or `ubuntu-24.04-arm` (arm64). There is no self-hosted runner. |
 | QEMU | Software that pretends to be another CPU. Its memory figures are not trusted, so QEMU never gates. |
 | ELF | The Linux program file format. The harness reads its header to see the CPU type. |
-| gnu, musl | Two versions of the C library the binary can be built with. Both are measured. |
+| gnu, musl | Two versions of the C library the binary can be built with. Only gnu is measured for the product today (section 7 states the plan). |
 | p95 | 95% of results are at or below this value. Timings report it only with 20 or more valid samples (nearest-rank). |
 | Timings | Durations the harness records next to memory (section 12). Recorded, not gated. |
 | ready_ms | Time from starting the process to its first valid `initialize` answer. Evidence only; the PRD 250 ms readiness figure is not checked by the harness. |
@@ -131,7 +132,13 @@ Success: it prints three JSON lines (a `host` line, one `scenario` line, then a 
 - A per-scenario line may say `"verdict": "PASS"` in an advisory run. Ignore it. Only the `summary` verdict is authoritative.
 - The exit codes are in the table in section 6.
 
-**Current limitation.** The `fetch-mcp` binary is a skeleton until story A-2 (the stdio server with the `fetch` tool schema) lands. A real `measure.py` run against it fails the handshake and exits with code 2. Only the self-test and the stand-in are runnable now. Also, story E-8 says a bench build must print its marker to stderr at start-up. That is not built yet. Today the marker is only printed by `--version`.
+**What you can run on the real binary.** Story A-2 has landed, so the handshake works and `measure.py` can measure the real `fetch-mcp` in advisory mode (no `--gate`). The `idle` scenario works on the shipped build. The fetch scenarios (5 MiB and 50 MiB) cannot pass yet: `fetch` returns `not_implemented` until A-3b, and the peak scenarios need the `bench-loopback` build. A `--gate` run stays refused off a native aarch64 host (see "What can go wrong"). Example, after the release build of step 3:
+
+```
+python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind shipped --scenario idle --runs 10
+```
+
+Success: a `summary` line with `"verdict": "ADVISORY_PASS"` and exit 0 (this takes about 5 minutes: 10 runs with a 30 s settle each). It is not a result; see section 13 for what has been recorded. Also, story E-8 says a bench build must print its marker to stderr at start-up. That is not built yet. Today the marker is only printed by `--version`.
 
 ### Step 5. Gating run (native host only)
 
@@ -173,7 +180,7 @@ On the aarch64 runner, a stand-in script, a wrong-architecture ELF or a binary w
 |---|---|---|
 | Self-test does not end with `SELFTEST PASSED` | A benchmark tool is broken, or Python is older than 3.8. | Read the last failing line above it. Check `python3 --version`. |
 | Refusal about `bench/manifest.json` or a fixture hash (exit 2) | The fixtures are missing or changed. | Run `python3 bench/fixtures.py generate`, then try again. |
-| Exit 2, `INVALID`, `RuntimeError: server closed stdout` when you point it at `target/release/fetch-mcp` | The skeleton has no MCP server yet, so the handshake fails. This is expected today. | Nothing to fix. Use the self-test and the stand-in until A-2 lands. |
+| Exit 2, `INVALID`, `RuntimeError: server closed stdout` when you point it at `target/release/fetch-mcp` | The server exited or crashed before the handshake finished, or the path is not a `fetch-mcp` build. Since A-2 the handshake should work, so this is a real problem. | Run the binary by hand with the session in the README ("Run over stdio") and read stderr, using `FETCH_LOG=debug`. Rebuild with step 3. Check the path and that the file is `fetch-mcp`, not the stand-in. |
 | Exit 2, refused, reason `binary identity` (only on aarch64; elsewhere you get exit 3 first) | The file is not the right kind: a script, a wrong-CPU ELF, or the wrong marker. | Rebuild with the command for the kind you passed (step 3). |
 | Exit 2, refused, reason `incomplete` | A `--gate` bench run left out scenarios of its group. | Run the whole group (for example every G4a scenario). |
 | Exit 2, `INCOMPLETE` in a 50 MiB scenario | Its 5 MiB reference scenario has no valid result in the same run. | Include `g4a-5mib-full` in the same run. |
@@ -285,7 +292,7 @@ Each sample uses a fresh child process (cold: no in-process warm-up). It is star
 | 50 MiB HTML | served two ways: with `Content-Length`, and chunked (no `Content-Length`) |
 | Slow-drip route | `/slow`, 64 B/s |
 
-The late-landmark HTML and the remaining E-2 fixtures are not in the skeleton.
+The late-landmark HTML and the remaining E-2 fixtures are not built yet (harness skeleton status).
 
 **Scenarios** (`bench/scenarios.py`). G0, G4a and G4b are gates. G1 to G7 are scenario IDs (architecture 11.1).
 
@@ -339,7 +346,7 @@ Output is JSONL: one `host` line, one line per scenario, and one `summary` line 
 - ASLR (address randomisation) is left at its default and recorded.
 - One discarded dry run of the matrix per session, recorded as such.
 - Native-platform preflight (host and inside the container, section 3).
-- Both gnu and musl binaries are run.
+- The plan is to run both gnu and musl binaries. Today only the gnu product binary is measured; musl is built and measured for the A-1 spike only (advisory) and is not yet built for the product (see section 13).
 - No other load on the runner that the job itself starts. The hosted VM has a runner agent and other neighbours, so the load-average rule is recorded and applied, with the baseline taken in the same job.
 
 Skeleton status: the host record, pinned environment, hash check, preflight and binary sha are implemented. The load-average repeat rule, the dry-run discard, the libc/allocator/profile/commit fields (from `--version`) and macOS `/usr/bin/time -l` are E-2.
@@ -388,7 +395,7 @@ Caveats, all still open:
 - The spike is not the product. It has no SSRF layer and no real pagination or `too_large` path. The product will use more memory. The product's own `--gate` runs are still required.
 - The 50 MiB boundedness scenarios were NOT run (only the 5 MiB scenarios), so boundedness has no evidence yet.
 - `g4a-5mib-gz` peaks lower than `full` because the spike probably does not decompress (no gzip feature). It says nothing about decompression cost.
-- The hosted VM is an Azure Neoverse-class machine with 4 vCPUs and 16 GB, not the Raspberry Pi 5. The core, memory system and kernel differ. Its page size is 4 KiB, while Pi OS uses 16 KiB pages, which can raise RSS. A pass at 4 KiB does not prove a pass on a Pi. Targets are unchanged.
+- The hosted VM is an Azure Neoverse-class machine with 4 vCPUs and 16 GiB (as reported by the machine), not the Raspberry Pi 5. The core, memory system and kernel differ. Its page size is 4 KiB, while Pi OS uses 16 KiB pages, which can raise RSS. A pass at 4 KiB does not prove a pass on a Pi. Targets are unchanged.
 - Only two runner instances were sampled.
 - This is arm64 only. amd64 is NOT YET MEASURED on a hosted runner.
 
@@ -424,3 +431,21 @@ Caveats:
 - The harness reads `/proc` of the spawned process. For `docker run -i` that is the docker client, not the container, so memory would differ too. How to measure the container is a design decision for the container-measurement story.
 - The spawn timer starts before the process is started, so wrapper cost (such as the `sh` exec wrapper in the workflow) is included.
 - Not measured: client-observed first byte, TLS and DNS (loopback HTTP), CPU time, container start, page-cache and cold-start effects, time per idle settle phase.
+
+## 13. Real-product idle numbers (advisory, Sprint 1)
+
+**Read this as an early, advisory record, not a gate result and not evidence that the targets are met.** These runs were not `--gate` runs, so the summary verdict is `ADVISORY_PASS`, which by this document never satisfies a target. The measured program is the A-2 build: a stdio MCP server with a `fetch` tool that returns `not_implemented`. It has no HTTP client, TLS or HTML converter, so the real number will be higher. No fetch scenario (5 MiB or 50 MiB) has been run on the product.
+
+Idle VmRSS median, 10 of 10 valid runs each, 30 s settle, shipped (release) binary, target 10 MiB:
+
+| Where | Platform | VmRSS median (MiB) | `ready_ms` median | Notes |
+|---|---|---|---|---|
+| Developer's own machine, A-2 (`.delivery/artifacts/06-dev/A-2/`) | x86_64, NOT a hosted runner | 3.15 | about 1 ms | Used the advisory-only `--parallel-idle 5` option. Release binary 1,276,440 bytes. |
+| Hosted `ubuntu-24.04-arm`, A-3a (`bench-product` job; `.delivery/artifacts/06-dev/A-3a/arm/`) | linux/arm64, gnu build only | 2.59 | about 1 ms | 4 KiB pages, kernel 6.17 Azure VM. One run on one runner instance. |
+
+What these do NOT show:
+
+- They are recorded, not enforced. `ready_ms` is not compared with the 250 ms figure (section 12).
+- Only the gnu build was measured, and the amd64 figure is from a developer machine, not a hosted amd64 runner.
+- The product memory gates G4a and G4b have not been run on amd64 or arm64. The peak (40 MiB) is completely unmeasured for the product.
+- The hosted arm64 job (`bench-product` in `.github/workflows/arm-bench.yml`) is advisory and is not a required check.

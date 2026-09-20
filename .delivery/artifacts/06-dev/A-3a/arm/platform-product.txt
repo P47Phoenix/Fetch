@@ -1,0 +1,11 @@
+machine: aarch64
+kernel: 6.17.0-1022-azure
+cpu: CPU part	: 0xd49
+nproc: 4
+MemTotal: MemTotal:       16330124 kB
+PAGESIZE: 4096
+os: Ubuntu 24.04.5 LTS
+binfmt: /proc/sys/fs/binfmt_misc/python3.12 /proc/sys/fs/binfmt_misc/llvm-18-runtime.binfmt /proc/sys/fs/binfmt_misc/llvm-17-runtime.binfmt /proc/sys/fs/binfmt_misc/llvm-16-runtime.binfmt /proc/sys/fs/binfmt_misc/register /proc/sys/fs/binfmt_misc/status 
+target/release/fetch-mcp: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=092470c66a1eb139d194a59861d525c2a192c551, for GNU/Linux 3.7.0, stripped
+6781639d00ced435ab7fc393d85d54937b012e205b5e7d1f580ae721b3297331  target/release/fetch-mcp
+fetch-mcp 0.0.0

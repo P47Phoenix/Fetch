@@ -102,6 +102,26 @@ with tempfile.TemporaryDirectory() as d:
     check("idle on bench-marked binary refused", rc == 2)
     rc, _ = run(*F, *bk, "--scenario", "g4b-raw")
     check("unimplemented scenario refused", rc == 2)
+    rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--child-env", "NOEQUALS", "--smoke", "--runs", "1")
+    check("malformed --child-env is a refusal (exit 2), not a crash-as-'target missed' (NB-1)", rc == 2, f"rc={rc}")
+    import measure, io, contextlib
+    from scenarios import SCENARIOS
+    SCENARIOS["g4b-raw"]["implemented"] = True   # NB-2: an implemented peak scenario without min_bytes must be refused
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = measure.main(["--binary", STANDIN, *F, *bk, "--scenario", "g4b-raw"])
+    finally:
+        SCENARIOS["g4b-raw"]["implemented"] = False
+    check("peak scenario lacking min_bytes refused (NB-2)", rc == 2 and "min_bytes" in buf.getvalue(), f"rc={rc}")
+    real = measure._main
+    measure._main = lambda argv=None: 1 / 0
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = measure.main([])
+    finally:
+        measure._main = real
+    check("uncaught harness exception exits 2, never 1 (NB-1)", rc == 2, f"rc={rc}")
     rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", settle=False)
     check("--gate complete set refused off native aarch64 (exit 3)" if platform.machine() != "aarch64" else "--gate host is aarch64 (skip)",
           rc == 3 or platform.machine() == "aarch64", f"rc={rc}")
