@@ -14,7 +14,7 @@ Be careful not to read more into this document than it says.
 | `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. |
 | `cargo-audit` | Never run (not installed on the dev host). |
 | The benchmark scripts | Run against the stand-in, and (advisory only, section 13) against the real `fetch-mcp` idle scenario. Never in a `--gate` run. |
-| The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2) and, since A-3b, a guarded streaming download. Earlier idle numbers in this document were taken before A-3b (no network code); idle RSS must be re-measured with the client compiled in. |
+| The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2) and, since A-3b, a guarded streaming download. The idle figure with the client compiled in is 3.58 MiB on hosted arm64 (section 13, advisory); the older 2.59 and 3.15 figures predate the client. |
 | Native aarch64 measurement | Advisory only: the A-1 spike (section 11) and the early real product idle (section 13) were measured on a GitHub-hosted arm64 runner, no `--gate`. No `--gate` run exists yet. |
 | Native amd64 measurement | NOT YET MEASURED on a hosted amd64 runner. The only amd64 product figure is one advisory idle run on the developer's own x86_64 machine (section 13), not a hosted runner. |
 | Product memory gates (G4a, G4b on amd64 and arm64) | NOT YET RUN. |
@@ -442,6 +442,7 @@ Idle VmRSS median, 10 of 10 valid runs each, 30 s settle, shipped (release) bina
 |---|---|---|---|---|
 | Developer's own machine, A-2 (`.delivery/artifacts/06-dev/A-2/`) | x86_64, NOT a hosted runner | 3.15 | about 1 ms | Used the advisory-only `--parallel-idle 5` option. Release binary 1,276,440 bytes. |
 | Hosted `ubuntu-24.04-arm`, A-3a (`bench-product` job; `.delivery/artifacts/06-dev/A-3a/arm/`) | linux/arm64, gnu build only | 2.59 | about 1 ms | 4 KiB pages, kernel 6.17 Azure VM. One run on one runner instance. |
+| Hosted `ubuntu-24.04-arm`, A-3b fix-pass 1 (`bench-product` job, run 35523134933, PR #6 head 5c9a0dd), the CURRENT figure with the client compiled in | linux/arm64, gnu build only | 3.58 (3,664-3,668 kB, 10 of 10 valid) | about 1.2 ms | Replaces the stale 2.59 above (A-2/A-3a build, no HTTP client). Advisory, single CI run, not a gate. |
 
 What these do NOT show:
 
@@ -449,3 +450,16 @@ What these do NOT show:
 - Only the gnu build was measured, and the amd64 figure is from a developer machine, not a hosted amd64 runner.
 - The product memory gates G4a and G4b have not been run on amd64 or arm64. The peak (40 MiB) is completely unmeasured for the product.
 - The hosted arm64 job (`bench-product` in `.github/workflows/arm-bench.yml`) is advisory and is not a required check.
+
+## 14. A-3b RSS smoke on native aarch64 (advisory, single run, not a gate)
+
+The A-3b acceptance criterion asks for one non-gating manual 5 MiB fetch on native aarch64 with `VmHWM` read from `/proc/<pid>/status`. It was run on the GitHub-hosted arm64 runner by the advisory job `bench-product-peak` in `.github/workflows/arm-bench.yml` (CI run 35523134933, PR #6 head 5c9a0dd; job is not a required check). Binary: `fetch-mcp` release profile built with `--features bench-loopback` (`--version` shows `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback`), aarch64 gnu, dynamically linked, stripped; fixture served by `bench/serve.py` on loopback; scenario `g4a-5mib-full` (`max_length` 5 MiB), 10 fresh processes, harness run without `--gate`.
+
+| Figure | Value |
+|---|---|
+| VmHWM after one 5 MiB fetch, median of 10 valid | 4.77 MiB (samples kB: 4892, 4752, 4752, 4896, 4768, 4896, 4892, 4896, 4880, 4636) |
+| Idle VmRSS, shipped build, client compiled in (`bench-product`, same run) | 3.58 MiB (section 13) |
+| Targets for context | 40 MiB peak, 10 MiB idle |
+| Platform | aarch64, Ubuntu 24.04.5, 4 KiB pages, hosted runner (CPU part 0xd49) |
+
+Read this as one advisory CI run on one runner instance. It is not a `--gate` run, is not evidence for NFR claims, and does not replace G4a (E-4). Idle 3.58 MiB is the shipped binary; the peak is the bench build. The earlier x86_64 figure (idle 3.8 MiB, VmHWM 5.6 MiB) was a substitute recorded in the A-3b dev report.
