@@ -1,10 +1,29 @@
 # Sprint 0 User Acceptance Report (A-1, D-7, E-1)
 
-Role: Product Owner. Branch `sprint-0/spikes` at HEAD f5d0b3c. Sources: docs/EPICS.md, docs/PRD.md, `.delivery/artifacts/05-plan/po/sprint-plan.md`, A-1 report, dev reports.
+Role: Product Owner. Branch `sprint-0/spikes` (originally assessed at HEAD f5d0b3c; verdict updated 2026-09-19 at HEAD 8c49b3d with the arm-bench results). Sources: docs/EPICS.md, docs/PRD.md, `.delivery/artifacts/05-plan/po/sprint-plan.md`, A-1 report, dev reports.
 
 ## 1. Verdict
 
-**CONDITIONAL GO** (preliminary, x86_64 evidence only). The Sprint 0 exit criteria and Gate G0 are NOT formally met: G0 as defined requires measurement on the native aarch64 host (or a gap analysis with a credible path), and the ARM host has not been recorded. What holds is a strong x86_64 signal plus a credible-path argument. Nothing in the evidence points to NO-GO. The sprint PR must not be merged as "G0 passed" until the conditions in section 4 are closed or the owner explicitly accepts them.
+**GO** (recorded 2026-09-19 by the user's decision: "record the GO"; upgraded from the earlier CONDITIONAL GO). Gate G0 is closed as GO on native aarch64 evidence for the A-1 spike. Sections 2 to 4 below are the original x86_64-era analysis, kept for the record; where they say NOT MET for the ARM host or "preliminary", the evidence in section 1a supersedes them, and the remaining conditions are in section 5.
+
+### 1a. Native aarch64 evidence (what was verified)
+Source: `.delivery/artifacts/06-dev/sprint-0/arm-bench-report.md` and `arm-bench/{pr-run,dispatch-run}/`. Two hosted runs (PR run 35478468746, dispatch run 35478804725), both green, on `ubuntu-24.04-arm`: Azure aarch64 VM, Neoverse-class, 4 vCPU, 16 GB, 4 KiB pages, glibc 2.39, Linux 6.17 azure. E-1 harness, 10 runs per scenario, 10/10 valid, medians in MiB (2^20):
+
+| Scenario | Metric | gnu | musl | Target |
+|---|---|---|---|---|
+| idle | VmRSS | 3.66 | 2.09 | <= 10 |
+| 5 MiB page, full | VmHWM | 16.3 | 10.49 | <= 40 |
+| 5 MiB page, gzipped | VmHWM | 7.93 | 5.46 | <= 40 |
+
+Run-to-run difference between the two runners was about 0.02 MiB.
+
+### 1b. What this does NOT show
+- Advisory run, not `--gate`; its `ADVISORY_PASS` is not a target result under BENCHMARK.md.
+- It measures the A-1 spike (no SSRF layer, no real pagination or `too_large` path), not `fetch-mcp`. The product will use more memory.
+- The 50 MiB boundedness scenarios were not run. The gzipped scenario is not evidence about decompression cost (the spike probably does not decompress).
+- Cloud VM (Azure, Neoverse, 4 KiB pages) is not the Pi 5 (16K pages possible); two runner instances only.
+- The amd64 baseline is still only the original x86_64 spike figures (pre-protocol); no hosted amd64 run under the E-1 protocol is recorded.
+- Hosted CI green runs: PR #2 checks were green (run 35470977286), but branch protection is not configured and `cargo-audit` has never run.
 
 ## 2. Verification I ran myself
 Clean extract: `git archive HEAD | tar -x -C $CLAUDE_JOB_DIR/tmp/ex`; separate target dir. Results (all on x86_64 Linux, rustc 1.94.1):
@@ -85,21 +104,21 @@ Sprint exit criterion "hosted CI green on the Sprint 0 PR": NOT MET (branch not 
 
 Reading strictly: the "or gap analysis" branch is satisfied only if the ARM host is recorded, which it is not. Hence CONDITIONAL GO rather than GO.
 
-## 5. Conditions (must close, owner named)
-1. C1 (project owner): confirm native aarch64 runner access and record OS, RAM, page size in BENCHMARK sec 3. Hard dependency for the real G0, Sprint 1 readiness and later gates.
-2. C2 (project owner, then developer): on the ARM host, re-run the built spike (or the D-7 skeleton plus streaming path) under the E-1 protocol (idle and 5 MB peak, gnu and musl, median of 10) and append to G0. If the ARM run exceeds a target, the verdict reverts to NO-GO pending re-scope of Goal 1. Must precede any Sprint 4 gate; ideally before Sprint 1 ends.
-3. C3 (project owner): push branch and open the draft Sprint 0 PR on instruction; get hosted CI green (including `cargo-deny`, which has never run); configure branch protection per `docs/ci-branch-protection.md` and record it in the PR.
-4. C4 (developer): close A-1 doc gaps: direct-dependency count vs NFR-05, explicit PRD-assumption-changes list, `aarch64-apple-darwin` build result (or move it explicitly to D-2 with owner approval).
-5. C5 (project owner): produce the 50-URL and 10-URL lists before E-7 starts (Sprint 2).
-6. C6 (developer, Sprint 4 A-4): 10-sample-page quality and time comparison for the chosen converter; carry risk R2 (streaming conversion quality) as an open risk until then.
-7. C7 (project owner): confirm the TLS decision (manual real-host run, no fixture-CA feature).
+## 5. Conditions carried forward (verdict GO, 2026-09-19)
+Closed by the arm-bench evidence: old C1 (native aarch64 host recorded: OS, kernel, CPU, RAM, 4 KiB page size in the arm-bench report; hosted runner per ADR-007, not the Pi cluster) and the spike part of old C2 (native run of the spike under the E-1 protocol, gnu and musl, 10/10 valid). Still open:
+1. **G4a and G4b are product gates on BOTH `linux/amd64` and `linux/arm64`** (ADR-007), on `fetch-mcp` with `--gate`; the spike result does not satisfy them. Owner: developer, Sprints 4 and 5.
+2. **amd64 baseline is still spike-only** from the original x86_64 spike; a hosted amd64 run under the protocol is not done. Owner: developer.
+3. **Pi 5 16K-page pass: optional, not done.** Owner: project owner, if wanted.
+4. **Hosted CI:** green runs exist for PR #2; branch protection is NOT configured (`docs/ci-branch-protection.md`). `cargo-audit` has never been run (nightly audit is D-3). Owner: project owner (branch protection); developer (audit, D-3).
+5. **50-URL and 10-URL lists deferred to the project owner**, needed before E-7 (Sprint 2).
+6. **A-1 doc gaps (old C4) and 10-sample-page converter comparison (old C6, A-4, Sprint 4):** dependency count vs NFR-05, explicit PRD-assumption-changes list, `aarch64-apple-darwin` build; risk R2 (streaming conversion quality) stays open. TLS approach confirmation (old C7) remains with the project owner.
+7. **Open questions, all still OPEN:** OQ-5 due before Sprint 2; OQ-3 and OQ-4 due before Sprint 10; OQ-7 due before Sprint 9 and **before the first published image** (ADR-007).
 
 ## 6. Open items carried, not decided here
-OQ-3, OQ-4, OQ-5 and OQ-7 remain open (PRD status row). OQ-7 affects D-2 and `licenses`/publishing; OQ-4 is not decided by E-8; OQ-3 and OQ-5 affect later stories. `cargo-audit` has never been run and is not a Sprint 0 AC. No claim in this report extends to ARM, hosted CI, cargo-deny, TLS, compression, redirects or non-UTF-8 charsets.
+OQ-3, OQ-4, OQ-5 and OQ-7 remain open (see condition 7). No claim in this report extends to the product binary on ARM, TLS, compression cost, redirects or non-UTF-8 charsets.
 
-## 7. Decisions needed from the user
-1. Accept a preliminary CONDITIONAL GO on x86_64 evidence (proceed to Sprint 1 planning) or hold until the ARM measurement (C2)? Recommendation: proceed with Sprint 1 only for work that needs no ARM (A-3a table-driven SSRF core), and treat C1/C2 as due before Sprint 1's ARM readiness check; do not merge the PR as "G0 passed" until then.
-2. Provide ARM runner access and record OS/RAM (C1), and say who runs the ARM measurement.
-3. Authorise pushing `sprint-0/spikes` and opening the draft PR (C3), and configure branch protection after the first CI run.
-4. Provide the 50-URL and 10-URL lists before Sprint 2 (C5).
-5. Confirm the TLS approach (C7) and whether A-1's missing darwin build and 10-sample-page comparison are accepted as deferred (C4, C6).
+## 7. User decisions (2026-09-19)
+1. Accept the schedule overage from the ADR-007 re-estimate: D-2 8 pts, total 100, MVP 76 at end of Sprint 10, Sprint 10 at 9 pts (one over the ceiling), C-3 not deferred, v1.0 Sprint 12.
+2. Unit is MiB everywhere (10 MiB idle VmRSS, 40 MiB peak VmHWM, 5 MiB body).
+3. Sprint 0 verdict recorded as GO, on the native aarch64 evidence above. UAT checkpoint passed.
+Still needed from the user: authorise merge of PR #2 and branch protection setup; provide the URL lists before Sprint 2; decide OQ-5, then OQ-7, OQ-3, OQ-4 by their due sprints.
