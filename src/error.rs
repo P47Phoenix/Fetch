@@ -1,5 +1,5 @@
-//! `FetchError`: stable error codes and mapping to tool-result text (architecture 6). A-2 carries only the
-//! variants it can produce; A-3a/A-3b/A-7 add the rest.
+//! `FetchError`: stable error codes and mapping to tool-result text (architecture 6). A-3b adds the transport
+//! variants; A-7 refines them into cause-specific messages.
 
 use std::fmt;
 
@@ -10,13 +10,29 @@ pub enum FetchError {
         field: &'static str,
         message: String,
     },
-    /// Port policy, non-public address, blocked redirect (architecture 6.1). The message gives a category only,
+    /// Non-public address, blocked scheme or userinfo, blocked redirect (architecture 6.1). There is no port policy
+    /// yet: every port except 0 is allowed until the allowed-ports setting lands with C-1/B-3. The message gives a category only,
     /// never the resolved address, and is produced before any connection.
     BlockedTarget(String),
     /// The name did not resolve (NXDOMAIN, resolver error, empty answer).
     DnsFailure(String),
-    /// Valid input, but fetching does not exist yet. Removed by A-3b.
-    NotImplemented,
+    /// The body (wire or decompressed) exceeded `FETCH_MAX_BYTES`, or `Content-Length` announced more.
+    TooLarge(String),
+    /// The overall deadline (queueing excluded from the fetch budget, DNS, connect, TLS, headers, every
+    /// redirect hop and the body) elapsed, or the call queued for a slot longer than the timeout.
+    Timeout(String),
+    /// `Content-Encoding` other than absent, `identity` or a single `gzip` (ADR-004).
+    UnsupportedEncoding(String),
+    /// A non-2xx final status. Cause-specific structure arrives with A-7.
+    HttpStatus(u16),
+    /// More redirect hops than the fixed bound (ADR-003 step 6; the configurable limit is B-3).
+    TooManyRedirects,
+    /// Connection, TLS or transport failure. Category only: the message never carries an address.
+    Network(String),
+    /// A malformed response: oversized or too many headers, bad redirect `Location`, corrupt gzip.
+    BadResponse(String),
+    /// An unexpected internal failure on an `Err` path (panics abort instead).
+    Internal(String),
 }
 
 impl FetchError {
@@ -27,7 +43,14 @@ impl FetchError {
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::BlockedTarget(_) => "blocked_target",
             Self::DnsFailure(_) => "dns_failure",
-            Self::NotImplemented => "not_implemented",
+            Self::TooLarge(_) => "too_large",
+            Self::Timeout(_) => "timeout",
+            Self::UnsupportedEncoding(_) => "unsupported_encoding",
+            Self::HttpStatus(_) => "http_error",
+            Self::TooManyRedirects => "too_many_redirects",
+            Self::Network(_) => "network_error",
+            Self::BadResponse(_) => "bad_response",
+            Self::Internal(_) => "internal",
         }
     }
 
@@ -42,10 +65,16 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidArgument { field, message } => write!(f, "{field}: {message}"),
-            Self::BlockedTarget(m) | Self::DnsFailure(m) => f.write_str(m),
-            Self::NotImplemented => f.write_str(
-                "fetch is not implemented yet: this build validates input but performs no network requests",
-            ),
+            Self::BlockedTarget(m)
+            | Self::DnsFailure(m)
+            | Self::TooLarge(m)
+            | Self::Timeout(m)
+            | Self::UnsupportedEncoding(m)
+            | Self::Network(m)
+            | Self::BadResponse(m)
+            | Self::Internal(m) => f.write_str(m),
+            Self::HttpStatus(code) => write!(f, "the server answered with HTTP status {code}"),
+            Self::TooManyRedirects => f.write_str("too many redirects"),
         }
     }
 }
@@ -64,12 +93,15 @@ mod tests {
         };
         assert_eq!(e.code(), "invalid_argument");
         assert_eq!(e.tool_text(), "error[invalid_argument]: url: missing");
-        assert_eq!(FetchError::NotImplemented.code(), "not_implemented");
+        assert_eq!(FetchError::TooLarge("x".into()).code(), "too_large");
+        assert_eq!(FetchError::Timeout("x".into()).code(), "timeout");
+        assert_eq!(
+            FetchError::HttpStatus(404).tool_text(),
+            "error[http_error]: the server answered with HTTP status 404"
+        );
+        assert_eq!(FetchError::TooManyRedirects.code(), "too_many_redirects");
         let b = FetchError::BlockedTarget("host is not public".into());
         assert_eq!(b.tool_text(), "error[blocked_target]: host is not public");
         assert_eq!(FetchError::DnsFailure("x".into()).code(), "dns_failure");
-        assert!(FetchError::NotImplemented
-            .tool_text()
-            .contains("not implemented yet"));
     }
 }

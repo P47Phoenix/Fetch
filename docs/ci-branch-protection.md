@@ -4,7 +4,7 @@
 
 Workflow file: `.github/workflows/ci.yml`. It uses hosted `ubuntu-latest` runners only, with no secrets and no `pull_request_target`. There is no self-hosted runner and none is planned (ADR-007).
 
-A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurements on `ubuntu-24.04-arm`: job `bench` measures the A-1 spike, job `bench-product` (A-3a) builds and measures the real `fetch-mcp` release binary (idle RSS and `ready_ms`, recorded, not gated). Both are advisory: do NOT add either to the required checks.
+A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurements on `ubuntu-24.04-arm`: job `bench` measures the A-1 spike, job `bench-product` (A-3a) builds and measures the real `fetch-mcp` release binary (idle RSS and `ready_ms`, recorded, not gated). Job `bench-product-peak` (A-3b) runs one 5 MiB fetch on the bench-loopback build and records VmHWM (BENCHMARK section 14). All three are advisory: do NOT add any of them to the required checks.
 
 ## Read this first: what has and has not been checked
 
@@ -28,7 +28,7 @@ A "required status check" is a CI job that must pass before a change can be merg
 | `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the same with `--features test-support`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default set and four feature sets (spread across three HTTP backends) | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
 | `test` | `cargo test --locked` (includes the SSRF range-table, `check_url`, resolver-filter and per-hop unit tests), then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
 | `deny` | `cargo deny --locked check` (`deny.toml`) | Dependencies have no known security problems and follow our rules. |
-| `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), (c) has no HTTP client crate (reqwest, hyper, ureq, h2 and others) or raw socket crate (mio, socket2 and others) anywhere in the dependency tree, and (d) has no tokio `net` (or `full`) feature enabled anywhere in the graph (checks c and d are Sprint 1 gates from A-3a; A-3b removes both when the client lands). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client and tokio-net checks fail on fake input and can see the real tree. |
+| `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), (the Sprint 1 no-HTTP-client and no-tokio-`net` checks were removed by A-3b, 2026-09-20, when the client landed; the SSRF gate for the client is the `a3b-merge-gate` job below). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client and tokio-net checks fail on fake input and can see the real tree. |
 
 "Locked" (`--locked`) means the build must use exactly the versions in `Cargo.lock`. A "feature" is an optional switch compiled into the program.
 
@@ -39,25 +39,25 @@ Do this now that CI has run (first on pull request #2). The check names only app
 1. Open the repository on GitHub. Go to Settings, then Branches.
 2. Add a rule for `main`.
 3. Tick "Require status checks to pass before merging".
-4. Add these five checks: `fmt`, `clippy`, `test`, `deny`, `release-guard`.
+4. Add these six checks: `fmt`, `clippy`, `test`, `deny`, `release-guard`, `a3b-merge-gate`.
 5. Tick "Require branches to be up to date".
 6. Tick "Require a pull request before merging".
-7. Write it down in the sprint PR, using this template: "Configured DD-MM-YYYY: checks fmt, clippy, test, deny, release-guard; up-to-date and PR required".
+7. Write it down in the sprint PR, using this template: "Configured DD-MM-YYYY: checks fmt, clippy, test, deny, release-guard, a3b-merge-gate; up-to-date and PR required".
 
-Success: a pull request shows the five checks, and the merge button stays locked until they pass.
+Success: a pull request shows the six checks, and the merge button stays locked until they pass.
 
 Later stories add more required checks (D-3, E-6, D-2). Add them to the rule when they land.
 
 ### Planned end state: two platform gate jobs (NOT YET EXISTING)
 
-Per ADR-007 the release image is multi-arch and both platforms are hard-gated on their own native hosted runner. Once the release workflow exists, the required set becomes the five checks above plus two platform gate jobs:
+Per ADR-007 the release image is multi-arch and both platforms are hard-gated on their own native hosted runner. Once the release workflow exists, the required set becomes the six checks above plus two platform gate jobs:
 
 | Check | Runner | Status |
 |---|---|---|
 | Platform gate for `linux/amd64` | `ubuntu-24.04` | NOT YET EXISTING. Job id not chosen; match it exactly once it exists. |
 | Platform gate for `linux/arm64` | `ubuntu-24.04-arm` | NOT YET EXISTING. Job id not chosen; match it exactly once it exists. |
 
-A-3a needed no new job: the existing `release-guard` job (id unchanged) is the required release-build check for `test-support` and `bench-loopback`, and now also carries the no-HTTP-client assertion. Today the required set is still `fmt`, `clippy`, `test`, `deny`, `release-guard`, matching the job ids in `ci.yml`. Do not add the two gate names until they have run once, because GitHub only offers names it has seen. A skipped required job counts as a failure for the release: the publish job needs both gates, and the release is blocked unless both pass.
+A-3a needed no new job: the existing `release-guard` job (id unchanged) is the required release-build check for `test-support` and `bench-loopback`. A-3b adds the job `a3b-merge-gate` (closes architect N7): it runs the named test `a3b_merge_gate`, the four-refusal tests, the dial-once test and the parser differential on the release profile, and fails if any of those tests did not run. Today the required set is `fmt`, `clippy`, `test`, `deny`, `release-guard`, `a3b-merge-gate`, matching the job ids in `ci.yml`. Do not add the two gate names until they have run once, because GitHub only offers names it has seen. A skipped required job counts as a failure for the release: the publish job needs both gates, and the release is blocked unless both pass.
 
 ### Publish job and image visibility (planned)
 
@@ -70,12 +70,12 @@ A-3a needed no new job: the existing `release-guard` job (id unchanged) is the r
 
 | Symptom | What it means | Fix |
 |---|---|---|
-| The five check names are not offered in the rule picker | The workflow has not run yet, so GitHub does not know the names. | Let CI run once on a pull request, then add the rule. |
+| The six check names are not offered in the rule picker | The workflow has not run yet, so GitHub does not know the names. | Let CI run once on a pull request, then add the rule. |
 | `fmt` fails | Code is not formatted. | Run `cargo fmt`, commit the result. |
 | `clippy` fails | A warning was found. | Run the failing command from the table locally and fix what it prints. |
 | `test` fails | A Rust test or the benchmark self-test failed. | Run the four commands in the table locally, in order. |
 | `deny` fails | A dependency problem. This job has passed only a few times so far, so a failure may also be a set-up problem. | Read the job log. Do not assume the code is at fault. |
-| `release-guard` fails | The message after `guard FAIL:` says which check: a feature outside the allowlist, a `FETCH_MCP_MARKER_` marker in the binary, an HTTP client or raw socket crate in the dependency tree, or a tokio `net`/`full` feature. | See "Release-feature guard" below. If it names an HTTP crate or tokio `net`, a dependency pulled in networking code before A-3b: remove or feature-gate it. Do not edit the ban lists to make it pass. |
+| `release-guard` fails | The message after `guard FAIL:` says which check: a feature outside the allowlist or a `FETCH_MCP_MARKER_` marker in the binary. | See "Release-feature guard" below. Do not edit the allowlist to make it pass. |
 | The merge button is not locked | The rule is not configured yet (this is the current state). | Follow the Owner quickstart. |
 
 ## Pins
@@ -96,10 +96,8 @@ A "pin" fixes a version so builds do not change by surprise.
 1. It builds `-p fetch-mcp --release --locked`.
 2. It asserts, through `cargo tree -e features`, that the root package enables only allow-listed features. Only `default` is allowed. Anything else, including a renamed or new feature, fails.
 3. It searches the binary for the `FETCH_MCP_MARKER_` prefix. Any marker fails.
-4. No HTTP client crate (reqwest, hyper, ureq, h2, curl, tungstenite and similar; the list is `HTTP_CLIENT_BAN` in the script) and no raw socket crate (mio, socket2, async-io, polling, smol, async-std and similar; `RAW_NET_BAN`) may appear anywhere in the dependency tree (all edges, all features). This is a Sprint 1 gate (A-3a): the SSRF code must be testable before any network code exists.
-5. The tokio `net` feature (and `full`, which implies it) must not be enabled anywhere in the graph. A client built straight on tokio sockets has no HTTP crate name for step 4 to catch.
 
-**Steps 4 and 5 are temporary. Story A-3b must remove them** when the real client lands, because its legitimate dependencies would fail them. It deletes `HTTP_CLIENT_BAN`, `RAW_NET_BAN`, `check_no_http_client_text`, `check_no_tokio_net_text`, `check_no_http_client`, their calls in the plain run, the `--no-http-client` option and their self-test blocks (the script header lists them). Until then, leave them in place; the feature and marker checks (steps 2 and 3) stay for good.
+The Sprint 1 steps that banned any HTTP client crate, raw socket crate and the tokio `net` feature were removed by A-3b (2026-09-20) as planned: the real client (reqwest, rustls with ring, tokio `net`) is now a legitimate dependency. What replaces them is the `a3b-merge-gate` job (see above), which checks that the client dials only SSRF-validated addresses. Most of it is behavioural (real sockets, connection counters), but part is a heuristic source scan (no socket types outside the client, `lookup_host` only in `fetch/dns.rs`, exactly one `dns_resolver` call): a text check that a determined change can evade, not a proof. TLS/certificate validation has no automated test at all; it was checked by hand only. `cargo deny` still bans openssl, native-tls and aws-lc.
 
 Options:
 
@@ -108,7 +106,6 @@ Options:
 | `--self-test` | Builds each forbidden feature and requires the guard to fail for both reasons. It also checks a renamed feature and an unknown marker (positive controls: cases that must fail, to prove the guard can fail). |
 | `--features CSV` | Runs the same tree and marker checks on a release build with those features. The self-test uses it to prove the guard fails on `test-support` and `bench-loopback`. It is expected to exit non-zero for them. CI never passes it. |
 | `--binary PATH` | Searches an existing artifact (used by D-2). |
-| `--no-http-client` | Runs only steps 4 and 5 (no HTTP client or raw socket crate, no tokio `net`), without a release build. The plain run already includes them. Removed by A-3b. |
 
 ## Dependencies and advisories
 

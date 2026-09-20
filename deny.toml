@@ -34,6 +34,9 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
+    # webpki-roots (embedded Mozilla trust anchors, ADR-001, added by A-3b) is licensed CDLA-Permissive-2.0, a
+    # permissive data licence.
+    "CDLA-Permissive-2.0",
 ]
 
 # publish = false crate: its own licence is not checked here (OQ-7 open).

@@ -3,7 +3,7 @@ name = "fetch-mcp"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Low-memory MCP fetch server (Sprint 1 skeleton; A-2)"
+description = "Low-memory MCP fetch server (A-3b: guarded streaming fetch)"
 
 [features]
 default = []
@@ -15,18 +15,29 @@ test-support = []
 bench-loopback = []
 
 [dependencies]
-# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13 plans 14). A-2 adds 4 (4 of 15); A-3a adds none (std::net parsing, own range tables; no `url`/`ipnet` crate).
-# Versions match spikes/a1/Cargo.lock (architecture sec 9.1). NO HTTP client, TLS or network crate until A-3b.
+# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13). A-2 adds 4 (4 of 15); A-3a adds none (std::net parsing, own range tables; no `url`/`ipnet` crate); A-3b adds 4 (reqwest, rustls, webpki-roots, flate2: 8 of 15).
+# Versions match spikes/a1/Cargo.lock where the spike had them (architecture sec 9.1).
 # 1. rmcp: MCP server, stdio transport, #[tool_router] macros (ADR-001). Exact pin: high-churn 3.x (R5).
 rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
-# 2. tokio: current_thread runtime, minimal features (no "net": nothing here opens a socket). Exact pin (sec 9.1).
-tokio = { version = "=1.53.1", default-features = false, features = ["rt", "macros", "io-std", "io-util"] }
+# 2. tokio: current_thread runtime, minimal features. `net` (lookup_host), `time` (the fetch deadline) and `sync`
+#    (the concurrency Semaphore) were added by A-3b and are what it needs. Exact pin (sec 9.1).
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "macros", "io-std", "io-util", "net", "time", "sync"] }
 # 3. serde: FetchParams deserialisation.
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 # 4. schemars: JSON schema for the tool input (rmcp uses schemars 1.x).
 schemars = "1"
+# 5. reqwest: HTTP/1.1 client (ADR-001). rustls without a bundled provider: ring is installed at start.
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# 6. rustls: ring provider only (no aws-lc; deny.toml bans it) and the preconfigured client TLS config.
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# 7. webpki-roots: embedded trust anchors (ADR-001; static musl binary and bare containers work).
+webpki-roots = "=1.0.9"
+# 8. flate2: pure-Rust (miniz_oxide) gzip decoder driven with a bounded output buffer (ADR-004).
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
+# url: dev-dependency only, reference parser for the A-3b differential test (architect N2). Same version reqwest resolves.
+url = "=2.5.8"
 # Test-only, not shipped, not counted against NFR-05: the stdout-purity integration test speaks JSON-RPC.
 serde_json = "1"
 

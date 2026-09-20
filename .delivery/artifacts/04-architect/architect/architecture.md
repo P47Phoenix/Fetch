@@ -25,7 +25,7 @@ Read in full: PRD v0.3, EPICS, A-1 report, spike source.
 | HTTP client (reqwest vs hyper), converter internals, readability approach, SSRF mechanics, allocator/libc, pagination semantics over stream | Open (architect fills) | ADR-001..006 |
 | OQ-3 robots.txt default | Open, human decision | design keeps a switch point, does not decide |
 | OQ-4 private-host allowlist | Open, human decision | design supports both outcomes |
-| OQ-5 untrusted-content labelling | Open, human decision | design supports both outcomes |
+| OQ-5 untrusted-content labelling | RESOLVED: no label (owner decision 2026-09-20) | see the 2026-09-20 amendment; B-6 won't-do |
 | OQ-7 distribution/licence | Open, human decision | design lists impact only |
 | gnu vs musl on ARM | Open, needs ARM data | ADR-005 |
 
@@ -59,7 +59,7 @@ src/
   obs.rs         stderr logger, per-call log record, optional /proc/self/status memory sample
   server/
     mod.rs       rmcp #[tool_router] handler, FetchParams schema, concurrency semaphore, result rendering
-    render.rs    result assembly: optional header (final URL/status, FR-14), content, pagination footer, optional untrusted label (OQ-5 hook)
+    render.rs    result assembly: optional header (final URL/status, FR-14), content, pagination footer, no untrusted label (OQ-5 resolved; hook unused)
   fetch/
     mod.rs       orchestrator: deadline, redirect loop, per-hop policy check, body pump
     client.rs    reqwest client construction (rustls, http1, gzip, no proxy, no cookies, no pool)
@@ -366,7 +366,7 @@ Validity rule: a run that early-stops before reading the expected amount of the 
 |---|---|---|---|
 | OQ-3 | robots.txt enforced by default? | default value of `FETCH_IGNORE_ROBOTS`; whether `fetch/robots.rs` ships in v1 | robots fetch reuses client + SSRF policy + 512 KB cap; parser is streaming and keeps only our UA group; costs one extra request and small bounded state; module is isolated so removal is cheap |
 | OQ-4 | private-host allowlist or blanket block? | whether `FETCH_ALLOW_PRIVATE_HOSTS` and C-2 ship | `ssrf::Policy` takes an allowlist that is empty by default. If used, allowlisting applies to the exact hostname of the original request only; a redirect hop to any other private host is still blocked; IP-literal hosts are not allowlistable; the allowlist relaxes only the private-range check, never scheme/port/metadata (169.254.169.254) rules. Blanket block = pass an empty list |
-| OQ-5 | label output as untrusted content? | whether B-6 ships and its wording | `server::render` has one hook. Options for the human: (a) separate leading text content block (does not touch offsets); (b) in-band prefix on first page only. Either way the label is outside `start_index` accounting (ADR-006). Label is a mitigation, not prevention |
+| OQ-5 | RESOLVED 2026-09-20 (owner): NO label; the options below are historical. Label output as untrusted content? | whether B-6 ships and its wording | `server::render` has one hook. Options for the human: (a) separate leading text content block (does not touch offsets); (b) in-band prefix on first page only. Either way the label is outside `start_index` accounting (ADR-006). Label is a mitigation, not prevention |
 | OQ-7 | public distribution and licence | licence file, `cargo deny` licence policy, release channel, UA string contact URL | release job and artifact layout are channel-agnostic; only UA and docs depend on it |
 
 ## 13. Threat Model (STRIDE-lite)
@@ -381,7 +381,7 @@ Actors: prompt-injected LLM supplying malicious URLs; malicious web server; mali
 | Repudiation | No trace of what was fetched | stderr per-call log (host+path), local only |
 | Information disclosure | SSRF reads internal services/metadata and returns content to LLM; error text reveals topology; credentials leaked | ADR-003; blocked errors are categorical; no cookies/auth/proxy (NFR-07); no headers forwarded across redirects because none are set; query stripped in logs |
 | Denial of service | Huge/slow/compressed/deeply nested bodies exhaust memory or CPU | ADR-004: caps, deadline, semaphore (queue wait bounded), blocking-pool cap, lol_html memory limit, depth caps |
-| Elevation of privilege | Fetched content makes the LLM take actions | Out of server control; OQ-5 labelling; no code execution, no JS, no file scheme, output is text only |
+| Elevation of privilege | Fetched content makes the LLM take actions | Out of server control; no label (OQ-5 resolved); no code execution, no JS, no file scheme, output is text only |
 
 ### 13.1 SSRF (Security Architect view)
 
@@ -400,7 +400,7 @@ Attack paths and controls:
 
 ### 13.2 Prompt injection
 
-Cannot be eliminated. Server-side measures: text-only output, no active content, script/style/hidden-element stripping (also removes some hidden-text injection vectors), fixed pagination footer separated from content, optional untrusted label (OQ-5, human decision). The fixed pagination footer and 'Final URL' header are spoofable by page text; keep them structurally separate from content (OQ-5 option a) and, if OQ-5 stays unanswered, ship the label ON by default (Security recommendation, not decided here). Documentation (D-4) states the residual risk. Note the stripping of `[hidden]`, `aria-hidden` and CSS-hidden text is best-effort: inline `style="display:none"` can be matched, external CSS cannot.
+Cannot be eliminated. Server-side measures: text-only output, no active content, script/style/hidden-element stripping (also removes some hidden-text injection vectors), fixed pagination footer separated from content, no untrusted label (OQ-5 resolved: no label, owner decision 2026-09-20). The fixed pagination footer and 'Final URL' header are spoofable by page text; keep them structurally separate from content (OQ-5 option a) (the label-ON-by-default recommendation is moot: OQ-5 resolved as no label). Documentation (D-4) states the residual risk. Note the stripping of `[hidden]`, `aria-hidden` and CSS-hidden text is best-effort: inline `style="display:none"` can be matched, external CSS cannot.
 
 ### 13.3 Resource exhaustion
 
@@ -461,7 +461,7 @@ Backstop rules (both recorded in EPICS, see Required doc changes): (1) release-g
 | B-3 | `fetch::redirect` | per-hop revalidation |
 | B-4 | `fetch::robots` | blocked by OQ-3 |
 | B-5 | tests, coverage gate | section 10 |
-| B-6 | `server::render` hook | blocked by OQ-5 |
+| B-6 | `server::render` hook | won't-do (OQ-5 resolved 2026-09-20: no label) |
 | C-1 | `config` | |
 | C-2 | `ssrf::Policy` allowlist | blocked by OQ-4 |
 | C-3 | `config`, `fetch::body` | |
@@ -482,7 +482,7 @@ Ordering (as adopted by the plan): A-3a lands first with no HTTP client, A-3b fo
 ## 16. Next Steps / Assumptions
 
 Assumptions: single user, trusted local operator; one client; no persistence; HTTP/1.1 acceptable; gzip-only acceptable; character-based pagination acceptable.
-Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner as part of E-1; (2) 6.4 is ACCEPTED (PO, 2026-09-19); the Required doc changes below are historical (applied via the plan); (3) human answers OQ-3/4/5/7 before B-4/C-2/B-6/D-6; (4) A-4 spike-in-story: converter quality on 10 real pages before committing to landmark thresholds.
+Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner as part of E-1; (2) 6.4 is ACCEPTED (PO, 2026-09-19); the Required doc changes below are historical (applied via the plan); (3) human answers OQ-3/4/7 before B-4/C-2/D-6 (OQ-5 resolved: no label, B-6 won't-do); (4) A-4 spike-in-story: converter quality on 10 real pages before committing to landmark thresholds.
 
 
 ## Required doc changes (for the orchestrator/PO; docs/ not edited here)
@@ -528,7 +528,7 @@ Next: (1) run the ARM measurements in ADR-005/ADR-001 on the hosted arm64 runner
 
 ## Revision 2 (post-plan, 2026-09-19)
 
-Applies the user-approved Sprint Plan and the plan's "Required architecture change" note. No decision not approved by the plan or user was changed; OQ-3, OQ-4, OQ-5 and OQ-7 remain OPEN.
+Applies the user-approved Sprint Plan and the plan's "Required architecture change" note. No decision not approved by the plan or user was changed; OQ-3, OQ-4 and OQ-7 remained OPEN at this revision; OQ-5 has since been RESOLVED (no label, owner decision 2026-09-20).
 
 | Change | Where |
 |---|---|
@@ -544,3 +544,9 @@ Applies the user-approved Sprint Plan and the plan's "Required architecture chan
 - The IPv6 table gained `::/96` (whole), SIIT `::ffff:0:0:0/96` (embedded v4), `3fff::/20`, `5f00::/16` (and later `100:0:0:1::/64`, RFC 9780); `src/ssrf/ranges.rs` is authoritative over the ADR-003 list.
 - A-3b merge gate additionally requires a differential test against `url::Url::parse` (dev-dependency only) for host classification, and that the client dials only `Validated.addrs`.
 - `policy` is a top-level module (`src/policy.rs`), not under `ssrf`; `Resolver` is a trait returning `Vec<IpAddr>` (async fn in trait), so A-3b's real resolver needs tokio `net`.
+
+## Amendment 2026-09-20 (A-3b)
+- Module layout as built: `src/fetch/mod.rs` (client, redirect loop, deadline, semaphore, header and encoding checks), `src/fetch/body.rs` (bounded gzip and UTF-8 pipeline), `src/fetch/dns.rs` (`SystemResolver`, `Pinned`). Tool handler `src/server.rs` keeps an interim character window; conversion, early stop and `raw` are A-4 to A-6.
+- Dependencies: 8 direct of 15 after A-3b (rmcp, tokio, serde, schemars, reqwest, rustls, webpki-roots, flate2); `url` is a dev-dependency only. tokio features: `rt, macros, io-std, io-util, net, time, sync` (`net` for `lookup_host`, `time` for the deadline, `sync` for the concurrency `Semaphore`); the Sprint 1 guard ban on `net` and on HTTP client crates is removed (`scripts/check-release-features.sh`).
+- N7 closed: CI job `a3b-merge-gate` (docs/ci-branch-protection.md). N5 closed: at most 16 answers, resolver order preserved.
+- OQ-5 decided no-label (2026-09-20): section 4/ADR-006 item 7 carries no label block.
