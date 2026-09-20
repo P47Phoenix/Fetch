@@ -11,7 +11,7 @@ incomplete gate set, a boundedness scenario without its 5 MiB reference); 3 --ga
 (checked after every other --gate rule, so those refusals are exercisable anywhere).
 Without --gate the run is advisory (record has gating=false). MB = MiB (2**20). Linux only here (macOS: E-2).
 """
-import argparse, concurrent.futures as cf, json, os, platform, queue, statistics, subprocess, sys, threading, time
+import argparse, concurrent.futures as cf, datetime, json, math, os, platform, queue, statistics, subprocess, sys, threading, time
 import fixtures, serve
 from scenarios import SCENARIOS, GROUPS
 
@@ -20,6 +20,29 @@ IDLE_TARGET_MIB, PEAK_TARGET_MIB, BOUND_RATIO = 10, 40, 1.10
 PINNED_ENV = {"FETCH_LOG": "warn", "LC_ALL": "C"}   # plus PATH; RUST_LOG, LD_PRELOAD, MALLOC_* deliberately absent
 GATE_CHILD_ENV_ALLOW = frozenset()   # --gate allowlist for --child-env keys: none. The pinned env is the whole environment.
 SHIPPED_FORBIDDEN_MARKERS = ("bench-loopback", "test-support", "FETCH_MCP_MARKER_")  # any of these in --version => not "shipped"
+
+
+def utc_now():
+    """ISO-8601 UTC wall-clock timestamp (timestamps only; every duration uses time.monotonic())."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def ms_since(t0): return round((time.monotonic() - t0) * 1000, 3)
+
+
+TIMING_KEYS = ("ready_ms", "tools_list_ms", "first_byte_ms", "fetch_ms", "total_ms")
+
+
+def timing_stats(samples):
+    """Per-key {n, median, min, max[, p95 when n >= 20]} over VALID samples only. Recorded, never gated."""
+    out = {}
+    for k in TIMING_KEYS:
+        v = sorted(x[k] for x in samples if x["valid"] and x.get(k) is not None)
+        if not v: continue
+        d = {"n": len(v), "median": round(statistics.median(v), 3), "min": v[0], "max": v[-1]}
+        if len(v) >= 20: d["p95"] = v[math.ceil(0.95 * len(v)) - 1]   # nearest-rank
+        out[k] = d
+    return out
 
 
 def required_gate_set(kind, names):
@@ -102,6 +125,7 @@ class Server:
     """One fresh child process plus a stdout reader thread (so a hung server times out instead of blocking)."""
     def __init__(self, binary, env_extra):
         env = {"PATH": os.environ.get("PATH", ""), **PINNED_ENV, **env_extra}
+        self.t_spawn = time.monotonic()
         self.p = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         self.q = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
@@ -134,10 +158,14 @@ class Server:
         if "error" in m or not isinstance(m.get("result"), dict): raise RuntimeError(f"{method} returned a JSON-RPC error or no result: {json.dumps(m)[:200]}")
         return m["result"]
 
-    def handshake(self):
+    def handshake(self, t=None):
+        """t (optional dict) receives ready_ms (spawn -> valid initialize result) and tools_list_ms."""
         self.call_ok("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "bench", "version": "0"}}, 30)
+        if t is not None: t["ready_ms"] = ms_since(self.t_spawn)
         self.send("notifications/initialized", notify=True)
+        t_list = time.monotonic()
         tools = self.call_ok("tools/list", timeout=30).get("tools")
+        if t is not None: t["tools_list_ms"] = ms_since(t_list)
         if not isinstance(tools, list) or not any(isinstance(t, dict) and t.get("name") == "fetch" for t in tools):
             raise RuntimeError("tools/list has no `fetch` tool")
 
@@ -147,17 +175,29 @@ class Server:
 
 
 def sample(binary, env_extra, scen, srv, base_url, settle):
-    """One fresh-process sample -> dict(valid, reason, rss_kB, hwm_kB)."""
+    """One fresh-process sample -> dict(valid, reason, rss_kB, hwm_kB, start_utc, *_ms timings). Timings never affect validity."""
+    t = {"start_utc": utc_now()}
+    t0 = time.monotonic()
+    r = _sample(binary, env_extra, scen, srv, base_url, settle, t)
+    r.update(t); r["total_ms"] = ms_since(t0)   # includes process close; for idle also the settle sleep
+    return r
+
+
+def _sample(binary, env_extra, scen, srv, base_url, settle, t):
     s = None
     try:
         s = Server(binary, env_extra)
-        s.handshake()
+        s.handshake(t)
         if scen["kind"] == "idle":
             time.sleep(settle)
             st = proc_status(s.p.pid)
             return {"valid": True, "rss_kB": st["VmRSS"], "hwm_kB": st["VmHWM"]}
         srv.reset()
+        t_call = time.monotonic()
         r = s.call("tools/call", {"name": "fetch", "arguments": {"url": base_url + scen["route"], **scen.get("args", {})}})
+        t["fetch_ms"] = ms_since(t_call)
+        fb = srv.first_byte_at(scen["route"])   # fixture server's first body write (same process, same monotonic clock)
+        if fb is not None and fb >= t_call: t["first_byte_ms"] = round((fb - t_call) * 1000, 3)
         st = proc_status(s.p.pid)  # VmHWM read after the call returned, before exit
         if "error" in r or not isinstance(r.get("result"), dict): raise RuntimeError(f"tools/call returned a JSON-RPC error: {json.dumps(r)[:200]}")
         res = r["result"]
@@ -245,8 +285,9 @@ def main(argv=None):
         need = SCENARIOS[n].get("binary", "bench")
         if need != a.binary_kind: return refuse(f"scenario {n} is gated on the {need} binary, got {a.binary_kind}")
 
+    run_start = utc_now()
     host = host_record(); host["native_aarch64"] = native_aarch64()[0]
-    emit({**host, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "binary_sha256": fixtures.sha256_file(a.binary),
+    emit({**host, "run_start_utc": run_start, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "binary_sha256": fixtures.sha256_file(a.binary),
           "child_env": {**PINNED_ENV, **env_extra}, "runs": a.runs, "settle_s": a.settle, "gating": a.gate,
           "fixture_sha256": {k: v.get("sha256") or v["decompressed_sha256"] for k, v in manifest["fixtures"].items()}, "unit": "MiB=2^20 bytes"})
 
@@ -267,7 +308,12 @@ def main(argv=None):
             target_kb = (a.idle_target_mib if scen["kind"] == "idle" else a.peak_target_mib) * MIB_KB
             rec = {"kind": "scenario", "scenario": n, "gate": scen["gate"], "metric": "VmRSS" if key == "rss_kB" else "VmHWM",
                    "binary_kind": a.binary_kind, "runs": a.runs, "valid_runs": len(good), "samples_kB": vals,
-                   "invalid_reasons": sorted({x["reason"] for x in ss if not x["valid"]}), "target_kB": target_kb}
+                   "invalid_reasons": sorted({x["reason"] for x in ss if not x["valid"]}), "target_kB": target_kb,
+                   # timings: recorded, NOT gated (ADR-007 restates the readiness figure); labelled advisory unless --gate
+                   "timings": {"unit": "ms", "gated": False, "gating_run": a.gate, "standin": not ver.startswith(VERSION_PREFIX),
+                               "label": "recorded, not gated" if a.gate else "advisory (not a gating run)",
+                               **timing_stats(ss)},
+                   "sample_timings": [{"valid": x["valid"], **{k: x[k] for k in ("start_utc", *TIMING_KEYS) if k in x}} for x in ss]}
             if len(good) < 10 and not a.smoke:
                 rec["verdict"] = "INVALID"; invalid.append(n)
             elif vals:
@@ -292,6 +338,7 @@ def main(argv=None):
             incomplete.append(f"{n} (boundedness reference {ref} has no valid result)"); continue
         ratio = medians[n] / medians[ref]; summ.setdefault("boundedness", {})[n] = round(ratio, 3)
         if ratio > BOUND_RATIO: missed.append(n + " (boundedness)")
+    summ["run_start_utc"], summ["run_end_utc"] = run_start, utc_now()
     summ["missed"] = missed; summ["invalid"] = invalid; summ["incomplete"] = incomplete
     # A pass without --gate is advisory and must not read as a gate PASS.
     summ["verdict"] = "INVALID" if invalid else ("FAIL" if missed else ("INCOMPLETE" if incomplete else ("PASS" if a.gate else "ADVISORY_PASS")))

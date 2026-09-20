@@ -19,7 +19,7 @@ ROUTES = {  # path -> (fixture name, mode, extra headers)
 
 class FixtureServer:
     def __init__(self, fixture_dir, manifest, port=0):
-        self.counters, self._lock, self._gen = {}, threading.Lock(), 0
+        self.counters, self.first, self._lock, self._gen = {}, {}, threading.Lock(), 0
         outer = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -62,14 +62,19 @@ class FixtureServer:
 
     def _send(self, h, path, data, chunked, gen):
         with self._lock:   # count before the write: a client that aborts mid-write must not race the counter to zero
-            if gen == self._gen: self.counters[path] = self.counters.get(path, 0) + len(data)
+            if gen == self._gen:
+                self.counters[path] = self.counters.get(path, 0) + len(data)
+                self.first.setdefault(path, time.monotonic())   # first body write of this sample (timing only, never gates)
         h.wfile.write(b"%x\r\n%s\r\n" % (len(data), data) if chunked else data)
         h.wfile.flush()
 
     def bytes_sent(self, path):
         with self._lock: return self.counters.get(path, 0)
+    def first_byte_at(self, path):
+        """time.monotonic() of the first body write for path since reset(), or None (e.g. aborted on the headers)."""
+        with self._lock: return self.first.get(path)
     def reset(self):
-        with self._lock: self.counters.clear(); self._gen += 1
+        with self._lock: self.counters.clear(); self.first.clear(); self._gen += 1
     def start(self):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start(); return self
     def stop(self):

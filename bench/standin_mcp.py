@@ -3,9 +3,9 @@
 Speaks minimal MCP over stdio. `fetch` streams the URL body (discarding it), refusing above a 5 MiB
 cap with a too_large error, then holds STANDIN_ALLOC_MIB of touched memory so peak RSS is known.
 Env: STANDIN_IDLE_ALLOC_MIB (at start), STANDIN_ALLOC_MIB (on successful fetch),
-STANDIN_EARLY_STOP=<bytes> (read only that many bytes: must be flagged invalid), STANDIN_TOOLARGE_ALLOC_MIB (on too_large, to test boundedness FAIL), STANDIN_BENCH=1 (--version marker).
+STANDIN_EARLY_STOP=<bytes> (read only that many bytes: must be flagged invalid), STANDIN_TOOLARGE_ALLOC_MIB (on too_large, to test boundedness FAIL), STANDIN_BENCH=1 (--version marker), STANDIN_DELAY_MS (startup delay, timing self-test).
 """
-import http.client, json, os, sys, urllib.parse
+import http.client, json, os, sys, time, urllib.parse
 
 MIB = 1024 * 1024
 CAP = 5 * MIB
@@ -13,6 +13,7 @@ if "--version" in sys.argv:
     print("standin-mcp 0.0.0 commit=selftest lock=selftest" + (" bench-loopback" if os.environ.get("STANDIN_BENCH") else "")
           + (" FETCH_MCP_MARKER_TEST_SUPPORT_V1:test-support" if os.environ.get("STANDIN_TESTSUPPORT") else ""))
     sys.exit(0)
+time.sleep(int(os.environ.get("STANDIN_DELAY_MS", "0")) / 1000)   # startup delay: timing self-test only
 hold = [b"\x01" * (int(os.environ.get("STANDIN_IDLE_ALLOC_MIB", "0")) * MIB)]
 
 

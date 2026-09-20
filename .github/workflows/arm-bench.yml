@@ -116,16 +116,26 @@ jobs:
           print(f"## arm-bench ({libc}): A-1 spike on hosted arm64, ADVISORY (spike is not the product, not a gate run)\n")
           print("```\n" + open(f"out/platform-{libc}.txt").read() + "```\n")
           print("| scenario | metric | valid/runs | median MiB | min-max MiB | verdict |\n|---|---|---|---|---|---|")
+          tim = []
           try:
               for l in open(f"out/results-{libc}.jsonl"):
                   o = json.loads(l)
                   if o.get("kind") == "scenario":
                       v = o.get("samples_kB") or [0]
                       print(f"| {o['scenario']} | {o['metric']} | {o['valid_runs']}/{o['runs']} | {o.get('median_MiB','n/a')} | {min(v)/1024:.2f}-{max(v)/1024:.2f} | {o['verdict']} {o.get('invalid_reasons') or ''} |")
+                      tim.append(o)
                   elif o.get("kind") == "summary":
                       print(f"\nsummary: {o.get('verdict')} {o.get('reason','')} (gating={o.get('gating')})")
           except OSError as e:
               print(f"no results: {e}")
+          # timings are recorded, NOT gated (ADR-007); milliseconds, median over valid samples (min-max)
+          if tim:
+              print("\n### Timings (ms, median over valid samples, min-max; recorded not gated, advisory)\n")
+              print("| scenario | ready | tools/list | first byte | fetch | total |\n|---|---|---|---|---|---|")
+              for o in tim:
+                  t = o.get("timings", {})
+                  cell = lambda k: f"{t[k]['median']} ({t[k]['min']}-{t[k]['max']})" if k in t else "n/a"
+                  print(f"| {o['scenario']} | " + " | ".join(cell(k) for k in ("ready_ms", "tools_list_ms", "first_byte_ms", "fetch_ms", "total_ms")) + " |")
           PY
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -66,6 +66,31 @@ with tempfile.TemporaryDirectory() as d:
     # early-stop sample must be INVALID
     rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--child-env", "STANDIN_EARLY_STOP=1000")
     check("early stop -> INVALID, exit 2", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc} {scen(r, 'g4a-5mib-full')['invalid_reasons']}")
+    # timings: recorded, sane, valid-only, never gating
+    rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--peak-target-mib", "1000")
+    sc = scen(r, "g4a-5mib-full"); T = sc["timings"]
+    check("timings: all five *_ms stats present with median/min/max, no p95 at 10 samples",
+          all(k in T for k in ("ready_ms", "tools_list_ms", "first_byte_ms", "fetch_ms", "total_ms")) and all("p95" not in T[k] for k in ("ready_ms", "total_ms")), str(T)[:200])
+    check("timings: non-negative, ready <= total, first_byte <= fetch <= total, min<=median<=max",
+          all(x["valid"] and 0 <= x["ready_ms"] <= x["total_ms"] and 0 <= x["first_byte_ms"] <= x["fetch_ms"] <= x["total_ms"] for x in sc["sample_timings"])
+          and all(T[k]["min"] >= 0 and T[k]["min"] <= T[k]["median"] <= T[k]["max"] for k in ("ready_ms", "fetch_ms", "total_ms")))
+    check("timings: labelled advisory + stand-in + not gated; ISO UTC stamps on run and samples",
+          T["label"].startswith("advisory") and T["standin"] and T["gated"] is False and r[0]["run_start_utc"].endswith("Z")
+          and r[-1]["run_end_utc"] >= r[0]["run_start_utc"] and all(x["start_utc"].endswith("Z") for x in sc["sample_timings"]))
+    rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--runs", "20", "--idle-target-mib", "1000")
+    check("timings: p95 present at 20 samples, idle has no fetch timings",
+          "p95" in scen(r, "idle")["timings"]["ready_ms"] and "fetch_ms" not in scen(r, "idle")["timings"], str(scen(r, "idle")["timings"])[:160])
+    # invalid samples' times excluded from timing medians
+    rc, r = run(*F, *bk, "--scenario", "g4a-5mib-full", "--child-env", "STANDIN_EARLY_STOP=1000")
+    sc = scen(r, "g4a-5mib-full")
+    check("timings: invalid samples excluded from timing stats (present per sample, absent from medians)",
+          sc["valid_runs"] == 0 and "fetch_ms" not in sc["timings"] and all(not x["valid"] and "fetch_ms" in x for x in sc["sample_timings"]))
+    # timing never changes a memory verdict/exit code: same memory outcome for fast vs slowed server (delay is timing only)
+    fast = run(*F, *bk, "--scenario", "g4a-5mib-full", "--peak-target-mib", "1000")
+    slow = run(*F, *bk, "--scenario", "g4a-5mib-full", "--peak-target-mib", "1000", "--child-env", "STANDIN_DELAY_MS=300")
+    check("timings: gating verdict/exit unaffected by timing (300 ms slower ready, same verdict and exit code)",
+          fast[0] == slow[0] == 0 and fast[1][-1]["verdict"] == slow[1][-1]["verdict"]
+          and scen(slow[1], "g4a-5mib-full")["timings"]["ready_ms"]["median"] > scen(fast[1], "g4a-5mib-full")["timings"]["ready_ms"]["median"] + 200)
     # refusals
     rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--runs", "3")
     check("fewer than 10 runs refused, exit 2", rc == 2)
