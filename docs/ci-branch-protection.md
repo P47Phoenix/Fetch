@@ -28,7 +28,7 @@ A "required status check" is a CI job that must pass before a change can be merg
 | `clippy` | `cargo clippy --locked --all-targets -- -D warnings`, then the same with `--features bench-loopback`, then the A-1 spike crate (`spikes/a1`, a separate crate) with the same flags for the default set and four feature sets (spread across three HTTP backends) | Clippy (Rust's code-advice tool) finds no warnings. `-D warnings` turns every warning into a failure. |
 | `test` | `cargo test --locked` (includes the SSRF range-table, `check_url`, resolver-filter and per-hop unit tests), then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
 | `deny` | `cargo deny --locked check` (`deny.toml`) | Dependencies have no known security problems and follow our rules. |
-| `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), and (c) has no HTTP client crate (reqwest, hyper, ureq, h2 and others) anywhere in the dependency tree (Sprint 1 gate, A-3a; A-3b removes this one check when the client lands). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client check fails on a fake tree and can see the real one. |
+| `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), (c) has no HTTP client crate (reqwest, hyper, ureq, h2 and others) or raw socket crate (mio, socket2 and others) anywhere in the dependency tree, and (d) has no tokio `net` (or `full`) feature enabled anywhere in the graph (checks c and d are Sprint 1 gates from A-3a; A-3b removes both when the client lands). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client and tokio-net checks fail on fake input and can see the real tree. |
 
 "Locked" (`--locked`) means the build must use exactly the versions in `Cargo.lock`. A "feature" is an optional switch compiled into the program.
 
@@ -75,7 +75,7 @@ A-3a needed no new job: the existing `release-guard` job (id unchanged) is the r
 | `clippy` fails | A warning was found. | Run the failing command from the table locally and fix what it prints. |
 | `test` fails | A Rust test or the benchmark self-test failed. | Run the four commands in the table locally, in order. |
 | `deny` fails | A dependency problem. This job has passed only once so far, so a failure may also be a set-up problem. | Read the job log. Do not assume the code is at fault. |
-| `release-guard` fails | A test-only feature or a `FETCH_MCP_MARKER_` marker ended up in a release build. | See "Release-feature guard" below. |
+| `release-guard` fails | The message after `guard FAIL:` says which check: a feature outside the allowlist, a `FETCH_MCP_MARKER_` marker in the binary, an HTTP client or raw socket crate in the dependency tree, or a tokio `net`/`full` feature. | See "Release-feature guard" below. If it names an HTTP crate or tokio `net`, a dependency pulled in networking code before A-3b: remove or feature-gate it. Do not edit the ban lists to make it pass. |
 | The merge button is not locked | The rule is not configured yet (this is the current state). | Follow the Owner quickstart. |
 
 ## Pins
@@ -96,6 +96,10 @@ A "pin" fixes a version so builds do not change by surprise.
 1. It builds `-p fetch-mcp --release --locked`.
 2. It asserts, through `cargo tree -e features`, that the root package enables only allow-listed features. Only `default` is allowed. Anything else, including a renamed or new feature, fails.
 3. It searches the binary for the `FETCH_MCP_MARKER_` prefix. Any marker fails.
+4. No HTTP client crate (reqwest, hyper, ureq, h2, curl, tungstenite and similar; the list is `HTTP_CLIENT_BAN` in the script) and no raw socket crate (mio, socket2, async-io, polling, smol, async-std and similar; `RAW_NET_BAN`) may appear anywhere in the dependency tree (all edges, all features). This is a Sprint 1 gate (A-3a): the SSRF code must be testable before any network code exists.
+5. The tokio `net` feature (and `full`, which implies it) must not be enabled anywhere in the graph. A client built straight on tokio sockets has no HTTP crate name for step 4 to catch.
+
+**Steps 4 and 5 are temporary. Story A-3b must remove them** when the real client lands, because its legitimate dependencies would fail them. It deletes `HTTP_CLIENT_BAN`, `RAW_NET_BAN`, `check_no_http_client_text`, `check_no_tokio_net_text`, `check_no_http_client`, their calls in the plain run, the `--no-http-client` option and their self-test blocks (the script header lists them). Until then, leave them in place; the feature and marker checks (steps 2 and 3) stay for good.
 
 Options:
 
@@ -104,6 +108,7 @@ Options:
 | `--self-test` | Builds each forbidden feature and requires the guard to fail for both reasons. It also checks a renamed feature and an unknown marker (positive controls: cases that must fail, to prove the guard can fail). |
 | `--features CSV` | Runs the same tree and marker checks on a release build with those features. The self-test uses it to prove the guard fails on `test-support` and `bench-loopback`. It is expected to exit non-zero for them. CI never passes it. |
 | `--binary PATH` | Searches an existing artifact (used by D-2). |
+| `--no-http-client` | Runs only steps 4 and 5 (no HTTP client or raw socket crate, no tokio `net`), without a release build. The plain run already includes them. Removed by A-3b. |
 
 ## Dependencies and advisories
 
