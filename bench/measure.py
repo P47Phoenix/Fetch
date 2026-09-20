@@ -7,9 +7,9 @@ Scenarios: see scenarios.py (`g4a`/`g4b` expand to groups). Idle = VmRSS after i
 (default 30 s). Peak = VmHWM after one `fetch` returned. Every sample is a fresh process.
 Exit codes: 0 all targets met and report VALID; 1 a target missed; 2 INVALID, INCOMPLETE or refused (fewer than 10 valid
 runs, fixture hash mismatch, wrong binary kind or missing/non-executable binary, unimplemented scenario, --gate override or
-incomplete gate set, a boundedness scenario without its 5 MiB reference); 3 --gate requested but host is not native aarch64
+incomplete gate set, a boundedness scenario without its 5 MiB reference); 3 --gate requested but host is not a native aarch64 or x86_64 host (hosted arm64 / amd64 runners; QEMU never gates)
 (checked after every other --gate rule, so those refusals are exercisable anywhere).
-Without --gate the run is advisory (record has gating=false). Sizes are MiB (2**20). Linux only here (macOS: E-2).
+Without --gate the run is advisory (record has gating=false). Sizes are MiB (2**20). Linux only (macOS /usr/bin/time -l is not implemented: open gap).
 """
 import argparse, concurrent.futures as cf, datetime, json, math, os, platform, queue, statistics, subprocess, sys, threading, time
 import fixtures, serve
@@ -80,7 +80,9 @@ def host_record():
             "loadavg_before": os.getloadavg(), "cgroup_mem_max": read_file("/sys/fs/cgroup/memory.max"),
             "container": os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"),
             "os": read_file("/etc/os-release", "").split("PRETTY_NAME=")[-1].split("\n")[0].strip('"'),
-            "runner": "PLACEHOLDER: author's native aarch64 runner (name/OS/RAM recorded in docs/BENCHMARK.md when known)"}
+            "runner": os.environ.get("RUNNER_NAME", "not a GitHub-hosted runner (RUNNER_NAME unset)"),
+            "runner_image": f"{os.environ.get('ImageOS', 'unknown')} {os.environ.get('ImageVersion', 'unknown')}",
+            "runner_arch": os.environ.get("RUNNER_ARCH", "unknown")}
 
 
 ELF_MACHINE = {"x86_64": 62, "aarch64": 183}   # e_machine per platform.machine()
@@ -110,15 +112,27 @@ def check_identity(binary, ver, kind, machine=None):
     return None
 
 
-def native_aarch64():
-    """Preflight (architecture 11.2): aarch64, no qemu binfmt handler for aarch64. Returns (ok, reason)."""
-    if platform.machine() != "aarch64": return False, f"machine is {platform.machine()}, not aarch64"
+GATE_MACHINES = ("aarch64", "x86_64")   # native gate hosts: ubuntu-24.04-arm and ubuntu-24.04 (ADR-007)
+
+
+def native_host(machine=None, binfmt_dir="/proc/sys/fs/binfmt_misc"):
+    """Preflight (architecture 11.2, ADR-007): the host is aarch64 or x86_64 and no qemu binfmt handler is registered for
+    the host's own architecture (a registered handler means binaries of this arch may be emulated). Returns (ok, reason)."""
+    machine = machine or platform.machine()
+    if machine not in GATE_MACHINES: return False, f"machine is {machine}, not one of {'/'.join(GATE_MACHINES)}"
+    names = {"aarch64": ("aarch64",), "x86_64": ("x86_64", "x86-64")}[machine]
     try:
-        for n in os.listdir("/proc/sys/fs/binfmt_misc"):
-            if "aarch64" in n and "qemu" in read_file(f"/proc/sys/fs/binfmt_misc/{n}", ""): return False, "qemu aarch64 binfmt registered"
+        for n in os.listdir(binfmt_dir):
+            if any(a in n for a in names) and "qemu" in read_file(f"{binfmt_dir}/{n}", ""): return False, f"qemu {machine} binfmt registered"
     except OSError:
         pass
     return True, "ok"
+
+
+def native_aarch64():
+    """Kept for callers that only accept aarch64 (records host["native_aarch64"])."""
+    ok, why = native_host()
+    return (ok and platform.machine() == "aarch64"), why
 
 
 class Server:
@@ -196,7 +210,8 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
         t_call = time.monotonic()
         r = s.call("tools/call", {"name": "fetch", "arguments": {"url": base_url + scen["route"], **scen.get("args", {})}})
         t["fetch_ms"] = ms_since(t_call)
-        fb = srv.first_byte_at(scen["route"])   # fixture server's first body write (same process, same monotonic clock)
+        key = scen.get("counter", scen["route"])
+        fb = srv.first_byte_at(key)   # fixture server's first body write (same process, same monotonic clock)
         if fb is not None and fb >= t_call: t["first_byte_ms"] = round((fb - t_call) * 1000, 3)
         st = proc_status(s.p.pid)  # VmHWM read after the call returned, before exit
         if "error" in r or not isinstance(r.get("result"), dict): raise RuntimeError(f"tools/call returned a JSON-RPC error: {json.dumps(r)[:200]}")
@@ -205,7 +220,7 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
         # too_large must be a tool error whose content text (not any field) says so.
         err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
         outcome_ok = (got_err and "too_large" in err_text) if scen["expect"] == "too_large" else (not got_err)
-        sent, need = srv.bytes_sent(scen["route"]), scen["min_bytes_v"]
+        sent, need = srv.bytes_sent(key), scen["min_bytes_v"]
         reason = None if outcome_ok else f"unexpected outcome (expected {scen['expect']})"
         reason = reason or (None if sent >= need else f"early stop: server wrote {sent} < expected_min_bytes {need}")
         return {"valid": reason is None, "reason": reason, "rss_kB": st["VmRSS"], "hwm_kB": st["VmHWM"], "bytes_sent": sent}
@@ -234,7 +249,7 @@ def _main(argv=None):
     ap.add_argument("--fixtures-dir", default=os.path.join(fixtures.HERE, "fixtures"))
     ap.add_argument("--out", help="also append JSONL to this file")
     ap.add_argument("--child-env", action="append", default=[], help="KEY=VAL added to the pinned child env (recorded)")
-    ap.add_argument("--gate", action="store_true", help="produce gating numbers: needs native aarch64, forbids overrides and --smoke")
+    ap.add_argument("--gate", action="store_true", help="produce gating numbers: needs a native aarch64 or x86_64 host, forbids overrides and --smoke")
     ap.add_argument("--smoke", action="store_true", help="allow <10 runs; result is never valid for NFR claims")
     ap.add_argument("--idle-target-mib", type=float, default=IDLE_TARGET_MIB, help="diagnostic override (not with --gate)")
     ap.add_argument("--peak-target-mib", type=float, default=PEAK_TARGET_MIB, help="diagnostic override (not with --gate)")
@@ -261,7 +276,7 @@ def _main(argv=None):
         if missing: return refuse(f"--gate incomplete: required gate scenarios missing from the run: {missing}")
         forbidden = [kv for kv in a.child_env if kv.split("=", 1)[0] not in GATE_CHILD_ENV_ALLOW]
         if forbidden: return refuse(f"--gate forbids any child env override (allowlist is empty): {forbidden}")
-        ok, why = native_aarch64()
+        ok, why = native_host()
         if not ok: return refuse(f"--gate refused: {why} (QEMU/non-native RSS never gates)", 3)
     if a.runs < 10 and not a.smoke: return refuse(f"--runs {a.runs} < 10 valid runs required (use --smoke for a non-gating check)")
     for n in names:
@@ -290,7 +305,7 @@ def _main(argv=None):
         if need != a.binary_kind: return refuse(f"scenario {n} is gated on the {need} binary, got {a.binary_kind}")
 
     run_start = utc_now()
-    host = host_record(); host["native_aarch64"] = native_aarch64()[0]
+    host = host_record(); host["native_aarch64"] = native_aarch64()[0]; host["native_gate_host"] = native_host()[0]
     emit({**host, "run_start_utc": run_start, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "binary_sha256": fixtures.sha256_file(a.binary),
           "child_env": {**PINNED_ENV, **env_extra}, "runs": a.runs, "settle_s": a.settle, "gating": a.gate,
           "fixture_sha256": {k: v.get("sha256") or v["decompressed_sha256"] for k, v in manifest["fixtures"].items()}, "unit": "MiB=2^20 bytes"})

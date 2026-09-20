@@ -21,6 +21,11 @@
       "file": "html_50mib.html",
       "size": 52428800,
       "sha256": "e62c5fe5973d6f688accf67222078c14ca06497f988a18ef554545c031705f51"
+    },
+    "late_landmark": {
+      "file": "late_landmark.html",
+      "size": 5241856,
+      "sha256": "fea89afbcb8d2392dbdd485a41cc152c1c207612d7043e52e556c4aa6f37f08b"
     }
   }
 }

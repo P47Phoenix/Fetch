@@ -1,0 +1,159 @@
+name: bench
+
+# E-2 / E-3 (ADR-007): the memory benchmark on NATIVE GitHub-hosted runners, linux/amd64 (ubuntu-24.04) and linux/arm64
+# (ubuntu-24.04-arm), gnu and musl. Hosted only, least-privilege token, no pull_request_target, no secrets, and fork PRs
+# are skipped. Every measurement is a `measure.py --gate` run on a native host (the harness refuses QEMU and stand-ins).
+#   idle  : shipped release binary, 10 fresh processes, 30 s settle, median <= 10 MiB (strict, no tolerance): E-3.
+#   peak  : bench-loopback build, complete G4a scenario set + redirect-chain5, median of 10, gating peak <= 40 MiB.
+#           Before A-4 (conversion) exists this is the read-in-full form of G4a, NOT a G4a pass; G4a is decided in Sprint 4.
+# The job fails if either gating run misses (exit 1) or is INVALID/INCOMPLETE/refused (exit 2/3). An ADVISORY verdict is
+# never a result. NOT a required check until the owner adds it to branch protection (docs/ci-branch-protection.md).
+# Not yet: the image-based run (D-2 builds the image; the tag trigger with the digest gate is D-2's).
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "bench/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/build-candidates.sh"
+      - ".github/workflows/bench.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench-gate:
+    name: bench-gate (${{ matrix.arch }}, ${{ matrix.libc }})
+    # Same-repo PRs and trusted events only (no fork code on a runner that measures).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-24.04, libc: gnu, triple: x86_64 }
+          - { arch: amd64, os: ubuntu-24.04, libc: musl, triple: x86_64 }
+          - { arch: arm64, os: ubuntu-24.04-arm, libc: gnu, triple: aarch64 }
+          - { arch: arm64, os: ubuntu-24.04-arm, libc: musl, triple: aarch64 }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Platform facts (OS, kernel, CPU, RAM, page size, THP, load)
+        run: |
+          set -eu
+          mkdir -p out
+          {
+            echo "runner: ${RUNNER_NAME:-unknown} arch=${RUNNER_ARCH:-unknown} image=${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            echo "matrix: ${{ matrix.arch }} ${{ matrix.libc }} on ${{ matrix.os }}"
+            echo "uname: $(uname -a)"
+            echo "cpu: $(grep -m1 -E '^(model name|Model|Hardware)' /proc/cpuinfo || true)"
+            echo "nproc: $(nproc)"
+            echo "MemTotal: $(grep MemTotal /proc/meminfo)"
+            echo "PAGESIZE: $(getconf PAGESIZE)"
+            echo "thp: $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo unknown)"
+            echo "loadavg: $(cat /proc/loadavg)"
+            echo "os: $(. /etc/os-release && echo "$PRETTY_NAME")"
+            echo "binfmt: $(find /proc/sys/fs/binfmt_misc -type f 2>/dev/null | tr "\n" " ")"
+          } | tee out/platform.txt
+
+      - run: rustup show active-toolchain
+
+      - name: Install the pinned cross tools (cargo-zigbuild 0.23.4, ziglang 0.16.0)
+        run: |
+          set -eu
+          python3 -m venv "$RUNNER_TEMP/zigvenv"
+          "$RUNNER_TEMP/zigvenv/bin/pip" install --quiet ziglang==0.16.0
+          echo "$RUNNER_TEMP/zigvenv/bin" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild --version 0.23.4
+
+      - name: Build the shipped and bench candidates for this native arch (scripts/build-candidates.sh)
+        run: scripts/build-candidates.sh "$RUNNER_TEMP/bin"
+
+      - name: Release guard on the shipped candidate, then the bench-marker check
+        run: |
+          set -eu
+          bin="$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}"
+          scripts/check-release-features.sh --binary "$bin-shipped"
+          "$bin-shipped" --version | tee -a out/platform.txt
+          "$bin-bench" --version | tee -a out/platform.txt
+          file "$bin-shipped" "$bin-bench" | tee -a out/platform.txt
+          sha256sum "$bin-shipped" "$bin-bench" | tee -a out/platform.txt
+
+      - name: Generate fixtures and self-test the harness
+        run: |
+          set -eu
+          python3 bench/fixtures.py generate
+          python3 bench/selftest.py
+
+      - name: "Idle RSS gate (E-3): shipped binary, median of 10, <= 10 MiB strict"
+        id: idle
+        continue-on-error: true
+        run: |
+          set -u
+          rc=0
+          python3 bench/measure.py --gate --binary "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-shipped" \
+            --binary-kind shipped --scenario idle --out out/idle.jsonl > /dev/null || rc=$?
+          echo "idle_exit=$rc" | tee -a out/exitcodes.txt
+          cat out/idle.jsonl
+          exit "$rc"
+
+      - name: Idle RSS of the bench build (recorded, E-8 delta; not a gate)
+        id: idle_bench
+        continue-on-error: true
+        run: |
+          set -u
+          rc=0
+          python3 bench/measure.py --binary "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-bench" \
+            --binary-kind bench --scenario idle-bench --out out/idle-bench.jsonl > /dev/null || rc=$?
+          echo "idle_bench_exit=$rc" | tee -a out/exitcodes.txt
+          exit "$rc"
+
+      - name: "Peak RSS gate: bench-loopback build, complete G4a set plus redirect-chain5, median of 10, <= 40 MiB"
+        id: peak
+        continue-on-error: true
+        run: |
+          set -u
+          rc=0
+          python3 bench/measure.py --gate --binary "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-bench" \
+            --binary-kind bench --scenario g4a --scenario redirect-chain5 --out out/peak.jsonl > /dev/null || rc=$?
+          echo "peak_exit=$rc" | tee -a out/exitcodes.txt
+          cat out/peak.jsonl
+          exit "$rc"
+
+      - name: Job summary (measured values against targets)
+        if: always()
+        run: |
+          {
+            echo "## bench-gate ${{ matrix.arch }} ${{ matrix.libc }}: native ${{ matrix.os }}, hosted runner"
+            echo
+            echo "idle step: ${{ steps.idle.outcome }}; bench idle step: ${{ steps.idle_bench.outcome }}; peak step: ${{ steps.peak.outcome }} (gating runs, native host; INVALID/INCOMPLETE/refused exit 2/3 also fail the job)"
+            echo
+            python3 bench/report.py --platform out/platform.txt --idle out/idle.jsonl --idle-bench out/idle-bench.jsonl --peak out/peak.jsonl \
+              --shipped "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-shipped" \
+              --bench "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-bench"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: bench-gate-${{ matrix.arch }}-${{ matrix.libc }}
+          path: out/
+          if-no-files-found: warn
+
+      - name: Fail the job if a gating run missed, was INVALID or INCOMPLETE, or the bench idle run failed
+        if: always()
+        run: |
+          echo "idle=${{ steps.idle.outcome }} idle_bench=${{ steps.idle_bench.outcome }} peak=${{ steps.peak.outcome }}"
+          [ "${{ steps.idle.outcome }}" = success ] && [ "${{ steps.peak.outcome }}" = success ] && [ "${{ steps.idle_bench.outcome }}" = success ]
