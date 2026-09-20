@@ -175,6 +175,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn header_is_outside_the_max_length_window() {
+        // The window is applied to the body first; the header is prepended after, so it never eats the window
+        // and never counts against max_length (FR-14).
+        let body = win(0, 4, &["abcdefgh"]);
+        assert_eq!(body, "abcd");
+        let out = with_header(&fetched(1), body);
+        assert_eq!(out, "URL: https://b.example/final\nStatus: 200\n\nabcd");
+        assert!(out.chars().count() > 4);
+        assert!(out.ends_with("\n\nabcd"));
+    }
+
     fn win(start: u64, len: u64, parts: &[&str]) -> String {
         let mut w = Window::new(start, len);
         for p in parts {

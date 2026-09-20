@@ -309,6 +309,31 @@ async fn relative_redirect_is_followed_and_every_hop_is_resolved_once() {
     assert_eq!(srv.accepted(), 2, "no connection reuse");
 }
 
+#[test]
+fn echoed_url_has_no_userinfo_or_fragment() {
+    let u = url::Url::parse("https://user:secret@b.example:8443/p?q=1#frag").unwrap();
+    assert_eq!(super::echo_url(&u), "https://b.example:8443/p?q=1");
+}
+
+#[tokio::test]
+async fn redirect_fragment_is_not_echoed_in_final_url() {
+    let srv = spawn_server(handler(|mut s, head| async move {
+        let resp = if head.starts_with("GET /final") {
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\ndone"
+        } else {
+            "HTTP/1.1 302 Found\r\nConnection: close\r\nContent-Length: 0\r\nLocation: /final#secret\r\n\r\n"
+        };
+        let _ = s.write_all(resp.as_bytes()).await;
+    }))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/start", srv.port)).await;
+    assert_eq!(
+        res.unwrap().final_url,
+        format!("http://public.test:{}/final", srv.port)
+    );
+}
+
 #[tokio::test]
 async fn redirect_loop_stops_at_the_bound() {
     let srv = spawn_server(handler(|mut s, _| async move {

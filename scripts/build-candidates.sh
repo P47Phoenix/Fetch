@@ -17,8 +17,8 @@ case "$(uname -m)" in
   *) echo "build-candidates: unsupported host $(uname -m)" >&2; exit 2 ;;
 esac
 
-have=$(cargo zigbuild --help >/dev/null 2>&1 && echo yes || echo no)
-[[ $have == yes ]] || { echo "build-candidates: cargo-zigbuild not installed (cargo install --locked cargo-zigbuild --version $ZIGBUILD_VERSION)" >&2; exit 2; }
+zbv=$(cargo-zigbuild --version 2>/dev/null || true)
+[[ $zbv == *"$ZIGBUILD_VERSION"* ]] || { echo "build-candidates: cargo-zigbuild is '$zbv', need $ZIGBUILD_VERSION (cargo install --locked cargo-zigbuild --version $ZIGBUILD_VERSION)" >&2; exit 2; }
 zv=$(python3 -m ziglang version 2>/dev/null || true)
 [[ $zv == "$ZIG_VERSION" ]] || { echo "build-candidates: ziglang is '$zv', need $ZIG_VERSION (pip install ziglang==$ZIG_VERSION)" >&2; exit 2; }
 

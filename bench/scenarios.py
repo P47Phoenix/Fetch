@@ -23,7 +23,8 @@ SCENARIOS = {
     "g4a-50mib-chunked": dict(kind="peak", gate="G4a", route="/50mb-chunked.html", args={"max_length": 5 * MIB}, expect="too_large",
                             min_bytes=lambda m: CAP, bounded_vs="g4a-5mib-full", implemented=True, ref="chunked, no window"),
     # 5 redirect hops, each with a body and (in the product) a fresh client build (A-3b fix-pass 1 note for E-2/E-4).
-    # Recorded, outside the gating peak. `counter` is the serve.py counter key; floor = 5 hop bodies + the final body.
+    # Recorded, outside the gating peak FIGURE (gate "none"), but intentionally fail-closed: an INVALID run or a median over the
+    # peak target still fails the invocation (exit 2 / 1). `counter` is the serve.py counter key; floor = 5 hop bodies + the final body.
     "redirect-chain5": dict(kind="peak", gate="none", route="/redir/5", counter="/redir", expect="ok",
                             min_bytes=lambda m: 5 * REDIR_BODY + REDIR_FINAL, implemented=True, ref="redirect-chain memory check"),
     "g6-concurrent10": dict(kind="peak", gate="none", route="/5mb.html", expect="ok", implemented=False,

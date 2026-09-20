@@ -7,16 +7,22 @@
 Prints: per-scenario median/min/max in MiB and verdict, the summary verdict, timings (recorded, not gated), and the E-8
 shipped-vs-bench deltas (idle bound 0.5 MiB; binary size recorded). Exit 0 always: pass/fail is the harness's exit code.
 """
-import argparse, json, os
+import argparse, json, os, sys
 
 MIB = 1024.0
 
 
 def load(path):
+    recs = []
     try:
-        with open(path) as f: return [json.loads(l) for l in f if l.startswith("{")]
+        with open(path) as f:
+            for n, l in enumerate(f, 1):
+                if not l.startswith("{"): continue
+                try: recs.append(json.loads(l))
+                except ValueError: print(f"report: {path}:{n}: skipped a malformed JSONL line (file may be truncated)", file=sys.stderr)
     except OSError:
         return []
+    return recs
 
 
 def scenarios(recs): return [r for r in recs if r.get("kind") == "scenario"]

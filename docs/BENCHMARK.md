@@ -13,11 +13,11 @@ Be careful not to read more into this document than it says.
 | Hosted GitHub Actions running this repository's workflow | Has run on several pull requests (first #2, most recently #5); all five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) have passed each time. That is still not a trend claim, and branch protection is not configured yet. |
 | `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. |
 | `cargo-audit` | Never run (not installed on the dev host). |
-| The benchmark scripts | Run against the stand-in, and (advisory only, section 13) against the real `fetch-mcp` idle scenario. Never in a `--gate` run. |
+| The benchmark scripts | Run against the stand-in, against the real `fetch-mcp` idle scenario (advisory, section 13), and in `--gate` runs on both hosted platforms (section 15, CI job `bench-gate`). |
 | The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2) and, since A-3b, a guarded streaming download. The idle figure with the client compiled in is 3.58 MiB on hosted arm64 (section 13, advisory); the older 2.59 and 3.15 figures predate the client. |
-| Native aarch64 measurement | Advisory only: the A-1 spike (section 11) and the early real product idle (section 13) were measured on a GitHub-hosted arm64 runner, no `--gate`. No `--gate` run exists yet. |
-| Native amd64 measurement | NOT YET MEASURED on a hosted amd64 runner. The only amd64 product figure is one advisory idle run on the developer's own x86_64 machine (section 13), not a hosted runner. |
-| Product memory gates (G4a, G4b on amd64 and arm64) | NOT YET RUN. |
+| Native aarch64 measurement | Advisory runs earlier (A-1 spike, section 11; early product idle, section 13). Since Sprint 3, `--gate` runs on the hosted arm64 runner (gnu and musl): section 15, two CI runs, idle 2.16 to 3.55 MiB, read-in-full peak 4.14 to 4.66 MiB. |
+| Native amd64 measurement | `--gate` runs on the hosted amd64 runner (gnu and musl): section 15, two CI runs, idle 2.27 to 4.06 MiB, read-in-full peak 4.25 to 5.27 MiB. Runner CPUs vary between runs (Xeon 8573C, 8370C, 6973P-C, AMD EPYC 7763). |
+| Product memory gates (G4a, G4b on amd64 and arm64) | Not decided. The E-3 idle gate (strict 10 MiB) passed on all four cells, and the peak gate ran in its read-in-full form (before A-4 conversion exists), which is NOT a G4a pass. G4b scenarios and `g6-concurrent10` are not run. The container image has not been measured (D-2 builds it). |
 | Branch protection on `main` | Not configured yet (see `docs/ci-branch-protection.md`). |
 
 ## Glossary
@@ -65,7 +65,7 @@ Each term is explained here once. Later sections use the short form.
 | Hosted runner | A short-lived GitHub Actions virtual machine: `ubuntu-24.04` (amd64) or `ubuntu-24.04-arm` (arm64). There is no self-hosted runner. |
 | QEMU | Software that pretends to be another CPU. Its memory figures are not trusted, so QEMU never gates. |
 | ELF | The Linux program file format. The harness reads its header to see the CPU type. |
-| gnu, musl | Two versions of the C library the binary can be built with. Only gnu is measured for the product today (section 7 states the plan). |
+| gnu, musl | Two versions of the C library the binary can be built with. Both are built and gated for the product by `bench.yml` on each native platform (section 15). |
 | p95 | 95% of results are at or below this value. Timings report it only with 20 or more valid samples (nearest-rank). |
 | Timings | Durations the harness records next to memory (section 12). Recorded, not gated. |
 | ready_ms | Time from starting the process to its first valid `initialize` answer. Evidence only; the PRD 250 ms readiness figure is not checked by the harness. |
@@ -161,11 +161,11 @@ Why it is strict: this is the run that counts, so the script refuses anything th
 - A shipped binary needs `idle`.
 - A bench binary needs every scenario of the G4a group (and/or the G4b group) it touches. A partial run is refused: exit 2, reason `incomplete`.
 
-Those two refusals (override and incomplete set) come before the native-aarch64 check (exit 3). So they behave the same on any host. The binary identity refusal below comes after it, so it is reached only on aarch64. Anywhere else a `--gate` run stops at exit 3 first. A bench binary under `--gate` needs a real `bench-loopback` build (its `--version` marker). The stand-in with the environment variable trick does not work.
+Those two refusals (override and incomplete set) come before the native-host check (exit 3). So they behave the same on any host. The binary identity refusal below comes after it, so it is reached only on a native aarch64 or x86_64 host. On a host that is not aarch64 or x86_64, or where QEMU handlers or an unreadable `/proc/sys/fs/binfmt_misc` make native execution unproven, a `--gate` run stops at exit 3 first. A bench binary under `--gate` needs a real `bench-loopback` build (its `--version` marker). The stand-in with the environment variable trick does not work.
 
 **Binary identity check.** With `--gate` only, after the override rules and before any sample, the script checks that the file really is what you say it is:
 
-1. It must be an ELF file whose CPU type (`e_machine`) matches the host (aarch64 for a gating run).
+1. It must be an ELF file whose CPU type (`e_machine`) matches the host (aarch64 or x86_64, matching the host, for a gating run).
 2. `--version` must start with `fetch-mcp `.
 3. A `shipped` binary must contain no `FETCH_MCP_MARKER_` text.
 4. A `bench` binary must contain `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1`.
@@ -181,7 +181,7 @@ On the aarch64 runner, a stand-in script, a wrong-architecture ELF or a binary w
 | Self-test does not end with `SELFTEST PASSED` | A benchmark tool is broken, or Python is older than 3.8. | Read the last failing line above it. Check `python3 --version`. |
 | Refusal about `bench/manifest.json` or a fixture hash (exit 2) | The fixtures are missing or changed. | Run `python3 bench/fixtures.py generate`, then try again. |
 | Exit 2, `INVALID`, `RuntimeError: server closed stdout` when you point it at `target/release/fetch-mcp` | The server exited or crashed before the handshake finished, or the path is not a `fetch-mcp` build. Since A-2 the handshake should work, so this is a real problem. | Run the binary by hand with the session in the README ("Run over stdio") and read stderr, using `FETCH_LOG=debug`. Rebuild with step 3. Check the path and that the file is `fetch-mcp`, not the stand-in. |
-| Exit 2, refused, reason `binary identity` (only on aarch64; elsewhere you get exit 3 first) | The file is not the right kind: a script, a wrong-CPU ELF, or the wrong marker. | Rebuild with the command for the kind you passed (step 3). |
+| Exit 2, refused, reason `binary identity` (only reached on a native aarch64 or x86_64 host; elsewhere you get exit 3 first) | The file is not the right kind: a script, a wrong-CPU ELF, or the wrong marker. | Rebuild with the command for the kind you passed (step 3). |
 | Exit 2, refused, reason `incomplete` | A `--gate` bench run left out scenarios of its group. | Run the whole group (for example every G4a scenario). |
 | Exit 2, `INCOMPLETE` in a 50 MiB scenario | Its 5 MiB reference scenario has no valid result in the same run. | Include `g4a-5mib-full` in the same run. |
 | Exit 2, refused, `--gate` override | You used `--smoke`, a target override, another `--settle`, `--parallel-idle` above 1, or `--child-env`. | Remove the flag. |
@@ -218,17 +218,17 @@ Host facts per platform. Compare figures only within one platform and only for t
 
 | Field | linux/arm64 (`ubuntu-24.04-arm`) | linux/amd64 (`ubuntu-24.04`) |
 |---|---|---|
-| Measured? | Yes, advisory spike only (2 runs, section 11) | NOT YET MEASURED |
-| VM / OS | Azure VM, Ubuntu 24.04.5, image `ubuntu24-arm64` 20260907.118.1 | NOT YET MEASURED |
-| Kernel | Linux 6.17.0-1022-azure aarch64 | NOT YET MEASURED |
-| CPU | Neoverse-class core (`CPU part 0xd49`), 4 vCPU | NOT YET MEASURED |
-| RAM (MemTotal) | 16,330,124 kB | NOT YET MEASURED |
-| Page size (`getconf PAGESIZE`) | 4096 | NOT YET MEASURED |
-| THP | `madvise` | NOT YET MEASURED |
-| glibc on the host | 2.39 | NOT YET MEASURED |
-| qemu binfmt handler | none for aarch64 | NOT YET MEASURED |
+| Measured? | Yes: advisory spike (2 runs, section 11) and gate runs (section 15) | Yes: gate runs, 2 CI runs (section 15) |
+| VM / OS | Azure VM, Ubuntu 24.04.5, image `ubuntu24-arm64` 20260907.118.1 | Azure VM, Ubuntu 24.04.5 LTS, image `ubuntu24` 20260907.300.1 |
+| Kernel | Linux 6.17.0-1022-azure aarch64 | Linux 6.17.0-1022-azure x86_64 |
+| CPU | Neoverse-class core (`CPU part 0xd49`), 4 vCPU; the model name is recorded from `lscpu` from the fix-pass run onward | Varies per run: Intel Xeon Platinum 8573C, 8370C, Xeon 6973P-C, AMD EPYC 7763 (from the job logs); 4 vCPU |
+| RAM (MemTotal) | 16,330,124 kB | 16,373,452 kB |
+| Page size (`getconf PAGESIZE`) | 4096 | 4096 |
+| THP | `madvise` | `always` on the run logged (differs from arm64) |
+| glibc on the host | 2.39 | not recorded by the run (Ubuntu 24.04 ships 2.39) |
+| qemu binfmt handler | none for aarch64 | none for x86_64 (gate refuses otherwise) |
 
-Only two arm64 runner instances have been sampled, so how much the hosted VMs differ from one another is barely known.
+Only a handful of runner instances have been sampled, so how much the hosted VMs differ from one another is barely known. The amd64 runner CPU model changed between runs, so compare only within a platform and note the CPU.
 
 Native procedure (per platform):
 
@@ -346,7 +346,7 @@ Output is JSONL: one `host` line, one line per scenario, and one `summary` line 
 - ASLR (address randomisation) is left at its default and recorded.
 - One discarded dry run of the matrix per session, recorded as such.
 - Native-platform preflight (host and inside the container, section 3).
-- The plan is to run both gnu and musl binaries. Today only the gnu product binary is measured; musl is built and measured for the A-1 spike only (advisory) and is not yet built for the product (see section 13).
+- Both gnu and musl product binaries are built (`scripts/build-candidates.sh`) and gated by `bench.yml` on amd64 and arm64 (section 15). The older advisory figures in sections 11 and 13 were gnu-only or spike-only.
 - No other load on the runner that the job itself starts. The hosted VM has a runner agent and other neighbours, so the load-average rule is recorded and applied, with the baseline taken in the same job.
 
 Skeleton status: the host record, pinned environment, hash check, preflight and binary sha are implemented. The load-average repeat rule, the dry-run discard, the libc/allocator/profile/commit fields (from `--version`) are E-2 work still open; macOS `/usr/bin/time -l` is NOT implemented.
@@ -397,7 +397,7 @@ Caveats, all still open:
 - `g4a-5mib-gz` peaks lower than `full` because the spike probably does not decompress (no gzip feature). It says nothing about decompression cost.
 - The hosted VM is an Azure Neoverse-class machine with 4 vCPUs and 16 GiB (as reported by the machine), not the Raspberry Pi 5. The core, memory system and kernel differ. Its page size is 4 KiB, while Pi OS uses 16 KiB pages, which can raise RSS. A pass at 4 KiB does not prove a pass on a Pi. Targets are unchanged.
 - Only two runner instances were sampled.
-- This is arm64 only. amd64 is NOT YET MEASURED on a hosted runner.
+- This is arm64 only. (Historical, Sprint 0. amd64 was measured on hosted runners in Sprint 3: section 15.)
 
 ## 12. Timings (recorded, not gated)
 
@@ -447,7 +447,7 @@ Idle VmRSS median, 10 of 10 valid runs each, 30 s settle, shipped (release) bina
 What these do NOT show:
 
 - They are recorded, not enforced. `ready_ms` is not compared with the 250 ms figure (section 12).
-- Only the gnu build was measured, and the amd64 figure is from a developer machine, not a hosted amd64 runner.
+- Only the gnu build was measured, and the amd64 figure is from a developer machine, not a hosted amd64 runner. (Historical, Sprint 1. Both libcs on both hosted platforms: section 15.)
 - The product memory gates G4a and G4b have not been run on amd64 or arm64. The peak (40 MiB) is completely unmeasured for the product. (This describes the A-2 build; superseded by A-3b and section 14, which has one advisory arm64 5 MiB peak run.)
 - The hosted arm64 job (`bench-product` in `.github/workflows/arm-bench.yml`) is advisory and is not a required check.
 
@@ -464,9 +464,9 @@ The A-3b acceptance criterion asks for one non-gating manual 5 MiB fetch on nati
 
 Read this as one advisory CI run on one runner instance. It is not a `--gate` run, is not evidence for NFR claims, and does not replace G4a (E-4). Idle 3.58 MiB is the shipped binary; the peak is the bench build. The earlier x86_64 figure (idle 3.8 MiB, VmHWM 5.6 MiB) was a substitute recorded in the A-3b dev report.
 
-## 15. Sprint 3 gate runs on both hosted platforms (E-2, E-3; CI run 35538774565, PR #7)
+## 15. Sprint 3 gate runs on both hosted platforms (E-2, E-3; CI runs 35538774565 and 35539714646, PR #7)
 
-Workflow `.github/workflows/bench.yml`, job `bench-gate`, four cells: amd64 and arm64 (ubuntu-24.04 and ubuntu-24.04-arm), gnu (glibc 2.17 floor) and musl. Binaries built on the matching native runner by `scripts/build-candidates.sh` (cargo-zigbuild 0.23.4, ziglang 0.16.0, release profile of D-7), shipped and bench-loopback, release guard run on the shipped ones. All runs are `--gate` runs (native host, no QEMU, 10/10 valid samples, summary verdict PASS, not ADVISORY). Hosts: amd64 Intel Xeon (8573C and 8370C seen), arm64 (CPU model not captured by this run: the arm64 /proc/cpuinfo has no model-name line; the workflow now also records CPU part), both about 16 GB RAM, 4 KiB pages, Ubuntu 24.04.5. Figures are MiB, median (min-max), one CI run, not a trend.
+Workflow `.github/workflows/bench.yml`, job `bench-gate`, four cells: amd64 and arm64 (ubuntu-24.04 and ubuntu-24.04-arm), gnu (glibc 2.17 floor) and musl. Binaries built on the matching native runner by `scripts/build-candidates.sh` (cargo-zigbuild 0.23.4, ziglang 0.16.0, release profile of D-7), shipped and bench-loopback, release guard run on the shipped ones. All runs are `--gate` runs (native host, no QEMU, 10/10 valid samples, summary verdict PASS, not ADVISORY). Two CI runs: **run 1 = 35538774565, measured commit d635a67**; **run 2 = 35539714646, measured the PR head 39379c1** (its bench.yml differs from d635a67 only by a trailing space; source and harness identical). Hosts (from the job logs): run 1 amd64 gnu Intel Xeon Platinum 8573C, amd64 musl Xeon Platinum 8370C @ 2.80GHz; run 2 amd64 gnu AMD EPYC 7763, amd64 musl Xeon 6973P-C, so the amd64 CPU varies between runs and vendors. arm64 CPU model was NOT recorded in either run (the arm64 `/proc/cpuinfo` has no `model name` line, the `cpu:` line was empty in all eight arm64 logs; earlier text claiming the workflow "now also records CPU part" was wrong, the change was only a trailing space). Fixed in fix-pass 1 (`lscpu` Model name, `CPU implementer`/`CPU part` fallback); see the correction below. Both about 16 GB RAM, 4 KiB pages, Ubuntu 24.04.5. Figures are MiB, median (min-max), from run 1; run 2 is in the next table. Two runs are still not a trend.
 
 | cell | idle shipped (target 10) | idle bench | gating peak (target 40) | redirect-chain5 (recorded) |
 |---|---|---|---|---|
@@ -475,6 +475,12 @@ Workflow `.github/workflows/bench.yml`, job `bench-gate`, four cells: amd64 and 
 | arm64 gnu | 3.55 (3.54-3.55) | 3.54 | 4.66 | 4.32 |
 | arm64 musl | 2.16 (2.16-2.16) | 2.16 | 4.14 | 6.44 |
 
+Run 2 (39379c1), same layout: amd64 gnu idle 3.92, gating peak 5.17 (5294 kB); amd64 musl idle 2.27, peak 4.25 (4348 kB); arm64 gnu idle 3.55, peak 4.65 (4766 kB); arm64 musl idle 2.16, peak 4.20 (4300 kB). All four cells PASS with `--gate`, 10/10 valid; boundedness ratios at most 1.015. The two runs agree within about 0.15 MiB per cell, except the amd64 gnu idle (4.06 against 3.92, different CPUs).
+
 Per-scenario peaks (arm64 gnu): 5 MiB 4.66, gz 4.46, late-landmark 4.66, 50 MiB with Content-Length 4.12 (ratio 0.883), 50 MiB chunked 4.61 (ratio 0.988). Every boundedness ratio in all four cells is at most 1.03 (bound 1.10). E-8 idle delta (bench minus shipped) is within +-0.01 MiB in every cell (bound 0.5 MiB). Binary size deltas and timings are in the job summaries and artifacts (`bench-gate-<arch>-<libc>`).
 
 What these numbers are not: the peak gate ran before A-4 (conversion) exists, so it is the read-in-full form of G4a and NOT a G4a pass (G4a is decided at the end of Sprint 4); G4b scenarios and `g6-concurrent10` are not run; the shipped-binary public-host 5 MiB cross-check (E-8) is still open (E-4); the runs are against bare binaries, not the container image (D-2 builds the image). The idle gate (E-3) is a strict check, no tolerance.
+
+Design notes recorded in fix-pass 1: `redirect-chain5` has gate `none`, meaning it is excluded from the reported gating peak figure, but it is intentionally still fail-closed (an INVALID run or a median above the peak target fails the gating invocation; tested). The `idle-bench` step is advisory (exit 1 is recorded, exit 2/3 fail the job). The native-host preflight fails closed under `--gate` if `/proc/sys/fs/binfmt_misc` cannot be read.
+
+**Correction (fix-pass 1, appended, not a rewrite of the above).** The sentence above in the first version of this section, that the workflow "now also records CPU part", was false: the CPU model was empty on arm64 in every run so far. The workflow now records `cpu:` from `lscpu` (`Model name`), with `/proc/cpuinfo` and `CPU implementer`/`CPU part` as fallbacks, and a `cpu_id:` line. Values from the first run that has the fix are listed in `.delivery/artifacts/06-dev/sprint-3/fix-pass-1-report.md`.

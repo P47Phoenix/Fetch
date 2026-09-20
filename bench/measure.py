@@ -115,17 +115,18 @@ def check_identity(binary, ver, kind, machine=None):
 GATE_MACHINES = ("aarch64", "x86_64")   # native gate hosts: ubuntu-24.04-arm and ubuntu-24.04 (ADR-007)
 
 
-def native_host(machine=None, binfmt_dir="/proc/sys/fs/binfmt_misc"):
+def native_host(machine=None, binfmt_dir="/proc/sys/fs/binfmt_misc", strict=False):
     """Preflight (architecture 11.2, ADR-007): the host is aarch64 or x86_64 and no qemu binfmt handler is registered for
-    the host's own architecture (a registered handler means binaries of this arch may be emulated). Returns (ok, reason)."""
+    the host's own architecture (a registered handler means binaries of this arch may be emulated). Returns (ok, reason).
+    strict=True (used on the --gate path) fails closed: an unreadable binfmt_misc directory cannot prove the host is native."""
     machine = machine or platform.machine()
     if machine not in GATE_MACHINES: return False, f"machine is {machine}, not one of {'/'.join(GATE_MACHINES)}"
     names = {"aarch64": ("aarch64",), "x86_64": ("x86_64", "x86-64")}[machine]
     try:
         for n in os.listdir(binfmt_dir):
             if any(a in n for a in names) and "qemu" in read_file(f"{binfmt_dir}/{n}", ""): return False, f"qemu {machine} binfmt registered"
-    except OSError:
-        pass
+    except OSError as e:
+        if strict: return False, f"cannot read {binfmt_dir} ({e.__class__.__name__}), so native execution is unproven"
     return True, "ok"
 
 
@@ -276,7 +277,7 @@ def _main(argv=None):
         if missing: return refuse(f"--gate incomplete: required gate scenarios missing from the run: {missing}")
         forbidden = [kv for kv in a.child_env if kv.split("=", 1)[0] not in GATE_CHILD_ENV_ALLOW]
         if forbidden: return refuse(f"--gate forbids any child env override (allowlist is empty): {forbidden}")
-        ok, why = native_host()
+        ok, why = native_host(strict=True)
         if not ok: return refuse(f"--gate refused: {why} (QEMU/non-native RSS never gates)", 3)
     if a.runs < 10 and not a.smoke: return refuse(f"--runs {a.runs} < 10 valid runs required (use --smoke for a non-gating check)")
     for n in names:

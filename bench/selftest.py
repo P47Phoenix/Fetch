@@ -211,6 +211,11 @@ with tempfile.TemporaryDirectory() as bd:
     with open(os.path.join(bd, "qemu-aarch64"), "w") as f: f.write("enabled\ninterpreter /usr/bin/qemu-aarch64-static\n")
     check("native_host: aarch64 with a qemu-aarch64 handler refused", not measure.native_host("aarch64", bd)[0])
     check("native_host: binfmt name alone (no qemu interpreter) does not refuse", (lambda: (open(os.path.join(bd, "qemu-aarch64"), "w").write("enabled\ninterpreter /usr/bin/other\n"), measure.native_host("aarch64", bd)[0])[1])())
+    missing = os.path.join(bd, "no-such-dir")
+    check("native_host: unreadable binfmt dir fails closed under strict (gate)", not measure.native_host("x86_64", missing, strict=True)[0])
+    check("native_host: unreadable binfmt dir only records native when not strict", measure.native_host("x86_64", missing)[0])
+    with tempfile.TemporaryDirectory() as empty:
+        check("native_host: readable (empty) binfmt dir passes under strict", measure.native_host("x86_64", empty, strict=True)[0])
 
 def gate_run(extra_env=None):
     """In-process --gate run of the stand-in as a bench build with identity and host checks satisfied by patches
@@ -243,10 +248,11 @@ with tempfile.TemporaryDirectory() as rd:
     fixtures.generate(rd)
     rc, r = run("--fixtures-dir", rd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", "redirect-chain5", "--scenario", "g4a-late-landmark")
     rec = scen(r, "redirect-chain5")
-    check("redirect-chain5: 5 hops followed, 10 valid runs, recorded outside the gating peak",
+    check("redirect-chain5: 5 hops followed, 10 valid runs, recorded outside the gating peak figure, but its own target and validity still count",
           rec["valid_runs"] == 10 and rec["gate"] == "none" and "gating_peak_MiB" in r[-1] and scen(r, "g4a-late-landmark")["valid_runs"] == 10, f"rc={rc} {rec['invalid_reasons']}")
     rc, r = run("--fixtures-dir", rd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", "redirect-chain5", "--child-env", "STANDIN_NO_REDIRECT=1")
-    check("redirect-chain5: a client that does not follow the redirects is INVALID (chain not read), not a pass", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc}")
+    check("redirect-chain5: a client that does not follow the redirects is INVALID (chain not followed), not a pass", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc}")
+    check("redirect-chain5: INVALID counts in the summary (intended: a gate=none scenario still fails closed on validity)", "redirect-chain5" in r[-1]["invalid"], str(r[-1].get("invalid")))
 
 print("SELFTEST", "FAILED: " + ", ".join(fails) if fails else "PASSED")
 sys.exit(1 if fails else 0)

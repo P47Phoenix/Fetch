@@ -103,6 +103,8 @@ As a developer on ARM, I want peak memory verified during fetches so that large 
 - Given the 50 MiB fixture served chunked (no `Content-Length`) and a full read without a window, when `fetch` runs, then reading stops at the cap, the call returns a `too_large` error and peak RSS is within 10% of the 5 MiB-page peak. (The windowed variants, chunked window inside the cap succeeding and window beyond the cap, need A-5 and are G4b scenarios.)
 - Given 10 concurrent fetches of the 5 MiB page, when they run, then peak RSS is recorded and reported (NFR-08 documentation).
 - Given allocator candidates from A-1, when compared here, then the chosen allocator and its RSS effect are recorded.
+- Re-homed from E-2 (pending owner acknowledgement, recorded Sprint 3 fix-pass 1): the `g6-concurrent10` scenario and the G4b scenario implementations are defined in the harness but marked not implemented; E-4 (with A-5 and A-6 for G4b) implements them. The E-2 macOS `/usr/bin/time -l` reader is not built (no macOS gate host); it is a known deviation from the E-2 acceptance text, also pending owner acknowledgement.
+
 
 ### E-5: Benchmark report and release decision (2 pts)
 Maps to: Goals 1a-1d, US-9.
@@ -259,11 +261,12 @@ As a developer, I want correct text decoding so that non-UTF-8 pages read proper
 - Given no charset, when `fetch` is called, then UTF-8 is assumed and invalid bytes are replaced, not fatal.
 - Given a request, when sent, then it carries the configured descriptive `User-Agent`.
 
-### A-9: Final URL and status header (1 pt)
+### A-9: Final URL and status header (1 pt) [DONE in Sprint 3, PR #7]
 Maps to: FR-14.
 As an LLM agent, I want to know the final URL so that I can cite it.
 - Given a redirect occurred, when `fetch` returns, then the text begins with the final URL and HTTP status.
 - Given no redirect occurred, when `fetch` returns, then no header line is added.
+- Implemented format (Sprint 3): `URL: <final url>\nStatus: <code>\n\n` before the text, only after a redirect, outside the `max_length` window; userinfo and fragment are stripped from the echoed URL. The header is unmarked plain text, so a non-redirected page can begin with identical text (accepted trade-off, no marker infrastructure).
 
 ---
 
@@ -426,6 +429,8 @@ As a developer, I want CI to build, test and publish a container image so that I
 - Given the libc choice is made by ADR-005 on data from the image, when D-2 lands, then exactly one libc flavour is published; the other candidate image is built for measurement only.
 - Note (points): the original 5 pts covered gnu, macOS, checksums, codesign and a best-effort x86 build. Those are removed; image build, digest passing, the gate wiring and GHCR permissions are added. RE-ESTIMATED 5 to 8 pts (unvalidated, a planning judgment): the second platform, the manifest-list merge, per-platform digest assertions and two required gate jobs are real added work, only partly offset by removing macOS, checksums, codesign and the zig cross-build (both platforms build natively). Effect: Sprint 9 is D-2 alone at 8 pts; D-4 (2 pts) moves to Sprint 10 (9 pts with C-2, 7 without; over the 8-pt ceiling by 1 if OQ-4 is yes, PO/user to accept or defer C-3); MVP completes at the end of Sprint 10, not Sprint 9. Re-estimate again at Sprint 8 planning.
 - Given the aarch64 test job (D-3) and memory-gate job (E-6) may not exist yet, when the MVP is released, then the release workflow's own in-workflow ARM gate run (above) is the evidence; the manual-bench-run fallback is removed (ADR-007). D-3 and E-6 add their PR-level jobs as required checks when they land. Tagged builds before M3 remain prohibited; D-6 is the v1.0 tagger.
+- Given Sprint 3 adopted interim pins (architect NB1, Sprint 3 DoD), when D-2 adopts them, then `ziglang` is installed with hash pinning (`pip --require-hashes`) and the `cargo-zigbuild` version is verified (it is built from crates.io with its own lockfile; consider a checked-in lock or a prebuilt release checksum).
+- Re-homed from E-2 (pending owner acknowledgement, recorded Sprint 3 fix-pass 1): the E-2 criteria to measure the container image (not a bare binary), and the tag trigger with the digest gate, move to D-2. Sprint 3 measured bare binaries only.
 
 
 ### D-3: Test suite on aarch64 (3 pts)
