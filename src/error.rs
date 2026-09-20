@@ -10,7 +10,8 @@ pub enum FetchError {
         field: &'static str,
         message: String,
     },
-    /// Port policy, non-public address, blocked redirect (architecture 6.1). The message gives a category only,
+    /// Non-public address, blocked scheme or userinfo, blocked redirect (architecture 6.1). There is no port policy
+    /// yet: every port except 0 is allowed until the allowed-ports setting lands with C-1/B-3. The message gives a category only,
     /// never the resolved address, and is produced before any connection.
     BlockedTarget(String),
     /// The name did not resolve (NXDOMAIN, resolver error, empty answer).

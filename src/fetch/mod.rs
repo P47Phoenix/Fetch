@@ -277,6 +277,10 @@ fn map_transport(e: reqwest::Error) -> FetchError {
     if e.is_timeout() {
         return FetchError::Timeout("the request timed out".into());
     }
+    // Classify from the error's kind first and strip the URL before any text is inspected: reqwest's Debug output
+    // embeds the request URL, and the URL (path, query or a redirect Location) is upstream-controlled text.
+    let is_connect = e.is_connect();
+    let e = e.without_url();
     let mut chain = format!("{e:?}").to_ascii_lowercase();
     let mut src = std::error::Error::source(&e);
     while let Some(s) = src {
@@ -288,7 +292,7 @@ fn map_transport(e: reqwest::Error) -> FetchError {
     {
         return FetchError::BadResponse("the response headers are too large or malformed".into());
     }
-    if e.is_connect() {
+    if is_connect {
         return FetchError::Network("could not connect to the host".into());
     }
     FetchError::Network("the connection failed".into())
@@ -336,7 +340,7 @@ fn cross_check(raw: &str, v: &CheckedUrl) -> Result<Url, FetchError> {
         (Host::Ip(ip), Some(h)) => {
             h.trim_matches(['[', ']']).parse::<std::net::IpAddr>() == Ok(*ip)
         }
-        (Host::Name(n), Some(h)) => dns::normalize(h) == *n,
+        (Host::Name(n), Some(h)) => crate::ssrf::canonical_name(h) == *n,
         (_, None) => false,
     };
     if scheme_ok && port_ok && host_ok && u.username().is_empty() && u.password().is_none() {

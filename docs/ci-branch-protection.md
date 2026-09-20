@@ -97,7 +97,7 @@ A "pin" fixes a version so builds do not change by surprise.
 2. It asserts, through `cargo tree -e features`, that the root package enables only allow-listed features. Only `default` is allowed. Anything else, including a renamed or new feature, fails.
 3. It searches the binary for the `FETCH_MCP_MARKER_` prefix. Any marker fails.
 
-The Sprint 1 steps that banned any HTTP client crate, raw socket crate and the tokio `net` feature were removed by A-3b (2026-09-20) as planned: the real client (reqwest, rustls with ring, tokio `net`) is now a legitimate dependency. What replaces them is the `a3b-merge-gate` job (see above), which proves the client dials only SSRF-validated addresses. `cargo deny` still bans openssl, native-tls and aws-lc.
+The Sprint 1 steps that banned any HTTP client crate, raw socket crate and the tokio `net` feature were removed by A-3b (2026-09-20) as planned: the real client (reqwest, rustls with ring, tokio `net`) is now a legitimate dependency. What replaces them is the `a3b-merge-gate` job (see above), which checks that the client dials only SSRF-validated addresses. Most of it is behavioural (real sockets, connection counters), but part is a heuristic source scan (no socket types outside the client, `lookup_host` only in `fetch/dns.rs`, exactly one `dns_resolver` call): a text check that a determined change can evade, not a proof. TLS/certificate validation has no automated test at all; it was checked by hand only. `cargo deny` still bans openssl, native-tls and aws-lc.
 
 Options:
 

@@ -25,7 +25,7 @@ Read in full: PRD v0.3, EPICS, A-1 report, spike source.
 | HTTP client (reqwest vs hyper), converter internals, readability approach, SSRF mechanics, allocator/libc, pagination semantics over stream | Open (architect fills) | ADR-001..006 |
 | OQ-3 robots.txt default | Open, human decision | design keeps a switch point, does not decide |
 | OQ-4 private-host allowlist | Open, human decision | design supports both outcomes |
-| OQ-5 untrusted-content labelling | Open, human decision | design supports both outcomes |
+| OQ-5 untrusted-content labelling | RESOLVED: no label (owner decision 2026-09-20) | see the 2026-09-20 amendment; B-6 won't-do |
 | OQ-7 distribution/licence | Open, human decision | design lists impact only |
 | gnu vs musl on ARM | Open, needs ARM data | ADR-005 |
 
@@ -366,7 +366,7 @@ Validity rule: a run that early-stops before reading the expected amount of the 
 |---|---|---|---|
 | OQ-3 | robots.txt enforced by default? | default value of `FETCH_IGNORE_ROBOTS`; whether `fetch/robots.rs` ships in v1 | robots fetch reuses client + SSRF policy + 512 KB cap; parser is streaming and keeps only our UA group; costs one extra request and small bounded state; module is isolated so removal is cheap |
 | OQ-4 | private-host allowlist or blanket block? | whether `FETCH_ALLOW_PRIVATE_HOSTS` and C-2 ship | `ssrf::Policy` takes an allowlist that is empty by default. If used, allowlisting applies to the exact hostname of the original request only; a redirect hop to any other private host is still blocked; IP-literal hosts are not allowlistable; the allowlist relaxes only the private-range check, never scheme/port/metadata (169.254.169.254) rules. Blanket block = pass an empty list |
-| OQ-5 | label output as untrusted content? | whether B-6 ships and its wording | `server::render` has one hook. Options for the human: (a) separate leading text content block (does not touch offsets); (b) in-band prefix on first page only. Either way the label is outside `start_index` accounting (ADR-006). Label is a mitigation, not prevention |
+| OQ-5 | RESOLVED 2026-09-20 (owner): NO label; the options below are historical. Label output as untrusted content? | whether B-6 ships and its wording | `server::render` has one hook. Options for the human: (a) separate leading text content block (does not touch offsets); (b) in-band prefix on first page only. Either way the label is outside `start_index` accounting (ADR-006). Label is a mitigation, not prevention |
 | OQ-7 | public distribution and licence | licence file, `cargo deny` licence policy, release channel, UA string contact URL | release job and artifact layout are channel-agnostic; only UA and docs depend on it |
 
 ## 13. Threat Model (STRIDE-lite)

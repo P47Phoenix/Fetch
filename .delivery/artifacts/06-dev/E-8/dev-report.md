@@ -12,3 +12,6 @@ Changes
 Verification (clean `git archive HEAD` extract, /tmp/e8): fmt OK; clippy -D warnings clean for default, bench-loopback, test-support; cargo test --locked: default 44+10, bench-loopback 45+10, test-support 44+10, all pass; release build (-p fetch-mcp) OK; check-release-features.sh "guard OK" and --self-test OK; bench/selftest.py PASSED; actionlint clean (run in repo; the archive has no .git, which actionlint requires).
 
 Not started: A-3b, E-7. Not done here: commit/Cargo.lock hash in `--version` (AC mentions it; belongs with the build script / D-3 per lib.rs note).
+
+## Correction (A-3b fix-pass 1, 2026-09-20; history above kept)
+The note above says the `--version` commit and Cargo.lock hash belongs "with the build script / D-3". That is wrong: D-3 is the aarch64 test suite and has no such acceptance criterion. The item is re-homed to E-4 (it must land before G4a, end of Sprint 4) in docs/EPICS.md, together with the E-8 handshake, idle-delta, size-delta and public-host cross-check items (E-2/E-4). The comment in src/lib.rs was corrected to match.

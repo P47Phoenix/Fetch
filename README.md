@@ -10,12 +10,13 @@ What works today (stories A-2, A-3a and A-3b):
 
 - `fetch-mcp` is a real MCP server over stdio (built on the `rmcp` crate, version 3.4.0). It offers exactly one tool, `fetch`, with the inputs `url`, `max_length`, `start_index` and `raw`.
 - A valid `fetch` call downloads the URL (HTTP/1.1, https with the built-in trust anchors) and returns the text as fetched, cut to the requested character window. The body is read as a stream and never held whole: it stops with `too_large` past `FETCH_MAX_BYTES` (5 MiB), after 15 s with `timeout`, and gzip is unpacked in bounded steps. Every request and every redirect hop goes through the SSRF checks, and the client connects only to the addresses those checks approved. **Fetched content is returned as-is with no untrusted-content label (open question OQ-5 was decided "no label" on 2026-09-20).** Not yet done: HTML to markdown (A-4), early stop and continuation messages (A-5), `raw` and content-type handling (A-6), cause-specific errors (A-7), charsets other than UTF-8 (A-8).
+- **TLS caveat:** certificate validation (the https trust check) has no automated test. It was checked by hand only, against public sites. A regression there would not be caught by CI until B-2/B-5 or E-2 add a test.
 - Bad input, and web addresses that point at private or internal machines, are refused with a clear error. See [SSRF range table](docs/SSRF.md) for what is blocked and why.
 
 What has not been checked yet:
 
 - The automatic checks (CI) run on GitHub and pass on pull request #5, but branch protection on `main` is not switched on, and `cargo-audit` has never been run.
-- The memory gates for the product (10 MiB idle, 40 MiB peak) have not been run. There is no `--gate` run on amd64 or arm64. The only product numbers are advisory (recorded, not enforced): see [BENCHMARK.md section 13](docs/BENCHMARK.md#13-real-product-idle-numbers-advisory-sprint-1).
+- The memory gates for the product (10 MiB idle, 40 MiB peak) have not been run. The A-3b RSS smoke (one 5 MiB fetch) was first run on x86_64 as a substitute (VmHWM about 5.7 MiB, not the acceptance figure) and then on the hosted arm64 runner (advisory, single CI run, see BENCHMARK.md section 14). There is no `--gate` run on amd64 or arm64. The only product numbers are advisory (recorded, not enforced): see [BENCHMARK.md section 13](docs/BENCHMARK.md#13-real-product-idle-numbers-advisory-sprint-1).
 - Open questions still undecided: OQ-3 (robots.txt on or off by default), OQ-4 (private-host allowlist), and OQ-7 (licence and distribution). An Apache-2.0 `LICENSE` file exists, and the project is marked `publish = false` (Cargo will refuse to publish it to crates.io) until OQ-7 is decided.
 - The release artifact will be a multi-arch container image (`linux/amd64` and `linux/arm64`) on GHCR, not standalone binaries (ADR-007).
 
@@ -65,10 +66,10 @@ printf '%s\n' \
 
 ### What to expect
 
-Five reply lines, one for each request that has an `id` (the `notifications/initialized` line gets no reply):
+Five reply lines, one for each request that has an `id` (the `notifications/initialized` line gets no reply). Replies can arrive out of order: the network fetch (id 3) is slow, so its reply usually comes last, after ids 4 and 5. Match replies to requests by `id`, not by position. The list below is in request order.
 
 1. `initialize`: a result with `"protocolVersion":"2025-06-18"`, `"capabilities":{"tools":{}}` and `"serverInfo":{"name":"rmcp","version":"3.4.0"}`. The name shown is the MCP library's, not `fetch-mcp`.
-2. `tools/list`: one tool, `fetch`, described as "Fetch a URL and return its content as markdown". `url` is required. `max_length`, `start_index` and `raw` are optional.
+2. `tools/list`: one tool, `fetch`, described as "Fetch a URL and return its content as markdown". `url` is required. `max_length`, `start_index` and `raw` are optional. Note: the description says "as markdown", but HTML is not converted yet (A-4); the text comes back unconverted.
 3. A valid URL (id 3) is downloaded, so this needs network access: you get the page text in one text item (`"isError"` false). Offline, you get `"isError":true` and `error[dns_failure]: hostname did not resolve`.
 4. A blocked address (id 4) gives `"isError":true` and this text:
    `error[blocked_target]: IP address is not public (loopback)`

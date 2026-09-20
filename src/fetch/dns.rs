@@ -6,6 +6,7 @@
 //! client can neither re-resolve (rebinding) nor fall back to its own system resolver. IP-literal hosts never
 //! reach any resolver; they were judged by `check_url` and cross-checked against the client's URL parser.
 
+use crate::ssrf::canonical_name as normalize;
 use crate::ssrf::resolver::Resolver;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::future::Future;
@@ -28,11 +29,6 @@ impl Resolver for SystemResolver {
             Ok(answers.map(|a| a.ip()).take(MAX_ANSWERS).collect())
         }
     }
-}
-
-/// Lower-case, without a trailing dot: the form `check_url` yields for names.
-pub(super) fn normalize(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// Resolver handed to the HTTP client for one hop: the validated set for the validated host, nothing else.
@@ -100,5 +96,10 @@ mod tests {
     #[test]
     fn normalize_lowercases_and_drops_one_trailing_dot() {
         assert_eq!(normalize("Example.COM."), "example.com");
+        assert_eq!(
+            normalize("a.b.."),
+            "a.b.",
+            "only the root dot goes; an empty label stays malformed"
+        );
     }
 }

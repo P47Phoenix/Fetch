@@ -127,12 +127,16 @@ async fn get(
 ) -> (Result<super::Fetched, FetchError>, String, usize) {
     let mut text = String::new();
     let mut biggest = 0usize;
-    let r = c
-        .fetch(url, &mut |s: &str| {
+    // Test-level guard: a removed or broken deadline must fail here, not hang the suite.
+    let r = tokio::time::timeout(
+        Duration::from_secs(60),
+        c.fetch(url, &mut |s: &str| {
             biggest = biggest.max(s.len());
             text.push_str(s);
-        })
-        .await;
+        }),
+    )
+    .await
+    .expect("fetch hung past the test-level guard: the client deadline is not working");
     (r, text, biggest)
 }
 
@@ -711,6 +715,143 @@ async fn connection_refused_is_a_category_without_the_address() {
         !t.contains("127.0.0.1") && !t.contains(&port.to_string()),
         "{t}"
     );
+}
+
+#[tokio::test]
+async fn url_text_containing_header_never_changes_the_transport_class() {
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }; // nothing listens here
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    // (a) the request URL itself mentions "header" (path, query, host label)
+    for url in [
+        format!("http://public.test:{port}/api/headers"),
+        format!("http://public.test:{port}/?header=1&too-large=too%20many%20headers"),
+    ] {
+        let (res, _, _) = get(&c, &url).await;
+        assert_eq!(code(&res), "network_error", "{url}: {res:?}");
+    }
+    // (b) an upstream-controlled redirect Location mentions "header"; the next hop fails to connect
+    let srv = spawn_server(handler(move |mut s, _| async move {
+        let resp = format!(
+            "HTTP/1.1 302 Found\r\nConnection: close\r\nContent-Length: 0\r\nLocation: http://public.test:{port}/api/headers?header=too-large\r\n\r\n"
+        );
+        let _ = s.write_all(resp.as_bytes()).await;
+    }))
+    .await;
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    assert_eq!(code(&res), "network_error", "{res:?}");
+}
+
+// ---- backstops and truncation through the client (QA N4, N5) -------------------------------------------------
+
+#[test]
+fn cross_check_refuses_every_disagreement_with_the_core() {
+    use super::cross_check;
+    let core = |u: &str| check_url(u, &Policy::default(), Origin::Initial).unwrap();
+    let v = core("http://public.test:8080/x");
+    assert!(cross_check("http://public.test:8080/x", &v).is_ok());
+    assert!(
+        cross_check("http://PUBLIC.test.:8080/x", &v).is_ok(),
+        "case and root dot agree"
+    );
+    for (raw, why) in [
+        ("http://other.test:8080/x", "host"),
+        ("http://public.test:9090/x", "port"),
+        ("https://public.test:8080/x", "scheme"),
+        ("http://user@public.test:8080/x", "userinfo"),
+        ("not a url", "unparsable"),
+    ] {
+        let r = cross_check(raw, &v);
+        assert!(
+            matches!(r, Err(FetchError::BlockedTarget(_))),
+            "{why}: {r:?}"
+        );
+    }
+    let ip = core("http://8.8.8.8/");
+    assert!(cross_check("http://8.8.8.8/", &ip).is_ok());
+    assert!(
+        cross_check("http://8.8.4.4/", &ip).is_err(),
+        "different literal"
+    );
+}
+
+/// Send `body` as one chunked message so no Content-Length pre-check can pre-empt the client's own counting.
+fn chunked(extra: &'static str, body: Vec<u8>) -> Handler {
+    let body = Arc::new(body);
+    handler(move |mut s, _| {
+        let body = body.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n{extra}\r\n"
+            );
+            let _ = s.write_all(head.as_bytes()).await;
+            for piece in body.chunks(1000) {
+                let _ = s
+                    .write_all(format!("{:x}\r\n", piece.len()).as_bytes())
+                    .await;
+                let _ = s.write_all(piece).await;
+                let _ = s.write_all(b"\r\n").await;
+            }
+            let _ = s.write_all(b"0\r\n\r\n").await;
+            let _ = s.shutdown().await;
+        }
+    })
+}
+
+#[tokio::test]
+async fn the_wire_byte_cap_applies_to_a_gzip_body_that_decodes_under_the_cap() {
+    // Incompressible bytes: the gzip stream is longer than its content, so content < cap < wire.
+    let mut x = 0x2545_f491_u32;
+    let data: Vec<u8> = (0..4096)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect();
+    let wire = gz(&data);
+    assert!(wire.len() > data.len());
+    let cap = data.len() as u64;
+    let srv = spawn_server(chunked("Content-Encoding: gzip\r\n", wire)).await;
+    let c = client(loopback(), &public_resolver(), limits(5000, cap, 3));
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    assert_eq!(code(&res), "too_large", "{res:?}");
+}
+
+#[tokio::test]
+async fn a_truncated_gzip_body_is_a_bad_response() {
+    let full = gz("some text to compress ".repeat(200).as_bytes());
+    let cut = full[..full.len() / 2].to_vec();
+    let srv = spawn_server(chunked("Content-Encoding: gzip\r\n", cut)).await; // well-formed chunking, short gzip
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    assert_eq!(code(&res), "bad_response", "{res:?}");
+}
+
+#[tokio::test]
+async fn an_identity_body_shorter_than_its_content_length_is_a_network_error() {
+    let srv = spawn_server(handler(|mut s, _| async move {
+        let _ = s
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 100\r\n\r\nshort")
+            .await;
+        let _ = s.shutdown().await;
+    }))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    assert_eq!(code(&res), "network_error", "{res:?}");
+}
+
+/// Decision (QA N5): a `Content-Encoding: gzip` response with a zero-byte body is an empty page, not an error.
+/// Empty 200 responses that still carry the encoding header are common, and nothing was truncated.
+#[tokio::test]
+async fn an_empty_body_marked_gzip_is_an_empty_page() {
+    let srv = spawn_server(fixed("200 OK", &["Content-Encoding: gzip"], Vec::new())).await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    assert!(res.is_ok(), "{res:?}");
+    assert!(text.is_empty());
 }
 
 #[tokio::test]

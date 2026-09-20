@@ -141,6 +141,19 @@ fn split_host_port(authority: &str, https: bool) -> Result<(&str, u16), &'static
     Ok((host, port))
 }
 
+/// Drop the root label: exactly ONE trailing dot. A second dot leaves an empty label, which `parse_host` refuses.
+fn strip_root_dot(host: &str) -> &str {
+    host.strip_suffix('.').unwrap_or(host)
+}
+
+/// The one canonical form of a DNS name, shared by the SSRF core, the pinned dial resolver and the client's
+/// cross-check: ASCII lower case, no root dot (`Example.COM.` -> `example.com`). Removes exactly one trailing dot,
+/// so a host with an empty label stays malformed instead of being silently repaired.
+#[must_use]
+pub fn canonical_name(host: &str) -> String {
+    strip_root_dot(host).to_ascii_lowercase()
+}
+
 fn parse_host(host: &str) -> Result<Host, &'static str> {
     if let Some(inner) = host.strip_prefix('[') {
         let inner = inner.strip_suffix(']').ok_or("unterminated IPv6 bracket")?;
@@ -163,7 +176,7 @@ fn parse_host(host: &str) -> Result<Host, &'static str> {
     {
         return Err("host contains characters that are not allowed");
     }
-    let trimmed = host.strip_suffix('.').unwrap_or(host);
+    let trimmed = strip_root_dot(host);
     if trimmed.is_empty() || trimmed.split('.').any(str::is_empty) || trimmed.len() > 253 {
         return Err("malformed host name");
     }
@@ -172,7 +185,7 @@ fn parse_host(host: &str) -> Result<Host, &'static str> {
             .map(|a| Host::Ip(IpAddr::V4(a)))
             .ok_or("invalid numeric host");
     }
-    Ok(Host::Name(trimmed.to_ascii_lowercase()))
+    Ok(Host::Name(canonical_name(host)))
 }
 
 /// WHATWG "ends in a number": the last label is all decimal digits, or `0x`/`0X` followed by hex digits (or

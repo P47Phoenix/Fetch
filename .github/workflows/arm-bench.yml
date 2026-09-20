@@ -3,7 +3,7 @@ name: arm-bench
 # Advisory native-aarch64 measurement on a GitHub-hosted arm64 runner: job `bench` measures the A-1 spike (Sprint 0
 # gate G0 evidence); job `bench-product` (A-3a) builds and measures the REAL fetch-mcp release binary (idle RSS and
 # ready_ms, recorded not gated; the PRD 250 ms readiness figure is evidence only, the harness does not enforce it).
-# NEITHER is a required check: job ids are `bench` and `bench-product`, none of fmt/clippy/test/deny/release-guard. Never uses --gate: the spike is a
+# NEITHER is a required check: job ids are `bench`, `bench-product` and `bench-product-peak` (A-3b RSS smoke, bench-loopback build), none of fmt/clippy/test/deny/release-guard. Never uses --gate: the spike is a
 # stand-in, not fetch-mcp, so the harness's gate identity rules (rightly) refuse it. Numbers are spike evidence only.
 on:
   workflow_dispatch:
@@ -235,5 +235,85 @@ jobs:
         if: always()
         with:
           name: arm-bench-product
+          path: out/
+          if-no-files-found: warn
+
+  # A-3b native-aarch64 RSS smoke (advisory, not a gate): the real product built with bench-loopback (so the loopback
+  # fixture server is reachable), one 5 MiB fetch per fresh process, VmHWM read after the call returned. The binary is
+  # kind=bench and is never uploaded as a release artifact. Idle RSS comes from the bench-product job.
+  bench-product-peak:
+    name: bench-product-peak (fetch-mcp bench-loopback, gnu)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Platform facts
+        run: |
+          set -eu
+          mkdir -p out
+          {
+            echo "machine: $(uname -m)"
+            echo "kernel: $(uname -r)"
+            echo "cpu: $(grep -m1 -E '^(model name|Model|Hardware|CPU part)' /proc/cpuinfo || true)"
+            echo "nproc: $(nproc)"
+            echo "MemTotal: $(grep MemTotal /proc/meminfo)"
+            echo "PAGESIZE: $(getconf PAGESIZE)"
+            echo "os: $(. /etc/os-release && echo "$PRETTY_NAME")"
+          } | tee out/platform-peak.txt
+
+      - run: rustup show active-toolchain
+
+      - name: Build fetch-mcp release with bench-loopback (--locked)
+        run: |
+          set -eu
+          cargo build --release --locked --features bench-loopback
+          file target/release/fetch-mcp | tee -a out/platform-peak.txt
+          sha256sum target/release/fetch-mcp | tee -a out/platform-peak.txt
+          target/release/fetch-mcp --version | tee -a out/platform-peak.txt
+
+      - name: Generate fixtures and self-test the harness
+        run: |
+          set -eu
+          python3 bench/fixtures.py generate
+          python3 bench/selftest.py
+
+      - name: 5 MiB fetch VmHWM (advisory, bench/serve.py fixture, 10 fresh processes)
+        run: |
+          set -u
+          : > out/results-peak.jsonl
+          rc=0
+          python3 bench/measure.py --binary target/release/fetch-mcp --binary-kind bench --scenario g4a-5mib-full \
+            --out out/results-peak.jsonl > /dev/null || rc=$?
+          echo "peak exit=$rc" | tee out/exitcodes-peak.txt
+          # exit 1 = target missed (a result, reported); 2/3 = invalid or refused (plumbing failure)
+          [ "$rc" -le 1 ]
+
+      - name: Job summary
+        if: always()
+        run: |
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          print("## bench-product-peak: 5 MiB fetch on hosted arm64, ADVISORY (recorded, not gated)\n")
+          print("```\n" + open("out/platform-peak.txt").read() + "```\n")
+          try:
+              for l in open("out/results-peak.jsonl"):
+                  o = json.loads(l)
+                  if o.get("kind") == "scenario":
+                      v = o.get("samples_kB") or [0]
+                      print(f"VmHWM after one 5 MiB fetch: {o['valid_runs']}/{o['runs']} valid, median {o.get('median_MiB','n/a')} MiB, "
+                            f"min-max {min(v)/1024:.2f}-{max(v)/1024:.2f} MiB (samples kB {v}), target 40 MiB, verdict {o['verdict']}\n")
+                  elif o.get("kind") == "summary":
+                      print(f"\nsummary: {o.get('verdict')} {o.get('reason','')} (gating={o.get('gating')})")
+          except OSError as e:
+              print(f"no results: {e}")
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: arm-bench-product-peak
           path: out/
           if-no-files-found: warn

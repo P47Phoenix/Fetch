@@ -30,7 +30,8 @@ pub fn build_markers() -> Vec<&'static str> {
 }
 
 /// The `--version` line: crate name and version, then one marker per forbidden feature compiled in
-/// (none in a release build). Commit and Cargo.lock hash are added by E-8/D-3 (build script).
+/// (none in a release build). Commit and Cargo.lock hash are NOT there yet: that E-8 acceptance criterion is re-homed to E-4 (it must land
+/// before G4a) and needs a build script.
 #[must_use]
 pub fn version_line() -> String {
     let mut line = format!("fetch-mcp {}", env!("CARGO_PKG_VERSION"));
