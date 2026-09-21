@@ -261,3 +261,9 @@ Recorded re-homing of E-2 items that Sprint 3 did not deliver, **pending owner a
 - macOS `/usr/bin/time -l` reader: not built, no macOS gate host; known deviation from the E-2 acceptance text.
 - Architect NB1 (no hash pin for `ziglang`, cargo-zigbuild not lock-checked): recorded in the D-2 acceptance criteria.
 A-9 is done (Sprint 3). Sprint 3 gate runs in CI passed on all four cells in the read-in-full form (not a G4a pass).
+
+## Revision 12 (2026-09-20): Sprint 3 closed, Sprint 4 started
+
+Sprint 3: A-9 (1), E-3 (2) DONE; E-2 (5) DONE CONDITIONAL (four AC items re-homed per Revision 11, PENDING OWNER ACKNOWLEDGEMENT, not acknowledged). PR #7 merge c13159e, CI 14/14 at head 37b2823; architect DONE, QA round 2 DONE, PR review round 2 APPROVE. Idle/peak MiB (run 35541676701): amd64 gnu 3.90/5.17, amd64 musl 2.27/4.25, arm64 gnu 3.55/4.61, arm64 musl 2.16/4.20; read-in-full peak, NOT a G4a pass, bare binaries not image, single run. Details: `.delivery/artifacts/06-dev/sprint-3/stage-summary.md`.
+
+**Sprint 4 (A-4 5, E-4 3 = 8 pts) started 2026-09-20** on branch `sprint-4/convert-memory-gate`. First commit is Sprint 3 carry-forward cleanup (listed in the Sprint 3 stage summary). E-7 lists were NOT supplied before Sprint 4 entry: E-7 moves to Sprint 5 and the A-4 95%/50% check is excluded from the Sprint 4 exit (fallback applies; A-4 not Done until met in Sprint 5). E-4 also implements `g6-concurrent10` and the G4b-scenario stubs re-homed from E-2. Open owner items: E-7 lists, branch protection, E-2 re-homing acknowledgement, A-2 throwaway check, cargo-audit.
