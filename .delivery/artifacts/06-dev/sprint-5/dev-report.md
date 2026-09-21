@@ -31,3 +31,6 @@ The unit-test job has no generated fixtures; bench/selftest.py now reads sizes f
 
 ## Decisions needing owner acknowledgement
 See docs/EPICS.md (A-5 status) and plan Revision 14: Total-length footer only on continuation/beyond-end (ADR-006 item 4 deviation); G5 via the 50 MiB chunked variant; G1 duplicates g4a-5mib-full; text/* extras chosen by the developer; G4a read-in-full scenarios redefined as window-at-end. Also pending with the owner: the arm-bench spike jobs.
+
+## Addendum: arm-bench spike jobs
+Owner authorised (AskUserQuestion answer "Drop spike peak, keep idle"): .github/workflows/arm-bench.yml now measures only the spike idle figure in `bench (gnu)`/`bench (musl)` and the summary step tolerates records without `metric`/`valid_runs`/`runs`/`verdict`. The spike peak is no longer measured because the spike has no pagination; Sprint 0 peak evidence remains in git history and BENCHMARK s11/s15. No other job, action pin or permission changed; actionlint clean. CI results on the final head are in the coordinator reply.
