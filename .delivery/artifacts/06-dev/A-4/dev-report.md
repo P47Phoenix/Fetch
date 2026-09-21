@@ -52,11 +52,13 @@ No early stop: the G4a scenarios are full-consumption by definition and early st
 
 The idle delta (+0.75 MiB) exceeds the 0.5 MiB figure that E-8 bounds for the shipped-vs-bench delta, but that bound is between two binaries of one commit, not before/after a feature; it is recorded here and the gnu/zigbuild numbers on the hosted runners are E-4's evidence. All figures are x86_64 gnu, advisory harness runs (not `--gate`).
 
-## 5. Verification (clean `git archive HEAD` of 7384c97)
+## 5. Verification (clean `git archive` of 7384c97, same source as the PR head apart from this report)
 From a clean `git archive HEAD` extraction (fresh target dir): `cargo fmt --check` OK; `cargo clippy --locked --all-targets -D warnings` OK for default, `bench-loopback`, `test-support`; `cargo test --locked` 133 / 134 / 133 lib tests pass (1 ignored: the timing test); release build OK (3,680,456 B); `check-release-features.sh` guard OK and `--self-test` OK; `cargo deny check` (v0.20.2, installed locally) advisories/bans/licenses/sources ok; `bench/selftest.py` PASSED; `actionlint` clean (run in the repo, an extracted archive has no `.git` for it).
 
 ## 7. CI
-Filled in after the draft PR's checks complete (see the PR).
+Draft PR #8, head 8a? (see PR). All 14 checks passed: a3b-merge-gate, bench (gnu, musl), bench-product (gnu), bench-product-peak (gnu), clippy, deny, fmt, release-guard, test, and bench-gate on amd64 gnu/musl and arm64 gnu/musl (run 35556074053). The bench-gate cells are hosted-runner `--gate` runs of the harness with the A-4 converter in the bench build, but they are the E-2/E-3 workflow as it stood, not the E-4 G4a evaluation; no G4a verdict is claimed here.
+
+Recorded from the run logs (advisory reading, not a G4a pass): 1 MiB conversion p95 on the hosted arm64 gnu runner 59.8 ms (median 59.6; target 500 ms), amd64 gnu 51.6 ms; gating peak (max of per-scenario medians) 5.32 MiB on the arm64 gnu cell and 6.18 MiB on the amd64 gnu cell, boundedness ratios 0.93 / 1.01 (arm64) and 0.96 / 1.006 (amd64). Other cells' figures are in their job logs.
 
 ## 6. Honest gaps
 1. **95% conversion success / 50% median token reduction / no `<script>` on the E-7 50-URL set: NOT DONE.** The set does not exist; no corpus was fabricated. Per the plan's E-7 fallback, A-4 is not Done until this is met; G4a is unaffected.
