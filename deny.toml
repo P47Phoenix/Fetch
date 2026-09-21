@@ -39,6 +39,16 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 
+# MPL-2.0 (file-level weak copyleft) is allowed ONLY for the crates lol_html (A-4, ADR-002) pulls in for CSS
+# selector matching: cssparser, cssparser-macros, dtoa-short and selectors (Servo). They are used unmodified as
+# crates.io dependencies, which MPL-2.0 permits without extending its terms to this crate; nothing else may use it.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cssparser" },
+    { allow = ["MPL-2.0"], crate = "cssparser-macros" },
+    { allow = ["MPL-2.0"], crate = "dtoa-short" },
+    { allow = ["MPL-2.0"], crate = "selectors" },
+]
+
 # publish = false crate: its own licence is not checked here (OQ-7 open).
 [licenses.private]
 ignore = true

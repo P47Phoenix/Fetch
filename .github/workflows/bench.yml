@@ -104,6 +104,13 @@ jobs:
           python3 bench/fixtures.py generate
           python3 bench/selftest.py
 
+      - name: "Conversion overhead of a 1 MiB page (A-4 AC: p95 <= 500 ms on aarch64; BENCHMARK.md section 9 method)"
+        if: matrix.libc == 'gnu'
+        run: |
+          set -eu
+          cargo test --locked --release --lib conversion_overhead_1mib -- --ignored --nocapture 2>&1 | tee out/convert-overhead.txt
+          grep CONVERT_1MIB out/convert-overhead.txt | sed 's/^/convert-overhead: /' >> "$GITHUB_STEP_SUMMARY" || true
+
       - name: "Idle RSS gate (E-3): shipped binary, median of 10, <= 10 MiB strict"
         id: idle
         continue-on-error: true

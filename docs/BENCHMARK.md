@@ -27,7 +27,7 @@ Each term is explained here once. Later sections use the short form.
 | Term | Plain meaning |
 |---|---|
 | MCP | Model Context Protocol. A way for an AI tool (a "client") to talk to a helper program (a "server") such as `fetch-mcp`. |
-| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` used to be one (it only printed its version). It is now a real stdio server with a guarded download, but no HTML conversion yet. Do not register it in a real MCP client. |
+| Skeleton | A program with the right name and shape but almost nothing inside. `fetch-mcp` used to be one (it only printed its version). It is now a real stdio server with a guarded download, and HTML to markdown conversion (A-4, Sprint 4). Do not register it in a real MCP client. |
 | Stand-in | `bench/standin_mcp.py`. A fake server written in Python, used only to test the benchmark tools. It is NOT the product. Its memory figures say nothing about the product. |
 | MiB | Mebibyte, the unit for every memory figure in this project: 1 MiB = 2^20 = 1,048,576 bytes. |
 | kB | Kilobyte as Linux reports it in `/proc`: 1 kB = 1,024 bytes (strictly a KiB). So 10 MiB = 10,240 kB and 40 MiB = 40,960 kB. |

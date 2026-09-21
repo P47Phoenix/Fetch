@@ -17,13 +17,16 @@ pub mod dns;
 mod tests;
 
 use crate::config::Config;
+use crate::convert::{self, ConvertError, Mode};
 use crate::error::FetchError;
 use crate::policy::Policy;
 use crate::ssrf::resolver::{validate_target, Resolver};
 use crate::ssrf::{CheckedUrl, Host, Origin};
-use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, LOCATION};
+use reqwest::header::{
+    HeaderMap, ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, LOCATION,
+};
 use reqwest::{Client, StatusCode, Url};
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock, PoisonError};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, timeout_at, Instant};
@@ -101,6 +104,21 @@ impl<R: Resolver> FetchClient<R> {
         url: &str,
         sink: &mut (dyn FnMut(&str) + Send),
     ) -> Result<Fetched, FetchError> {
+        self.fetch_as(url, Mode::Raw, sink).await
+    }
+
+    /// [`fetch`](Self::fetch) with a conversion mode: [`Mode::Markdown`] converts an HTML body to markdown
+    /// (A-4) as it streams; anything else, and [`Mode::Raw`], is passed through as text. Memory still does not
+    /// depend on the body size.
+    ///
+    /// # Errors
+    /// As [`fetch`](Self::fetch), plus `converter_limit` when the converter's memory or output limit is hit.
+    pub async fn fetch_as(
+        &self,
+        url: &str,
+        mode: Mode,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<Fetched, FetchError> {
         // Queue for a slot for at most the timeout; the fetch deadline starts when the slot is granted.
         let _slot = match timeout(self.limits.timeout, self.slots.acquire()).await {
             Ok(Ok(p)) => p,
@@ -112,7 +130,7 @@ impl<R: Resolver> FetchClient<R> {
             }
         };
         let deadline = Instant::now() + self.limits.timeout;
-        match timeout_at(deadline, self.run(url, sink, deadline)).await {
+        match timeout_at(deadline, self.run(url, mode, sink, deadline)).await {
             Ok(r) => r,
             // Dropping the future closes any open connection.
             Err(_) => Err(FetchError::Timeout("the request timed out".into())),
@@ -122,6 +140,7 @@ impl<R: Resolver> FetchClient<R> {
     async fn run(
         &self,
         url: &str,
+        mode: Mode,
         sink: &mut (dyn FnMut(&str) + Send),
         deadline: Instant,
     ) -> Result<Fetched, FetchError> {
@@ -163,7 +182,7 @@ impl<R: Resolver> FetchClient<R> {
             if !status.is_success() {
                 return Err(FetchError::HttpStatus(status.as_u16()));
             }
-            let wire_bytes = self.read_body(resp, sink).await?;
+            let wire_bytes = self.read_body(resp, mode, &parsed, sink).await?;
             return Ok(Fetched {
                 final_url: echo_url(&parsed),
                 status: status.as_u16(),
@@ -177,6 +196,8 @@ impl<R: Resolver> FetchClient<R> {
     async fn read_body(
         &self,
         mut resp: reqwest::Response,
+        mode: Mode,
+        base: &Url,
         sink: &mut (dyn FnMut(&str) + Send),
     ) -> Result<u64, FetchError> {
         let cap = self.limits.max_bytes;
@@ -185,7 +206,23 @@ impl<R: Resolver> FetchClient<R> {
         if resp.content_length().is_some_and(|n| n > cap) {
             return Err(too_large());
         }
-        let mut pipe = body::Pipeline::new(gzip, cap, sink);
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let mut conv = convert::for_response(mode, content_type.as_deref(), Some(base.clone()));
+        // The pipeline's sink cannot fail, so a converter failure is parked here and checked per chunk.
+        let failure: Mutex<Option<ConvertError>> = Mutex::new(None);
+        let mut convert_step = |text: &str| {
+            let mut f = failure.lock().unwrap_or_else(PoisonError::into_inner);
+            if f.is_none() {
+                if let Err(e) = conv.push(text, &mut *sink) {
+                    *f = Some(e);
+                }
+            }
+        };
+        let mut pipe = body::Pipeline::new(gzip, cap, &mut convert_step);
         let mut wire = 0u64;
         while let Some(chunk) = resp.chunk().await.map_err(map_transport)? {
             wire = wire.saturating_add(chunk.len() as u64);
@@ -193,8 +230,11 @@ impl<R: Resolver> FetchClient<R> {
                 return Err(too_large());
             }
             pipe.feed(&chunk).map_err(map_body)?;
+            take_failure(&failure)?;
         }
         pipe.finish().map_err(map_body)?;
+        take_failure(&failure)?;
+        conv.finish(&mut *sink).map_err(map_convert)?;
         Ok(wire)
     }
 
@@ -266,6 +306,25 @@ fn too_large() -> FetchError {
 
 fn is_redirect(s: StatusCode) -> bool {
     matches!(s.as_u16(), 301 | 302 | 303 | 307 | 308)
+}
+
+fn map_convert(e: ConvertError) -> FetchError {
+    match e {
+        ConvertError::Limit => FetchError::ConverterLimit(
+            "the page is too complex to convert within the memory limit; retry with raw=true"
+                .into(),
+        ),
+        ConvertError::Malformed => FetchError::ConverterLimit(
+            "the HTML could not be converted; retry with raw=true".into(),
+        ),
+    }
+}
+
+fn take_failure(f: &Mutex<Option<ConvertError>>) -> Result<(), FetchError> {
+    match *f.lock().unwrap_or_else(PoisonError::into_inner) {
+        Some(e) => Err(map_convert(e)),
+        None => Ok(()),
+    }
 }
 
 fn map_body(e: body::BodyError) -> FetchError {

@@ -1091,3 +1091,112 @@ fn pinned_is_send_and_sync_for_the_client_builder() {
     fn ok<T: Send + Sync + 'static>() {}
     ok::<Pinned>();
 }
+
+// ---- A-4: HTML to markdown through the real client ---------------------------------------------------------
+
+async fn get_as(
+    c: &FetchClient<FakeResolver>,
+    url: &str,
+    mode: crate::convert::Mode,
+) -> (Result<super::Fetched, FetchError>, String) {
+    let mut text = String::new();
+    let r = tokio::time::timeout(
+        Duration::from_secs(60),
+        c.fetch_as(url, mode, &mut |s: &str| text.push_str(s)),
+    )
+    .await
+    .expect("fetch hung");
+    (r, text)
+}
+
+const PAGE: &str = "<html><head><title>T</title><script>evil()</script></head><body><nav>menu</nav>\
+    <h1>Hello</h1><p>See <a href=\"/next\">next</a> &amp; more.</p><ul><li>a<li>b</ul></body></html>";
+const PAGE_MD: &str = "# Hello\n\nSee [next](http://public.test:PORT/next) & more.\n\n- a\n- b";
+
+#[tokio::test]
+async fn html_is_converted_and_links_resolve_against_the_final_url() {
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html; charset=utf-8"],
+        PAGE.as_bytes().to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    res.unwrap();
+    assert_eq!(text, PAGE_MD.replace("PORT", &srv.port.to_string()));
+    // raw mode and non-HTML types come back untouched
+    let (_, raw) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Raw,
+    )
+    .await;
+    assert_eq!(raw, PAGE);
+    let srv2 = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/plain"],
+        PAGE.as_bytes().to_vec(),
+    ))
+    .await;
+    let (_, plain) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv2.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    assert_eq!(plain, PAGE);
+}
+
+#[tokio::test]
+async fn gzip_html_is_converted_too() {
+    let mut e = GzEncoder::new(Vec::new(), Compression::default());
+    e.write_all(PAGE.as_bytes()).unwrap();
+    let gz = e.finish().unwrap();
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html", "Content-Encoding: gzip"],
+        gz,
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    res.unwrap();
+    assert_eq!(text, PAGE_MD.replace("PORT", &srv.port.to_string()));
+}
+
+#[tokio::test]
+async fn untyped_html_is_sniffed_and_a_converter_limit_is_a_clear_error() {
+    let srv = spawn_server(fixed("200 OK", &[], PAGE.as_bytes().to_vec())).await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    res.unwrap();
+    assert!(text.starts_with("# Hello"));
+    // unclosed elements nest without end in the tokenizer: past its memory limit the call fails cleanly
+    let hostile = "<div>x".repeat(60_000).into_bytes();
+    let srv = spawn_server(fixed("200 OK", &["Content-Type: text/html"], hostile)).await;
+    let (res, _) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    let e = res.unwrap_err();
+    assert_eq!(e.code(), "converter_limit");
+    assert!(e.tool_text().contains("raw=true"));
+}

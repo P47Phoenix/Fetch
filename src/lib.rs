@@ -6,6 +6,7 @@
 #![deny(clippy::print_stdout)]
 
 pub mod config;
+pub mod convert;
 pub mod error;
 pub mod fetch;
 pub mod obs;
