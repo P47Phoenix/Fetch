@@ -278,3 +278,12 @@ Sprint 4: E-4 (3) DONE; G4a PASS in all four hosted native cells (docs/BENCHMARK
 Overflow if the E-7 lists are still missing at Sprint 5 exit: the plan defines no further fallback. Consequences: E-7 stays undone; A-4 stays not Done (its 95%/50% AC unmet); Sprint 6 is already 8 pts, Sprint 7 is 8, so neither can absorb 2 pts; Sprint 8 (6 pts) and Sprint 12 (7 pts) are the only sprints with room; E-5 (Sprint 7) needs the 10-URL smoke result and Goals 2 and 3 have no evidence. This needs an owner decision at Sprint 5 exit (see stage summary); no change is made here.
 
 Open owner items (unchanged): E-7 lists; OQ-7 (now with the MPL-2.0 fact recorded in the Sprint 4 stage summary); acknowledgement of re-homed E-2 items; branch protection (`a3b-merge-gate` required, `bench-gate` optional); A-2 throwaway-config check; cargo-audit; OQ-3 and OQ-4 before Sprint 10.
+
+## Revision 14 (2026-09-21): Sprint 5 A-5 and A-6 implemented, G4b PASS (PR #9, draft)
+
+A-5 and A-6 implemented; E-7 is NOT in the PR (owner URL lists still missing), so A-4 stays not Done. G4b PASS on all four hosted cells (run 35641694726; docs/BENCHMARK.md section 17): gating peak 4.38 to 6.06 MiB (target 40), shipped idle 2.36 to 4.62 MiB (target 10), 50 MiB chunked ratios at most 1.048 (bound 1.10). By the plan this closes the memory gate; Sprint 6 may start. Not covered: E-7-dependent A-4 checks.
+
+AC map: A-5 (window, clamp, continuation, beyond-end, char boundaries, chunked in/beyond cap, G4b window scenarios) - src/convert/window.rs, src/server.rs, src/fetch/tests.rs, tests/stdio.rs, bench/. A-6 (raw, content types, sniffing, `raw=true` scenario, idle re-check, combined G4b record) - src/convert/mod.rs, src/fetch/mod.rs, tests/stdio.rs, BENCHMARK s17. E-4 G4b scenarios implemented (bench/scenarios.py, measure.py).
+
+Decisions needing owner acknowledgement: (1) Total-length footer only on continuation/beyond-end (deviates from ADR-006 item 4); (2) G5 too_large via the 50 MiB chunked variant; (3) G1 duplicates g4a-5mib-full; (4) `text/*` extras (javascript, ndjson, +json/+xml) chosen by the developer; (5) G4a read-in-full scenarios redefined as window-at-end. Also pending with the owner: the two red arm-bench `bench (gnu)`/`(musl)` jobs (Sprint 0 spike lacks start_index/max_length; advisory, not required; fix in .github/workflows/arm-bench.yml not made).
+

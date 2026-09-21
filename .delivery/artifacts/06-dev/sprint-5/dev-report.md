@@ -11,7 +11,7 @@ PR: https://github.com/P47Phoenix/Fetch/pull/9 (draft). E-7 is not in this PR.
 | arm64 gnu | 5.41 | 1.000 | 0.981 | PASS |
 | arm64 musl | 4.38 | 1.048 | 0.987 | PASS |
 
-Both ratios are within 1.10 of the 5 MiB window-at-end peak in every cell. Shipped-binary idle verdict PASS in all four cells (<= 10 MiB).
+Both ratios are within 1.10 of the 5 MiB window-at-end peak in every cell. Shipped-binary idle (median of 10, VmRSS, limit 10 MiB): amd64 gnu 4.62, amd64 musl 2.36, arm64 gnu 3.91, arm64 musl 2.59 MiB, all PASS. Per-scenario peaks and ratios for every scenario are in docs/BENCHMARK.md section 17.
 Targets were not changed. The plan says a G4b pass closes the memory gate (Sprint 6 may start). E-7-dependent checks (A-4: 95% conversion, 50% token reduction, no script content) remain undone, so A-4 is not Done.
 
 ## CI
@@ -28,4 +28,6 @@ The unit-test job has no generated fixtures; bench/selftest.py now reads sizes f
 - G1 duplicates g4a-5mib-full. G4a full-read scenarios were redefined as window-at-end.
 - text/* extras (javascript, ndjson) allowlist is my choice.
 - No macOS reader; container image not measured; branch protection not configured.
-- BENCHMARK.md section 17, EPICS and plan AC-map updates are not written (only README/ci-branch-protection edits exist, uncommitted).
+
+## Decisions needing owner acknowledgement
+See docs/EPICS.md (A-5 status) and plan Revision 14: Total-length footer only on continuation/beyond-end (ADR-006 item 4 deviation); G5 via the 50 MiB chunked variant; G1 duplicates g4a-5mib-full; text/* extras chosen by the developer; G4a read-in-full scenarios redefined as window-at-end. Also pending with the owner: the arm-bench spike jobs.
