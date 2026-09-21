@@ -123,8 +123,11 @@ with tempfile.TemporaryDirectory() as d:
         measure._main = real
     check("uncaught harness exception exits 2, never 1 (NB-1)", rc == 2, f"rc={rc}")
     rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", settle=False)
-    check("--gate complete set refused off native aarch64 (exit 3)" if platform.machine() != "aarch64" else "--gate host is aarch64 (skip)",
-          rc == 3 or platform.machine() == "aarch64", f"rc={rc}")
+    if platform.machine() in ("aarch64", "x86_64"):
+        # native amd64 and arm64 both gate: the stand-in script then fails the identity rule (exit 2), never gates
+        check("--gate on a native host reaches the identity check and refuses the stand-in, exit 2", rc == 2 and "binary identity" in r[-1]["reason"], f"rc={rc} {r[-1].get('reason')}")
+    else:
+        check("--gate refused off a native aarch64/x86_64 host (exit 3)", rc == 3, f"rc={rc}")
     for flag, val in (("--settle", "1"), ("--parallel-idle", "2")):
         rc, r = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--gate", flag, val, settle=False)
         check(f"--gate with {flag} refused by the override rule, exit 2 on any host", rc == 2 and "forbids" in r[-1]["reason"], f"rc={rc}")
@@ -195,6 +198,61 @@ with tempfile.TemporaryDirectory() as d2:
     check("identity: bench ELF without the marker refused", measure.check_identity(elf("bn", em), V + " bench-loopback", "bench") is not None)
     check("identity: bench ELF with the marker passes", measure.check_identity(elf("bm", em, extra=b"FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback"), V + " bench-loopback", "bench") is None)
     check("identity: big-endian byte order decoded", measure.check_identity(elf("be", em, 2), V, "shipped") is None)
+
+# --- native_host preflight (amd64 + arm64 hosted runners; QEMU never gates) and gate-mode verdicts (any native host)
+import measure, io, contextlib
+with tempfile.TemporaryDirectory() as bd:
+    check("native_host: x86_64 with no binfmt is native", measure.native_host("x86_64", bd)[0])
+    check("native_host: aarch64 with no binfmt is native", measure.native_host("aarch64", bd)[0])
+    check("native_host: riscv64 refused", not measure.native_host("riscv64", bd)[0])
+    with open(os.path.join(bd, "qemu-x86_64"), "w") as f: f.write("enabled\ninterpreter /usr/bin/qemu-x86_64-static\n")
+    check("native_host: x86_64 with a qemu-x86_64 handler refused", not measure.native_host("x86_64", bd)[0])
+    check("native_host: a qemu-x86_64 handler does not refuse aarch64", measure.native_host("aarch64", bd)[0])
+    with open(os.path.join(bd, "qemu-aarch64"), "w") as f: f.write("enabled\ninterpreter /usr/bin/qemu-aarch64-static\n")
+    check("native_host: aarch64 with a qemu-aarch64 handler refused", not measure.native_host("aarch64", bd)[0])
+    check("native_host: binfmt name alone (no qemu interpreter) does not refuse", (lambda: (open(os.path.join(bd, "qemu-aarch64"), "w").write("enabled\ninterpreter /usr/bin/other\n"), measure.native_host("aarch64", bd)[0])[1])())
+    missing = os.path.join(bd, "no-such-dir")
+    check("native_host: unreadable binfmt dir fails closed under strict (gate)", not measure.native_host("x86_64", missing, strict=True)[0])
+    check("native_host: unreadable binfmt dir only records native when not strict", measure.native_host("x86_64", missing)[0])
+    with tempfile.TemporaryDirectory() as empty:
+        check("native_host: readable (empty) binfmt dir passes under strict", measure.native_host("x86_64", empty, strict=True)[0])
+
+def gate_run(extra_env=None):
+    """In-process --gate run of the stand-in as a bench build with identity and host checks satisfied by patches
+    (a stand-in cannot be an ELF). Exercises the real gating verdict/exit-code paths, whatever the host arch."""
+    saved = (measure.native_host, measure.check_identity, measure.version_of, dict(measure.PINNED_ENV))
+    measure.native_host = lambda *a, **k: (True, "ok")
+    measure.check_identity = lambda *a, **k: None
+    measure.version_of = lambda *a, **k: "fetch-mcp 0.0.0 bench-loopback"
+    measure.PINNED_ENV.update(extra_env or {})
+    buf = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory() as gd, contextlib.redirect_stdout(buf):
+            fixtures.generate(gd)
+            rc = measure.main(["--binary", STANDIN, "--binary-kind", "bench", "--scenario", "g4a", "--gate", "--fixtures-dir", gd])
+    finally:
+        measure.native_host, measure.check_identity, measure.version_of = saved[:3]
+        measure.PINNED_ENV.clear(); measure.PINNED_ENV.update(saved[3])
+    return rc, [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+
+rc, r = gate_run()
+check("gate mode: complete G4a set under budget -> summary PASS (not ADVISORY_PASS), exit 0, gating recorded",
+      rc == 0 and r[-1]["verdict"] == "PASS" and r[-1]["gating"] is True, f"rc={rc} {r[-1].get('verdict')} {r[-1].get('missed')} {r[-1].get('incomplete')}")
+rc, r = gate_run({"STANDIN_ALLOC_MIB": "60"})
+check("gate mode: peak over 40 MiB -> FAIL, exit 1", rc == 1 and r[-1]["verdict"] == "FAIL", f"rc={rc} {r[-1].get('verdict')}")
+rc, r = gate_run({"STANDIN_EARLY_STOP": "1000"})
+check("gate mode: early-stopping server -> INVALID, exit 2", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc} {r[-1].get('verdict')}")
+
+# --- redirect-chain scenario (recorded, never in the gating peak) and the E-2 fixtures
+with tempfile.TemporaryDirectory() as rd:
+    fixtures.generate(rd)
+    rc, r = run("--fixtures-dir", rd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", "redirect-chain5", "--scenario", "g4a-late-landmark")
+    rec = scen(r, "redirect-chain5")
+    check("redirect-chain5: 5 hops followed, 10 valid runs, recorded outside the gating peak figure, but its own target and validity still count",
+          rec["valid_runs"] == 10 and rec["gate"] == "none" and "gating_peak_MiB" in r[-1] and scen(r, "g4a-late-landmark")["valid_runs"] == 10, f"rc={rc} {rec['invalid_reasons']}")
+    rc, r = run("--fixtures-dir", rd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", "redirect-chain5", "--child-env", "STANDIN_NO_REDIRECT=1")
+    check("redirect-chain5: a client that does not follow the redirects is INVALID (chain not followed), not a pass", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc}")
+    check("redirect-chain5: INVALID counts in the summary (intended: a gate=none scenario still fails closed on validity)", "redirect-chain5" in r[-1]["invalid"], str(r[-1].get("invalid")))
 
 print("SELFTEST", "FAILED: " + ", ".join(fails) if fails else "PASSED")
 sys.exit(1 if fails else 0)

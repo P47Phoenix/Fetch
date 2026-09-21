@@ -1,7 +1,7 @@
 # Architecture: Fetch MCP Server (Rust, stdio, low-memory ARM)
 
 Stage 4 (Architect). Roles: Solution Architect + Security Architect (SSRF). Inputs: `docs/PRD.md` v0.3, `docs/EPICS.md`, A-1 spike report, `spikes/a1/src/main.rs`.
-Status: Revision 2 (post-plan, 2026-09-19) on top of Revision 1 (self-correction round 1 of 3); see Revision log at the end. Revision 2 aligns this document with the user-approved Sprint Plan (`.delivery/artifacts/05-plan/po/sprint-plan.md`, 34 stories): bench-loopback build, G4a/G4b split of the memory gate, release profile pin. No open question is decided. Scope note: EPICS has 30 stories (A-1..A-9, B-1..B-6, C-1..C-3, D-1..D-6, E-1..E-6), not 32.
+Status: Revision 2 (post-plan, 2026-09-19) on top of Revision 1 (self-correction round 1 of 3); see Revision log at the end. Revision 2 aligns this document with the user-approved Sprint Plan (`.delivery/artifacts/05-plan/po/sprint-plan.md`, 34 stories): bench-loopback build, G4a/G4b split of the memory gate, release profile pin. Open questions are tracked in the PRD; OQ-1, OQ-2, OQ-5, OQ-8 and OQ-9 are resolved (OQ-5: no untrusted-content label, ADR-006 amendment 2026-09-20), and OQ-3, OQ-4 and OQ-7 remain open. Scope note: EPICS has 30 stories (A-1..A-9, B-1..B-6, C-1..C-3, D-1..D-6, E-1..E-6), not 32.
 
 Measurement labels: "spike" = x86_64 measurement from the A-1 report (Intel, glibc, plain HTTP, one synthetic 5,243,433 B fixture). "budget" = design allocation, NOT a measurement. No aarch64 RSS exists yet. Every ARM-dependent choice is listed in section 14 and in the ADRs.
 

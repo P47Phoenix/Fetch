@@ -58,8 +58,10 @@ impl Limits {
 }
 
 /// What a completed fetch read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fetched {
+    /// The URL the body came from: the request URL, or the last redirect target (A-9).
+    pub final_url: String,
     /// Final HTTP status (2xx).
     pub status: u16,
     /// Redirect hops followed.
@@ -163,6 +165,7 @@ impl<R: Resolver> FetchClient<R> {
             }
             let wire_bytes = self.read_body(resp, sink).await?;
             return Ok(Fetched {
+                final_url: echo_url(&parsed),
                 status: status.as_u16(),
                 redirects: hop,
                 wire_bytes,
@@ -312,6 +315,16 @@ fn check_head(h: &HeaderMap) -> Result<(), FetchError> {
 
 /// Accept absent, `identity`, or exactly one `gzip` (checked before any decode); everything else, stacked
 /// encodings included, is `unsupported_encoding` (ADR-004).
+/// The URL echoed back in the A-9 header: the request URL without userinfo or fragment (neither is sent to the
+/// server, and credentials must never be reflected into the model's context).
+pub(crate) fn echo_url(u: &Url) -> String {
+    let mut u = u.clone();
+    let _ = u.set_username("");
+    let _ = u.set_password(None);
+    u.set_fragment(None);
+    u.to_string()
+}
+
 fn content_encoding_is_gzip(h: &HeaderMap) -> Result<bool, FetchError> {
     let mut values = h.get_all(CONTENT_ENCODING).iter();
     let Some(first) = values.next() else {

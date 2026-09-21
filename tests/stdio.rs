@@ -260,6 +260,41 @@ fn bench_build_fetches_a_loopback_fixture_and_returns_the_window_unlabelled() {
     s.finish_and_assert_pure();
 }
 
+/// A-9 end to end: with a redirect the text begins with the final URL and status; without one nothing is added.
+#[cfg(feature = "bench-loopback")]
+#[test]
+fn redirect_result_begins_with_final_url_and_status_and_plain_fetch_has_no_header() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut c, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let n = c.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]);
+            let _ = if head.starts_with("GET /old") {
+                write!(c, "HTTP/1.1 301 Moved\r\nConnection: close\r\nContent-Length: 0\r\nLocation: /new\r\n\r\n")
+            } else {
+                write!(
+                    c,
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\nbody"
+                )
+            };
+        }
+    });
+    let mut s = Session::start();
+    s.handshake();
+    let r = s.tool_call(&json!({"url": format!("http://127.0.0.1:{port}/old")}));
+    assert_eq!(
+        r["result"]["content"][0]["text"],
+        format!("URL: http://127.0.0.1:{port}/new\nStatus: 200\n\nbody"),
+        "{r}"
+    );
+    let r = s.tool_call(&json!({"url": format!("http://127.0.0.1:{port}/new")}));
+    assert_eq!(r["result"]["content"][0]["text"], "body", "{r}");
+    s.finish_and_assert_pure();
+}
+
 /// Readiness (A-2 AC "ready within 250 ms" on aarch64): RECORDED, not asserted here. The hard number belongs to
 /// the native-aarch64 benchmark run; unit-test hosts are too noisy. Prints ready_ms to stderr (`--nocapture`).
 #[test]

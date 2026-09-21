@@ -247,3 +247,17 @@ Sprint 1 (A-2 + A-3a, 8 pts) is DONE. PR #5 merged to main as 090e86c; hosted CI
 Stage summary: `.delivery/artifacts/06-dev/sprint-1/stage-summary.md`.
 
 **Sprint 2 (A-3b 5, E-7 2, E-8 1 = 8 pts) started 2026-09-20** on branch `sprint-2/guarded-fetch`. Entry blockers: OQ-5 decision (plan entry criterion; owner: Michael), the 50-URL list and 10-URL smoke list (E-7 prerequisite; owner: project owner). E-8 has no blocker. No implementation has begun.
+
+## Revision 10 (2026-09-20): Sprint 2 closed, Sprint 3 started
+
+Sprint 2: A-3b (5) and E-8 (1) DONE (PR #6, merge 35a3450, CI 10/10; architect DONE, PR review APPROVE round 2, QA and tech-writer DONE round 3). **E-7 (2) NOT DONE**: the owner's 50-URL and 10-URL lists have not arrived, so the Sprint 2 exit criterion "E-7 snapshot set and manifest committed" is not met. Overflow rule applied: E-7 moves to Sprint 5 (6 + 2 = 8 pts) unless the lists arrive first; A-4's 95%/50% AC waits for E-7; Sprint 4 exit excludes that check; G4a unaffected; Sprint 3 unchanged at 8. OQ-5 resolved: no label. Details: `.delivery/artifacts/06-dev/sprint-2/stage-summary.md`. **Sprint 3 (E-2 5, E-3 2, A-9 1) started** on branch `sprint-3/harness-idle-rss`; no implementation begun.
+
+
+## Revision 11 (2026-09-20): Sprint 3 fix-pass 1 (after DoD reviews and PR review of PR #7)
+
+Recorded re-homing of E-2 items that Sprint 3 did not deliver, **pending owner acknowledgement (the owner has not acknowledged these)**:
+- Container-image measurement and the tag trigger with the digest gate: E-2 acceptance text says the harness runs against the image; Sprint 3 measured bare binaries on both native hosted platforms. Re-homed to D-2 (Sprint 9).
+- `g6-concurrent10` and the G4b scenario implementations: defined but not implemented in the harness. Re-homed to E-4, and to A-5 and A-6 for the G4b runs.
+- macOS `/usr/bin/time -l` reader: not built, no macOS gate host; known deviation from the E-2 acceptance text.
+- Architect NB1 (no hash pin for `ziglang`, cargo-zigbuild not lock-checked): recorded in the D-2 acceptance criteria.
+A-9 is done (Sprint 3). Sprint 3 gate runs in CI passed on all four cells in the read-in-full form (not a G4a pass).
