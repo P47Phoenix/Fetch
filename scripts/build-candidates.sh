@@ -22,6 +22,14 @@ zbv=$(cargo-zigbuild --version 2>/dev/null || true)
 zv=$(python3 -m ziglang version 2>/dev/null || true)
 [[ $zv == "$ZIG_VERSION" ]] || { echo "build-candidates: ziglang is '$zv', need $ZIG_VERSION (pip install ziglang==$ZIG_VERSION)" >&2; exit 2; }
 
+# Build identity (E-4, re-homed from E-8): every candidate's `--version` must carry the commit and Cargo.lock hash it was built
+# from (build.rs), and the shipped and bench builds must agree with each other, with `git rev-parse HEAD` and with
+# `sha256sum Cargo.lock`. The binaries are native, so they can be run here. A mismatch fails the build (exit 1).
+ident() { "$1" --version | sed -n 's/.* \(commit=[0-9a-f]\{40\} cargo-lock=[0-9a-f]\{64\}\)\( .*\)\{0,1\}$/\1/p'; }
+want_commit=$(git rev-parse --verify HEAD)
+want_lock=$(sha256sum Cargo.lock | cut -d' ' -f1)
+want_id="commit=$want_commit cargo-lock=$want_lock"
+
 mkdir -p "$out"
 for libc in gnu musl; do
   target="$arch-unknown-linux-$libc"
@@ -33,4 +41,11 @@ for libc in gnu musl; do
     cp "target/$target/release/fetch-mcp" "$out/fetch-mcp-$arch-$libc-$kind"
     echo "built $out/fetch-mcp-$arch-$libc-$kind $(stat -c %s "$out/fetch-mcp-$arch-$libc-$kind") bytes"
   done
+  sid=$(ident "$out/fetch-mcp-$arch-$libc-shipped"); bid=$(ident "$out/fetch-mcp-$arch-$libc-bench")
+  if [[ $sid != "$want_id" || $bid != "$want_id" ]]; then
+    echo "build-candidates: build identity mismatch for $arch-$libc" >&2
+    echo "  expected: $want_id" >&2; echo "  shipped : ${sid:-<none>}" >&2; echo "  bench   : ${bid:-<none>}" >&2
+    exit 1
+  fi
+  echo "identity ok for $arch-$libc: $want_id"
 done

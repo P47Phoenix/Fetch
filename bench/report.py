@@ -32,7 +32,7 @@ def summary(recs): return next((r for r in reversed(recs) if r.get("kind") == "s
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--platform"); ap.add_argument("--idle"); ap.add_argument("--idle-bench"); ap.add_argument("--peak")
-    ap.add_argument("--shipped"); ap.add_argument("--bench")
+    ap.add_argument("--public"); ap.add_argument("--shipped"); ap.add_argument("--bench")
     a = ap.parse_args()
     if a.platform and os.path.exists(a.platform):
         print("```\n" + open(a.platform).read() + "```\n")
@@ -55,6 +55,13 @@ def main():
     if a.shipped and a.bench and os.path.exists(a.shipped) and os.path.exists(a.bench):
         s1, s2 = os.path.getsize(a.shipped), os.path.getsize(a.bench)
         print(f"E-8 binary size: shipped {s1} B, bench {s2} B, delta {s2 - s1:+d} B (recorded; explanation is E-4's)")
+    hdr = next((r for p in (a.peak, a.idle) if p for r in load(p) if r.get("version")), None)
+    if hdr: print(f"Build identity (from --version): {hdr.get('build_identity')}; peer: {hdr.get('peer_version')}")
+    if a.public:
+        for o in load(a.public):
+            sh, be = o.get("shipped", {}), o.get("bench", {})
+            print(f"E-8 public-host cross-check (advisory, recorded): {o.get('url')} shipped {sh.get('median_MiB')} MiB, bench {be.get('median_MiB')} MiB, "
+                  f"ratio {o.get('ratio_shipped_over_bench')}: **{o.get('verdict')}** {o.get('reason', '')} ({o.get('note')})")
     tim = [o for p in (a.idle, a.peak) if p for o in scenarios(load(p))]
     if tim:
         print("\n### Timings (ms, median (min-max) over valid samples; recorded, not gated)\n\n| scenario | ready | tools/list | first byte | fetch | total |\n|---|---|---|---|---|---|")

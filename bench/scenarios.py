@@ -27,7 +27,11 @@ SCENARIOS = {
     # peak target still fails the invocation (exit 2 / 1). `counter` is the serve.py counter key; floor = 5 hop bodies + the final body.
     "redirect-chain5": dict(kind="peak", gate="none", route="/redir/5", counter="/redir", expect="ok",
                             min_bytes=lambda m: 5 * REDIR_BODY + REDIR_FINAL, implemented=True, ref="redirect-chain memory check"),
-    "g6-concurrent10": dict(kind="peak", gate="none", route="/5mb.html", expect="ok", implemented=False,
+    # G6 (E-4): 10 concurrent full reads of the 5 MiB page in ONE server process. Recorded for NFR-08 documentation, never a
+    # pass/fail figure (verdict RECORDED, not in the gating peak); validity still counts: all 10 replies ok and >= 10 x 5 MiB
+    # served, or the run is INVALID (exit 2).
+    "g6-concurrent10": dict(kind="peak", gate="none", route="/5mb.html", args={"max_length": 5 * MIB}, expect="ok", concurrency=10,
+                            recorded_only=True, min_bytes=lambda m: 10 * m["fixtures"]["html_5mib"]["size"], implemented=True,
                             ref="G6: 10 concurrent, recorded not gating; E-4"),
     # G4b: need A-5 / A-6 (window, early stop, raw); windows computed by E-2 from the converted-output length.
     "g4b-window-start": dict(kind="peak", gate="G4b", route="/5mb.html", expect="ok", implemented=False, ref="window at start, early stop"),

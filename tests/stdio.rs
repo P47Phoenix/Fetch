@@ -323,6 +323,25 @@ fn version_flag_prints_one_line_and_exits() {
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.starts_with("fetch-mcp "), "{s}");
     assert_eq!(s.lines().count(), 1);
+    // E-4: build identity (commit is 40 hex chars, or `unknown` outside a git checkout; lock hash is SHA-256 hex).
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let commit = words
+        .iter()
+        .find_map(|w| w.strip_prefix("commit="))
+        .expect("commit= in --version");
+    assert!(
+        commit == "unknown"
+            || (commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{s}"
+    );
+    let lock = words
+        .iter()
+        .find_map(|w| w.strip_prefix("cargo-lock="))
+        .expect("cargo-lock= in --version");
+    assert!(
+        lock.len() == 64 && lock.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{s}"
+    );
 }
 
 #[test]
