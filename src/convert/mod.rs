@@ -5,6 +5,7 @@
 
 pub mod markdown;
 pub(crate) mod tagscan;
+pub mod window;
 
 use reqwest::Url;
 

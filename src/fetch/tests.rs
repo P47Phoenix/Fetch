@@ -1255,3 +1255,191 @@ async fn converter_failure_stops_reading_the_body_early() {
         "the reader carried on after the converter failed: {sent} of {total} bytes were sent"
     );
 }
+
+// ---- A-5 / A-6: window, early stop, content types -------------------------------------------------------------
+
+use crate::convert::window::{Window, WindowOutput};
+
+async fn windowed(
+    c: &FetchClient<FakeResolver>,
+    url: &str,
+    mode: crate::convert::Mode,
+    start: u64,
+    len: u64,
+) -> (Result<super::Fetched, FetchError>, WindowOutput) {
+    let mut w = Window::new(start, len);
+    let stop = w.stop_flag();
+    let r = tokio::time::timeout(
+        Duration::from_secs(60),
+        c.fetch_until(url, mode, &mut |s: &str| w.push(s), &move || {
+            stop.load(Ordering::Relaxed)
+        }),
+    )
+    .await
+    .expect("fetch hung");
+    (r, w.finish())
+}
+
+/// A chunked (no `Content-Length`) body of `total` bytes of `fill`, 16 KiB per chunk; counts what it managed to send.
+fn chunked_stream(
+    content_type: &'static str,
+    total: usize,
+    fill: u8,
+    sent: Arc<AtomicUsize>,
+) -> Handler {
+    handler(move |mut s, _| {
+        let sent = sent.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\n\r\n"
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let block = vec![fill; 16 * 1024];
+            let mut written = 0;
+            while written < total {
+                let n = block.len().min(total - written);
+                let mut frame = format!("{n:x}\r\n").into_bytes();
+                frame.extend_from_slice(&block[..n]);
+                frame.extend_from_slice(b"\r\n");
+                if s.write_all(&frame).await.is_err() {
+                    return;
+                }
+                written += n;
+                sent.fetch_add(n, Ordering::SeqCst);
+            }
+            let _ = s.write_all(b"0\r\n\r\n").await;
+            let _ = s.shutdown().await;
+        }
+    })
+}
+
+/// Early stop (ADR-004, architecture 5.2): once the window is full and one more character was seen, the read stops
+/// and the connection is dropped. Judged from the server: of a 32 MiB body only a small part is ever sent.
+#[tokio::test]
+async fn early_stop_ends_the_read_once_the_window_is_confirmed() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let total: usize = 32 << 20;
+    let srv = spawn_server(chunked_stream("text/plain", total, b'x', sent.clone())).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 0, 100).await;
+    let fetched = res.unwrap();
+    assert!(w.more && w.total.is_none());
+    assert_eq!(w.text, "x".repeat(100));
+    assert!(
+        fetched.wire_bytes < 1 << 20,
+        "read {} bytes",
+        fetched.wire_bytes
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = sent.load(Ordering::SeqCst);
+    assert!(
+        sent < total / 4,
+        "the reader carried on after the window: {sent} of {total} bytes were sent"
+    );
+}
+
+/// The E-4 rule (architecture 6.4): a chunked over-cap body succeeds when the window completes inside the cap and
+/// is `too_large` when the cap is reached first; a declared length over the cap is `too_large` whatever the window.
+#[tokio::test]
+async fn chunked_window_inside_the_cap_succeeds_and_beyond_the_cap_is_too_large() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let srv = spawn_server(chunked_stream("text/plain", 8 << 20, b'y', sent)).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 1 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 500_000, 1000).await;
+    res.unwrap();
+    assert_eq!((w.text.len(), w.more), (1000, true));
+    let (res, _) = windowed(&c, &url, crate::convert::Mode::Markdown, 2 << 20, 1000).await;
+    assert_eq!(code(&res), "too_large");
+    // reading to the end of an over-cap body (the skipped part reaches the cap) is too_large as well
+    let (res, _) = windowed(&c, &url, crate::convert::Mode::Markdown, u64::MAX, u64::MAX).await;
+    assert_eq!(code(&res), "too_large");
+    let cl = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/plain"],
+        vec![b'z'; 2 << 20],
+    ))
+    .await;
+    let (res, _) = windowed(
+        &c,
+        &format!("http://public.test:{}/", cl.port),
+        crate::convert::Mode::Markdown,
+        0,
+        10,
+    )
+    .await;
+    assert_eq!(code(&res), "too_large");
+}
+
+/// FR-04 through the real client: four sequential windows of a 20,000-character page (multi-byte characters
+/// included) reproduce it with no gap or overlap; the last one knows the total; a window past the end is empty.
+#[tokio::test]
+async fn four_sequential_windows_reproduce_the_page() {
+    let page: String = (0..20_000)
+        .map(|i| match i % 7 {
+            0 => '\u{e9}',
+            3 => '\u{20ac}',
+            5 => '\u{1F680}',
+            _ => char::from(b'a' + u8::try_from(i % 26).unwrap()),
+        })
+        .collect();
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/plain; charset=utf-8"],
+        page.clone().into_bytes(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (mut got, mut start, mut calls) = (String::new(), 0u64, 0);
+    loop {
+        let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, start, 5000).await;
+        res.unwrap();
+        calls += 1;
+        got.push_str(&w.text);
+        if !w.more {
+            assert_eq!(w.total, Some(20_000));
+            break;
+        }
+        start += w.returned;
+    }
+    assert_eq!((calls, got.as_str()), (4, page.as_str()));
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 20_000, 5000).await;
+    res.unwrap();
+    assert_eq!((w.text.as_str(), w.total), ("", Some(20_000)));
+}
+
+/// Hostile bodies through the whole path (panic = abort in the product, so none of this may panic): an untyped
+/// binary body, invalid UTF-8 declared as text, NUL bytes and a lone BOM.
+#[tokio::test]
+async fn hostile_bodies_never_panic_and_come_back_as_replacement_text() {
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let mut noise = Vec::new();
+    let mut x = 0x1234_5678_u32;
+    for _ in 0..200_000 {
+        x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        noise.push(u8::try_from(x >> 24).unwrap());
+    }
+    for (hdrs, body) in [
+        (&[][..], noise.clone()),
+        (&["Content-Type: text/plain"][..], noise.clone()),
+        (&["Content-Type: text/html"][..], noise.clone()),
+        (&[][..], b"\xef\xbb\xbf".to_vec()),
+        (&[][..], vec![0u8; 100_000]),
+        (&["Content-Type: text/plain"][..], Vec::new()),
+    ] {
+        let srv = spawn_server(fixed("200 OK", hdrs, body)).await;
+        let url = format!("http://public.test:{}/", srv.port);
+        for (start, len) in [(0, 10), (150_000, 100), (u64::MAX, 1), (7, u64::MAX)] {
+            let (res, _) = windowed(&c, &url, crate::convert::Mode::Markdown, start, len).await;
+            assert!(
+                matches!(code(&res), "ok" | "converter_limit"),
+                "{}",
+                code(&res)
+            );
+        }
+    }
+}

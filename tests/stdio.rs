@@ -251,7 +251,11 @@ fn bench_build_fetches_a_loopback_fixture_and_returns_the_window_unlabelled() {
         Some(1),
         "{r}"
     );
-    assert_eq!(r["result"]["content"][0]["text"], "23456789 h", "{r}");
+    assert_eq!(
+        r["result"]["content"][0]["text"],
+        "23456789 h\n\n[More content available. Call fetch again with start_index=12 to continue.]",
+        "{r}"
+    );
     let r = s.tool_call(&json!({"url": format!("http://127.0.0.1:{port}/")}));
     assert_eq!(
         r["result"]["content"][0]["text"], "0123456789 h\u{e9}llo",
@@ -557,5 +561,106 @@ fn real_stdio_attribute_bomb_is_refused_and_peak_rss_stays_under_40_mib() {
         eprintln!("stdio hostile rss after {name} x3: peak {peak} MiB");
         assert!(peak <= 40, "{name}: server peak RSS {peak} MiB > 40 MiB");
     }
+    s.finish_and_assert_pure();
+}
+
+/// Serve `body` with the given `Content-Type` (none when empty) to every connection.
+#[cfg(feature = "bench-loopback")]
+fn serve_typed(content_type: &'static str, body: Vec<u8>) -> u16 {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let body = std::sync::Arc::new(body);
+    std::thread::spawn(move || {
+        while let Ok((mut c, _)) = listener.accept() {
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                let _ = c.read(&mut buf);
+                let ct = if content_type.is_empty() {
+                    String::new()
+                } else {
+                    format!("Content-Type: {content_type}\r\n")
+                };
+                let _ = write!(
+                    c,
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\n{ct}Content-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(&body);
+            });
+        }
+    });
+    port
+}
+
+/// A-5 end to end (FR-02, FR-04): four sequential calls over a 20,000-character page reproduce it with no gap or
+/// overlap, the footer states the next start_index, the last page states the total, a start_index past the end is
+/// an empty-content message (not an error), max_length above the cap is clamped and says so, and 0 is rejected.
+#[cfg(feature = "bench-loopback")]
+#[test]
+fn pagination_end_to_end() {
+    let page: String = (0..20_000)
+        .map(|i| {
+            if i % 9 == 0 {
+                '\u{20ac}'
+            } else {
+                char::from(b'a' + u8::try_from(i % 26).unwrap())
+            }
+        })
+        .collect();
+    let port = serve_typed("text/plain; charset=utf-8", page.clone().into_bytes());
+    let url = format!("http://127.0.0.1:{port}/");
+    let mut s = Session::start();
+    s.handshake();
+    let (mut got, mut start, mut calls) = (String::new(), 0_u64, 0);
+    loop {
+        let r = s.tool_call(&json!({"url": url, "max_length": 5000, "start_index": start}));
+        assert_ne!(r["result"]["isError"], true, "{r}");
+        let t = tool_text(&r);
+        calls += 1;
+        match t.split_once("\n\n[More content available. Call fetch again with start_index=") {
+            Some((content, rest)) => {
+                assert_eq!(content.chars().count(), 5000, "{t}");
+                got.push_str(content);
+                let next: u64 = rest.trim_end_matches(" to continue.]").parse().unwrap();
+                assert_eq!(next, start + 5000);
+                start = next;
+            }
+            None => {
+                let (content, note) = t.split_once("\n\n[Total length: ").unwrap();
+                assert_eq!(note, "20000 characters.]");
+                got.push_str(content);
+                break;
+            }
+        }
+    }
+    assert_eq!((calls, got.as_str()), (4, page.as_str()));
+
+    let r = s.tool_call(&json!({"url": url, "start_index": 20_000}));
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert_eq!(
+        tool_text(&r),
+        "[No content at start_index=20000: the content is 20000 characters long.]"
+    );
+    let r = s.tool_call(&json!({"url": url, "start_index": 9_000_000_000_u64}));
+    assert!(
+        tool_text(&r).contains("the content is 20000 characters long"),
+        "{r}"
+    );
+
+    let r = s.tool_call(&json!({"url": url, "max_length": 500_000}));
+    let t = tool_text(&r);
+    assert!(
+        t.contains("[max_length was reduced to 100000 characters, the maximum.]"),
+        "{t}"
+    );
+    assert!(
+        t.starts_with(&page),
+        "the clamp still returns the whole 20,000-char page"
+    );
+    let r = s.tool_call(&json!({"url": url, "max_length": 0}));
+    let t = rejection_text(&r).expect("max_length 0 is rejected");
+    assert!(t.starts_with("error[invalid_argument]: max_length:"), "{t}");
     s.finish_and_assert_pure();
 }
