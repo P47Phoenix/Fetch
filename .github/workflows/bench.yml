@@ -5,7 +5,8 @@ name: bench
 # are skipped. Every measurement is a `measure.py --gate` run on a native host (the harness refuses QEMU and stand-ins).
 #   idle  : shipped release binary, 10 fresh processes, 30 s settle, median <= 10 MiB (strict, no tolerance): E-3.
 #   peak  : bench-loopback build, complete G4a scenario set (5 MiB page fully read and converted, gzipped, late-landmark,
-#           50 MiB Content-Length, 50 MiB chunked) + redirect-chain5 + g6-concurrent10 (recorded, never pass/fail), median of 10,
+#           50 MiB Content-Length, 50 MiB chunked) + redirect-chain5 + g6-concurrent10 + hostile-attrs3 + hostile-attrvalue3 (recorded, never pass/fail; the
+#           hostile ones are 3 concurrent fetches of adversarial pages, fix-pass 1), median of 10,
 #           gating peak <= 40 MiB. This is G4a (E-4), which is NOT the memory gate closing: G4b (window, early stop, raw) is Sprint 5.
 #   identity: every --gate run takes --peer-binary and refuses unless shipped and bench report the same commit and Cargo.lock hash.
 #   public : advisory shipped-vs-bench fetch of one real public HTTPS page (E-8 cross-check), recorded, never gating.
@@ -110,8 +111,9 @@ jobs:
 
       - name: "Conversion overhead of a 1 MiB page (A-4 AC: p95 <= 500 ms on aarch64; BENCHMARK.md section 9 method)"
         if: matrix.libc == 'gnu'
+        # pipefail matters: without it `tee` would mask a failing assertion (p95 > 500 ms) and this step could never fail.
         run: |
-          set -eu
+          set -euo pipefail
           cargo test --locked --release --lib conversion_overhead_1mib -- --ignored --nocapture 2>&1 | tee out/convert-overhead.txt
           grep CONVERT_1MIB out/convert-overhead.txt | sed 's/^/convert-overhead: /' >> "$GITHUB_STEP_SUMMARY" || true
 
@@ -139,7 +141,7 @@ jobs:
           # Advisory (gate "none"): exit 1 (over the idle target) is a recorded result, only 2/3 (plumbing) fail the step.
           [ "$rc" -le 1 ]
 
-      - name: "Peak RSS gate G4a (E-4): bench-loopback build, complete G4a set plus redirect-chain5 and g6-concurrent10 (recorded), median of 10, <= 40 MiB"
+      - name: "Peak RSS gate G4a (E-4): bench-loopback build, complete G4a set plus redirect-chain5, g6-concurrent10 and the hostile-HTML scenarios (recorded), median of 10, <= 40 MiB"
         id: peak
         continue-on-error: true
         run: |
@@ -147,6 +149,7 @@ jobs:
           rc=0
           python3 bench/measure.py --gate --binary "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-bench" \
             --binary-kind bench --scenario g4a --scenario redirect-chain5 --scenario g6-concurrent10 \
+            --scenario hostile-attrs3 --scenario hostile-attrvalue3 \
             --peer-binary "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-shipped" --out out/peak.jsonl > /dev/null || rc=$?
           echo "peak_exit=$rc" | tee -a out/exitcodes.txt
           cat out/peak.jsonl

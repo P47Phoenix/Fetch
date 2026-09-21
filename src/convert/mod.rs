@@ -4,6 +4,7 @@
 //! on the page size. The trait is the seam that lets the converter be swapped (ADR-002, A-4 AC).
 
 pub mod markdown;
+pub(crate) mod tagscan;
 
 use reqwest::Url;
 

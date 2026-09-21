@@ -45,6 +45,7 @@ for libc in gnu musl; do
   if [[ $sid != "$want_id" || $bid != "$want_id" ]]; then
     echo "build-candidates: build identity mismatch for $arch-$libc" >&2
     echo "  expected: $want_id" >&2; echo "  shipped : ${sid:-<none>}" >&2; echo "  bench   : ${bid:-<none>}" >&2
+    echo "  (a '<sha>-dirty' commit in --version means tracked files differ from HEAD: build from a clean checkout)" >&2
     exit 1
   fi
   echo "identity ok for $arch-$libc: $want_id"

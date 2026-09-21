@@ -1,7 +1,8 @@
 //! Build identity (E-4, re-homed from E-8): embeds the git commit and the SHA-256 of Cargo.lock so `--version`
 //! reports what was built. Deterministic: no timestamps, no host paths, no new dependency (SHA-256 is written out
 //! below). The shipped and bench-loopback binaries are built from one tree, so both must report the same pair.
-//! Outside a git checkout (for example `git archive`) the commit is `unknown`; `FETCH_MCP_COMMIT` overrides it.
+//! Outside a git checkout (for example `git archive`) the commit is `unknown`; `FETCH_MCP_COMMIT` overrides it (trusted,
+//! unchecked). A tree with modified tracked files reports `<sha>-dirty`, which the gate tooling refuses.
 use std::{fs, path::Path, process::Command};
 
 const K: [u32; 64] = [
@@ -69,35 +70,75 @@ fn sha256_hex(data: &[u8]) -> String {
     h.iter().map(|x| format!("{x:08x}")).collect()
 }
 
+/// Run `git` with `args`; the trimmed stdout on success.
+fn git(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+}
+
+/// The commit `--version` reports: `FETCH_MCP_COMMIT` verbatim when set (an escape hatch for builds with no `.git`, for
+/// example `git archive` or a Docker context: the value is TRUSTED, nothing here can check it, so the identity gate proves
+/// "both binaries claim the same string", not that the string describes the source); otherwise `git rev-parse HEAD`
+/// (40 hex), with `-dirty` appended when a TRACKED file differs from HEAD (untracked files, such as CI's `out/`, do not
+/// count). The gate tooling matches 40 hex only, so it refuses a `-dirty` build. `unknown` outside a git checkout.
 fn git_commit() -> String {
     if let Ok(c) = std::env::var("FETCH_MCP_COMMIT") {
         if !c.is_empty() {
             return c;
         }
     }
-    Command::new("git")
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
+    let Some(head) = git(&["rev-parse", "--verify", "HEAD"])
         .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-        .unwrap_or_else(|| "unknown".to_string())
+    else {
+        return "unknown".to_string();
+    };
+    let dirty =
+        git(&["status", "--porcelain", "--untracked-files=no"]).is_none_or(|s| !s.is_empty());
+    if dirty {
+        format!("{head}-dirty")
+    } else {
+        head
+    }
+}
+
+/// Re-run the script when the checked-out commit or the tracked sources change. Works for worktrees and submodules
+/// (`.git` is then a file; `git rev-parse` resolves the real git dir) and for packed refs.
+fn rerun_on_git_changes() {
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    let (Some(dir), Some(common)) = (
+        git(&["rev-parse", "--git-dir"]),
+        git(&["rev-parse", "--git-common-dir"]),
+    ) else {
+        return; // no git: nothing to watch, the commit is `unknown` or FETCH_MCP_COMMIT
+    };
+    for p in [
+        format!("{dir}/HEAD"),
+        format!("{dir}/index"),
+        format!("{common}/packed-refs"),
+    ] {
+        if Path::new(&p).exists() {
+            println!("cargo:rerun-if-changed={p}");
+        }
+    }
+    if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        let p = format!("{common}/{r}");
+        if Path::new(&p).exists() {
+            println!("cargo:rerun-if-changed={p}");
+        }
+    }
 }
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FETCH_MCP_COMMIT");
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    if let Ok(head) = fs::read_to_string(".git/HEAD") {
-        if let Some(r) = head.trim().strip_prefix("ref: ") {
-            if Path::new(".git").join(r).exists() {
-                println!("cargo:rerun-if-changed=.git/{r}");
-            }
-        }
-    }
+    rerun_on_git_changes();
     let lock = fs::read("Cargo.lock")
         .map(|d| sha256_hex(&d))
         .unwrap_or_else(|_| "unknown".to_string());

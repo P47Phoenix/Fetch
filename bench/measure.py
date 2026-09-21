@@ -131,6 +131,9 @@ def check_build_identity(ver, peer_ver):
     """--gate rule (E-4): both the measured binary and its peer (the shipped build for a bench run and vice versa) must report a
     real commit and Cargo.lock hash in `--version`, and the two pairs must be equal, so the bench build is provably the
     same commit and lock file as the shipped one. Returns None if OK, else the refusal reason."""
+    for v in (ver, peer_ver or ""):
+        m = re.search(r"\bcommit=[0-9a-f]{40}-dirty\b", v)
+        if m: return f"a build from a modified working tree ({m.group(0)}) never gates: rebuild from a clean checkout"
     mine, other = build_identity(ver), build_identity(peer_ver or "")
     if mine is None: return f"--version carries no commit=/cargo-lock= identity: {ver[:80]!r}"
     if other is None: return f"peer binary --version carries no commit=/cargo-lock= identity: {(peer_ver or '')[:80]!r}"
@@ -194,12 +197,14 @@ class Server:
             except ValueError: continue   # non-JSON stdout line: ignore, the timeout still bounds the wait
             if isinstance(m, dict) and m.get("id") == want: return m
 
-    def call_many(self, method, params, n, timeout=300):
-        """Send n identical requests back to back, then collect the n replies (any order). Used by g6-concurrent10."""
+    def call_many(self, method, params, n, timeout=300, label=""):
+        """Send n identical requests back to back, then collect the n replies (any order). Used by the concurrent scenarios
+        (g6-concurrent10, hostile-*); `label` names the scenario in a stall report."""
         want = {self.send(method, params) for _ in range(n)}
         got, end = [], time.time() + timeout
         while want:
-            line = self.q.get(timeout=max(0.1, end - time.time()))
+            try: line = self.q.get(timeout=max(0.1, end - time.time()))
+            except queue.Empty: raise RuntimeError(f"{label or method}: stalled, {len(want)} of {n} concurrent replies still outstanding after {timeout}s") from None
             if line is None: raise RuntimeError("server closed stdout")
             try: m = json.loads(line)
             except ValueError: continue
@@ -250,7 +255,7 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
         t_call = time.monotonic()
         params = {"name": "fetch", "arguments": {"url": base_url + scen["route"], **scen.get("args", {})}}
         n = scen.get("concurrency", 1)
-        replies = s.call_many("tools/call", params, n) if n > 1 else [s.call("tools/call", params)]
+        replies = s.call_many("tools/call", params, n, label=scen["route"]) if n > 1 else [s.call("tools/call", params)]
         t["fetch_ms"] = ms_since(t_call)
         key = scen.get("counter", scen["route"])
         fb = srv.first_byte_at(key)   # fixture server's first body write (same process, same monotonic clock)
@@ -263,7 +268,8 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
         def outcome(res):
             got_err = bool(res.get("isError"))
             err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
-            return (got_err and "too_large" in err_text) if scen["expect"] == "too_large" else (not got_err)
+            if scen["expect"] in ("too_large", "converter_limit"): return got_err and scen["expect"] in err_text
+            return not got_err
         outcome_ok = all(outcome(res) for res in results)
         sent, need = srv.bytes_sent(key), scen["min_bytes_v"]
         reason = None if outcome_ok else f"unexpected outcome (expected {scen['expect']})"

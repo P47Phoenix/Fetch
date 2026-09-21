@@ -10,8 +10,7 @@ fn base() -> Option<Url> {
     Url::parse("https://example.com/dir/page.html").ok()
 }
 
-fn run_chunks(html: &str, chunks: &[&str]) -> Result<String, ConvertError> {
-    let _ = html;
+fn run_chunks(chunks: &[&str]) -> Result<String, ConvertError> {
     let mut c = MarkdownConverter::new(base());
     let mut out = String::new();
     for ch in chunks {
@@ -22,7 +21,7 @@ fn run_chunks(html: &str, chunks: &[&str]) -> Result<String, ConvertError> {
 }
 
 fn md(html: &str) -> String {
-    run_chunks(html, &[html]).unwrap_or_else(|e| format!("ERR {e:?}"))
+    run_chunks(&[html]).unwrap_or_else(|e| format!("ERR {e:?}"))
 }
 
 /// Split at every char boundary of size `n` bytes (rounded up to a boundary).
@@ -134,7 +133,7 @@ fn entities_decode_including_split_across_chunks() {
     assert_eq!(whole, "a & b <c> \u{a9} \u{a9} \u{263a} x AT&T");
     for n in 1..=7 {
         assert_eq!(
-            run_chunks(html, &split(html, n)).unwrap(),
+            run_chunks(&split(html, n)).unwrap(),
             whole,
             "chunk size {n}"
         );
@@ -243,7 +242,7 @@ fn every_chunk_size_gives_the_same_output() {
     assert!(whole.contains("# H & H") && whole.contains("caf\u{e9}"));
     for n in 1..=40 {
         assert_eq!(
-            run_chunks(html, &split(html, n)).unwrap(),
+            run_chunks(&split(html, n)).unwrap(),
             whole,
             "chunk size {n}"
         );
@@ -259,7 +258,7 @@ fn output_is_utf8_and_char_boundary_safe_on_multibyte_input() {
 // ---- hostile input: none of these may panic, hang or grow without bound -----------------------------------
 
 fn no_panic(html: &str) -> Result<String, ConvertError> {
-    run_chunks(html, &split(html, 4096))
+    run_chunks(&split(html, 4096))
 }
 
 #[test]
@@ -435,11 +434,11 @@ fn pseudo_random_soup_never_panics() {
             x ^= x << 17;
             html.push_str(alphabet[(x % alphabet.len() as u64) as usize]);
         }
-        let whole = run_chunks(&html, &[&html]);
+        let whole = run_chunks(&[&html]);
         assert!(whole.is_ok(), "{html:?}");
         let n = 1 + (x % 9) as usize;
         assert_eq!(
-            run_chunks(&html, &split(&html, n)),
+            run_chunks(&split(&html, n)),
             whole,
             "chunking changed output for {html:?}"
         );
@@ -510,4 +509,115 @@ fn conversion_overhead_1mib() {
         std::env::consts::ARCH
     );
     assert!(p95 <= 500.0, "p95 {p95} ms over the 500 ms target");
+}
+
+// ---- fix-pass 1 -------------------------------------------------------------------------------------------
+
+/// Code review B1 / architect B1: the drop rules must hold at ANY depth. Past 256 open elements the converter
+/// used to return before the drop rules ran, so script, style, iframe and nav text reached the output.
+#[test]
+fn drop_rules_hold_at_any_depth() {
+    let payloads: &[(&str, &str)] = &[
+        ("script", "<script>SECRET_JS()</script>"),
+        ("style", "<style>.SECRETCSS{color:red}</style>"),
+        ("iframe", "<iframe>SECRETIFRAME</iframe>"),
+        ("nav", "<nav>SECRETNAV</nav>"),
+        ("footer", "<footer>SECRETFOOT</footer>"),
+        ("hidden", "<div hidden>SECRETHIDDEN</div>"),
+        ("aria-hidden", "<div aria-hidden=\"true\">SECRETARIA</div>"),
+        (
+            "display:none",
+            "<span style=\"display: none\">SECRETSTYLE</span>",
+        ),
+        ("cookie", "<div class=\"cookie-banner\">SECRETCOOKIE</div>"),
+        ("svg", "<svg><script>SECRETSVG</script></svg>"),
+        ("noscript", "<noscript>SECRETNOSCRIPT</noscript>"),
+        ("select", "<select><option>SECRETSELECT</select>"),
+    ];
+    for depth in [10usize, 254, 255, 256, 257, 300, 1000, 10_000] {
+        for (name, payload) in payloads {
+            let html = format!(
+                "{}{payload}<p>body</p>{}",
+                "<div>".repeat(depth),
+                "</div>".repeat(depth)
+            );
+            for r in [run_chunks(&[&html]), run_chunks(&split(&html, 1000))] {
+                match r {
+                    Ok(out) => {
+                        assert!(
+                            !out.contains("SECRET") && !out.contains("color:red"),
+                            "{name} leaked at depth {depth}: {out:?}"
+                        );
+                        assert!(out.contains("body"), "{name} depth {depth}: {out:?}");
+                    }
+                    // failing closed is allowed (the tokenizer's own limit); leaking is not
+                    Err(e) => assert_eq!(e, ConvertError::Limit, "{name} depth {depth}"),
+                }
+            }
+        }
+    }
+}
+
+/// The same at depth for the opening of an unclosed `<head>` style skip and for the first landmark: a `<main>`
+/// more than 256 elements deep still selects the landmark (it used to be ignored, keeping the whole page).
+#[test]
+fn landmark_is_found_past_the_open_element_cap() {
+    let html = format!(
+        "<p>BEFOREMAIN</p>{}<main><p>inside</p></main>{}<p>AFTER</p>",
+        "<div>".repeat(300),
+        "</div>".repeat(300)
+    );
+    assert_eq!(md(&html), "inside");
+}
+
+/// Code review N3: a converter used after `finish` reports an error instead of silently dropping the input.
+#[test]
+fn push_or_finish_after_finish_is_an_error() {
+    let mut c = MarkdownConverter::new(base());
+    let mut out = String::new();
+    c.push("<p>x</p>", &mut |s| out.push_str(s)).unwrap();
+    c.finish(&mut |s| out.push_str(s)).unwrap();
+    assert_eq!(out, "x");
+    assert_eq!(
+        c.push("<p>y</p>", &mut |_| {}),
+        Err(ConvertError::Malformed)
+    );
+    assert_eq!(c.finish(&mut |_| {}), Err(ConvertError::Malformed));
+}
+
+/// Architect B2: a tag with more attributes than [`crate::convert::tagscan::ATTR_CAP`] fails closed before the
+/// tokenizer allocates for them; the cap itself and ordinary tags convert.
+#[test]
+fn too_many_attributes_fail_closed_and_the_cap_converts() {
+    let cap = crate::convert::tagscan::ATTR_CAP as usize;
+    let bomb = format!("<div {}>x</div>", "a ".repeat(cap + 1));
+    assert_eq!(run_chunks(&[&bomb]), Err(ConvertError::Limit));
+    assert_eq!(run_chunks(&split(&bomb, 7)), Err(ConvertError::Limit));
+    let ok = format!("<p {}>x</p>", "a ".repeat(cap));
+    assert_eq!(md(&ok), "x");
+    // a quoted '>' does not hide the rest of the tag from the guard
+    let quoted = format!("<div x=\">\" {}>x</div>", "a ".repeat(cap + 1));
+    assert_eq!(run_chunks(&[&quoted]), Err(ConvertError::Limit));
+}
+
+/// Code review N1: the row buffer is bounded for real (ROW_BYTES), not only per cell. A row of many big cells is
+/// abandoned to plain text instead of buffering up to 256 x 64 KiB.
+#[test]
+fn a_row_of_many_large_cells_is_bounded() {
+    let cell = "w".repeat(60 * 1024);
+    let html = format!(
+        "<table><tr>{}</tr></table>",
+        format!("<td>{cell}</td>").repeat(40)
+    );
+    let out = md(&html);
+    assert!(out.contains("www"), "text must survive: {}", out.len());
+    assert!(
+        !out.starts_with('|'),
+        "an oversized row degrades to plain text"
+    );
+    // and ordinary rows still make a table
+    assert_eq!(
+        md("<table><tr><th>a<th>b<tr><td>1<td>2</table>"),
+        "| a | b |\n| --- | --- |\n| 1 | 2 |"
+    );
 }

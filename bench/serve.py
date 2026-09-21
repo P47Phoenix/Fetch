@@ -2,7 +2,7 @@
 """Fixture HTTP server with a server-side counter of body bytes handed to the socket per route.
 
 Routes: /5mb.html, /5mb.html.gz (Content-Encoding: gzip), /50mb-cl.html (Content-Length),
-/50mb-chunked.html (chunked, no Content-Length), /late-landmark.html, /slow (slow drip), and
+/50mb-chunked.html (chunked, no Content-Length), /late-landmark.html, /hostile-attrs.html and /hostile-attrvalue.html (generated adversarial pages, fix-pass 1), /slow (slow drip), and
 /redir/N (N >= 1: 302 with a REDIR_BODY-byte body to /redir/N-1; /redir/0: 200 with REDIR_FINAL bytes; all counted under "/redir"). Loopback only.
 The counter (incremented just before each write) is an upper bound on what the client consumed (kernel buffers); it backs the
 valid-run rule (early-stop detection) in docs/BENCHMARK.md section 6.
@@ -17,6 +17,8 @@ ROUTES = {  # path -> (fixture name, mode, extra headers)
     "/50mb-chunked.html": ("html_50mib", "chunked", {}),
     "/late-landmark.html": ("late_landmark", "cl", {}),
     "/slow": (None, "slow", {}),
+    "/hostile-attrs.html": ("attrs", "gen", {}),          # fix-pass 1 hostile scenarios: body generated from fixtures.hostile_body
+    "/hostile-attrvalue.html": ("attrvalue", "gen", {}),
 }
 
 
@@ -55,8 +57,11 @@ class FixtureServer:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 for k, v in extra.items(): self.send_header(k, v)
-                m = manifest["fixtures"].get(name) if name else None
-                if mode == "cl":
+                m = manifest["fixtures"].get(name) if name and mode != "gen" else None
+                gen_body = fixtures.hostile_body(name) if mode == "gen" else None
+                if gen_body is not None:
+                    self.send_header("Content-Length", str(len(gen_body)))
+                elif mode == "cl":
                     self.send_header("Content-Length", str(m["size"]))
                 else:
                     self.send_header("Transfer-Encoding", "chunked")
@@ -64,14 +69,17 @@ class FixtureServer:
                 self.end_headers()
                 path = self.path.split("?")[0]
                 try:
-                    if mode == "slow":
+                    if gen_body is not None:
+                        for i in range(0, len(gen_body), 64 * 1024):
+                            outer._send(self, path, gen_body[i:i + 64 * 1024], False, gen)
+                    elif mode == "slow":
                         for _ in range(120):
                             outer._send(self, path, b"x" * 64, True, gen); time.sleep(1)
                     else:
                         with open(os.path.join(fixture_dir, m["file"]), "rb") as f:
                             for blk in iter(lambda: f.read(64 * 1024), b""):
                                 outer._send(self, path, blk, mode == "chunked", gen)
-                    if mode != "cl":
+                    if mode not in ("cl", "gen"):
                         self.wfile.write(b"0\r\n\r\n")
                 except (BrokenPipeError, ConnectionResetError):
                     pass

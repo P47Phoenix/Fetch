@@ -16,8 +16,11 @@
 //!   (fenced), blockquote, img (only with alt), tables (pipe rows, separator after a header row).
 //!
 //! Hostile input: every state stack and buffer is capped; `lol_html`'s own memory limit turns a huge tag or
-//! absurd nesting into [`ConvertError::Limit`]; nothing here indexes, unwraps or recurses on input.
+//! absurd nesting into [`ConvertError::Limit`], and the attribute-count guard (`tagscan`) refuses a tag with more
+//! than `tagscan::ATTR_CAP` attributes before `lol_html` allocates for them (its limit does not count them);
+//! nothing here indexes, unwraps or recurses on input.
 
+use super::tagscan::Scan;
 use super::{ConvertError, Converter};
 use lol_html::html_content::TextType;
 use lol_html::send::{Element, HtmlRewriter, Settings};
@@ -41,8 +44,10 @@ const LIST_CAP: usize = 64;
 const DRAW_CAP: usize = 6;
 /// Link and image destination bound (ADR-002).
 const HREF_CAP: usize = 2048;
-/// Table cell and row buffers (ADR-002: row buffer <= 64 KB).
+/// Table cell buffer (ADR-002: 64 KB) and row buffer. ADR-002 said row <= 64 KB; a cell alone may use 64 KB, so
+/// the row bound is 256 KB in total (a row over it is abandoned and its text emitted as plain lines).
 const CELL_CAP: usize = 64 * 1024;
+const ROW_BYTES: usize = 256 * 1024;
 const ROW_CELLS: usize = 256;
 /// Longest tail of an unfinished character reference carried across text chunks.
 const ENTITY_TAIL: usize = 32;
@@ -542,10 +547,8 @@ impl Md {
                 return None;
             }
         }
-        if self.open >= OPEN_CAP && !void {
-            return None;
-        }
-        // drop rules
+        // Drop rules first: a dropped subtree is a `Skip`, which is not counted in `open`, so it must be
+        // registered at any depth (past the cap its text would otherwise flow into the output).
         let attr_ok = !OPTIONAL_END.contains(&name) && !void;
         let drop = DROP_TAGS.contains(&name)
             || (attr_ok
@@ -563,7 +566,8 @@ impl Md {
             });
             return none(Kind::Skip(id));
         }
-        // landmark
+        let over_cap = self.open >= OPEN_CAP && !void;
+        // landmark: the first one (Hold -> Landmark) is honoured at any depth; nested ones only under the cap
         let mut landmark = false;
         if name == "main" || name == "article" || at.role == "main" {
             match self.gate {
@@ -573,12 +577,18 @@ impl Md {
                     self.landmark_open = 1;
                     landmark = true;
                 }
-                Gate::Landmark => {
+                Gate::Landmark if !over_cap => {
                     self.landmark_open = self.landmark_open.saturating_add(1);
                     landmark = true;
                 }
-                Gate::Whole => {}
+                Gate::Landmark | Gate::Whole => {}
             }
+        }
+        if over_cap {
+            return landmark.then_some(EndAct {
+                kind: Kind::None,
+                landmark: true,
+            });
         }
         let kind = self.structure(name, void, at);
         if kind == Kind::None && !landmark {
@@ -924,6 +934,12 @@ impl Md {
         let Some(cell) = self.tbl.cell.take() else {
             return;
         };
+        let row_bytes: usize = self.tbl.row.iter().map(String::len).sum();
+        if row_bytes + cell.len() > ROW_BYTES {
+            self.tbl.cell = Some(cell);
+            self.abandon_table();
+            return;
+        }
         if self.tbl.row.len() < ROW_CELLS {
             self.tbl.row.push(cell.replace('|', "\\|"));
         }
@@ -1070,6 +1086,9 @@ pub struct MarkdownConverter {
     rw: Option<Rewriter>,
     md: Arc<Mutex<Md>>,
     failed: bool,
+    finished: bool,
+    /// Raw-stream attribute counter, fed before the rewriter (see `tagscan`).
+    scan: Scan,
 }
 
 impl MarkdownConverter {
@@ -1128,6 +1147,8 @@ impl MarkdownConverter {
             rw: Some(rw),
             md,
             failed: false,
+            finished: false,
+            scan: Scan::new(),
         }
     }
 
@@ -1172,8 +1193,16 @@ impl Converter for MarkdownConverter {
         if self.failed {
             return Err(ConvertError::Malformed);
         }
+        if self.finished {
+            return Err(ConvertError::Malformed);
+        }
+        // Before the rewriter sees the bytes: a tag with a hostile number of attributes costs ~140 bytes each
+        // inside `lol_html` and is not covered by its memory limit.
+        if !self.scan.feed(text.as_bytes()) {
+            return self.fail(ConvertError::Limit);
+        }
         let Some(rw) = self.rw.as_mut() else {
-            return Ok(());
+            return Err(ConvertError::Malformed);
         };
         if let Err(e) = rw.write(text.as_bytes()) {
             return self.fail(map_err(&e));
@@ -1182,9 +1211,10 @@ impl Converter for MarkdownConverter {
     }
 
     fn finish(&mut self, out: &mut dyn FnMut(&str)) -> Result<(), ConvertError> {
-        if self.failed {
+        if self.failed || self.finished {
             return Err(ConvertError::Malformed);
         }
+        self.finished = true;
         if let Some(rw) = self.rw.take() {
             if let Err(e) = rw.end() {
                 return self.fail(map_err(&e));

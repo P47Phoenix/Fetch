@@ -116,6 +116,15 @@ Options:
 - `.github/dependabot.yml` opens weekly update PRs for Cargo and GitHub Actions. Action pins stay full-SHA. Dependabot updates the SHA and the comment.
 - `cargo audit` is not installed here. `cargo deny check advisories` covers the same database.
 
-## Licence
+## Licence (OQ-7 still open)
 
-An Apache-2.0 `LICENSE` file has existed since the initial commit. The project's licence and distribution are still open under OQ-7 and are not decided here. `Cargo.toml` has `publish = false` until they are decided. Nothing in CI, `deny.toml` or the benchmark docs depends on the choice. (`deny.toml` `[licenses]` covers dependencies only.)
+An Apache-2.0 `LICENSE` file has existed since the initial commit. **The project's licence and distribution are still open under OQ-7, with the project owner. Nothing here decides them.** `Cargo.toml` has `publish = false` until they are decided.
+
+What changed with A-4 (facts, from the Sprint 4 architect review; `deny.toml` `[licenses]` covers dependencies):
+
+- `deny.toml` is **not** independent of OQ-7 any more. Adding the HTML tokenizer `lol_html` (BSD-3-Clause) brought in four crates licensed **MPL-2.0**, allowed by four per-crate exceptions in `deny.toml`: `cssparser` 0.36.0, `cssparser-macros` 0.6.1 (a proc-macro, compile time only, not linked into the binary), `dtoa-short` 0.3.5 and `selectors` 0.37.0. Nothing else in `Cargo.lock` is MPL-2.0 (`cargo deny check` passes with exactly these four), so the exception list is minimal for the current tree. The exceptions name crates without versions, so a future major of one of them would be accepted silently.
+- MPL-2.0 is file-level weak copyleft. (a) Using the crates unmodified from crates.io does not extend MPL-2.0 to this project's own files; an Apache-2.0 licence, or whatever OQ-7 chooses, stays possible (MPL-2.0 section 3.3, "Larger Work"). (b) Modifying any of their files, for example by patching or vendoring a fork, obliges publishing those modifications under MPL-2.0. (c) Distributing the executable form (the statically linked binary, and therefore the GHCR image) requires telling recipients how to obtain the source of the covered crates (section 3.2: exact crate names and versions, for example a pointer to crates.io plus `Cargo.lock`) and preserving their copyright and licence notices (section 3.4). There is no obligation to release this project's source because of them. (d) The MPL-2.0 patent grant and termination terms apply to the contributors of those files.
+- Practical consequence: the container image (D-2) and the dependency audit (D-6) need a third-party notices file with the licence texts (the same file also has to cover `webpki-roots`, CDLA-Permissive-2.0, and the BSD-3-Clause part of `encoding_rs`).
+- Ways to avoid MPL-2.0 entirely, if the owner wants that: ADR-002 option C (the permissively licensed `html5gum` tokenizer with more own code, not measured, kept as the fallback behind the `Converter` trait), a hand-written tokenizer, or `lol_html` 3.x if its dependency tree drops the selector crates (not checked).
+
+The owner decides OQ-7 (licence and distribution); until then the README and this section only state the facts above.

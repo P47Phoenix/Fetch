@@ -1200,3 +1200,58 @@ async fn untyped_html_is_sniffed_and_a_converter_limit_is_a_clear_error() {
     assert_eq!(e.code(), "converter_limit");
     assert!(e.tool_text().contains("raw=true"));
 }
+
+/// A converter failure ends the read at the next chunk (mutant M5, QA review): the user-visible error would be
+/// the same if the reader carried on to the end (`conv.finish` reports it again), so the test looks at the
+/// server: with the abort it has sent a few MiB at most of a 32 MiB body, without it all of it.
+#[tokio::test]
+async fn converter_failure_stops_reading_the_body_early() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let total: usize = 32 << 20;
+    let s2 = sent.clone();
+    let h = handler(move |mut s, _| {
+        let sent = s2.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: {total}\r\n\r\n"
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            // more attributes than the converter allows in one tag, then plain text for the rest
+            let bomb = format!("<div {}>", "a ".repeat(4000)).into_bytes();
+            let mut written = bomb.len();
+            if s.write_all(&bomb).await.is_err() {
+                return;
+            }
+            sent.fetch_add(bomb.len(), Ordering::SeqCst);
+            let filler = vec![b'x'; 16 * 1024];
+            while written < total {
+                let n = filler.len().min(total - written);
+                match s.write_all(&filler[..n]).await {
+                    Ok(()) => {
+                        written += n;
+                        sent.fetch_add(n, Ordering::SeqCst);
+                    }
+                    Err(_) => return,
+                }
+            }
+            let _ = s.shutdown().await;
+        }
+    });
+    let srv = spawn_server(h).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let (res, _) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    assert_eq!(res.unwrap_err().code(), "converter_limit");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = sent.load(Ordering::SeqCst);
+    assert!(
+        sent < total / 2,
+        "the reader carried on after the converter failed: {sent} of {total} bytes were sent"
+    );
+}

@@ -130,7 +130,9 @@ pub fn with_header(f: &Fetched, body: String) -> String {
 
 #[tool_router(server_handler)]
 impl Fetch {
-    #[tool(description = "Fetch a URL and return its content as markdown")]
+    #[tool(
+        description = "Fetch a URL and return its content. HTML pages are converted to markdown (scripts, styles and navigation dropped); other text is returned as is. Set raw=true for the unconverted body."
+    )]
     async fn fetch(
         &self,
         Parameters(p): Parameters<FetchParams>,
