@@ -108,16 +108,34 @@ impl<R: Resolver> FetchClient<R> {
     }
 
     /// [`fetch`](Self::fetch) with a conversion mode: [`Mode::Markdown`] converts an HTML body to markdown
-    /// (A-4) as it streams; anything else, and [`Mode::Raw`], is passed through as text. Memory still does not
+    /// (A-4) as it streams; other text, and [`Mode::Raw`], is passed through as text. Memory still does not
     /// depend on the body size.
     ///
     /// # Errors
-    /// As [`fetch`](Self::fetch), plus `converter_limit` when the converter's memory or output limit is hit.
+    /// As [`fetch`](Self::fetch), plus `converter_limit` when the converter's memory or output limit is hit and
+    /// `unsupported_content_type` when the response is not text (A-6).
     pub async fn fetch_as(
         &self,
         url: &str,
         mode: Mode,
         sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<Fetched, FetchError> {
+        self.fetch_until(url, mode, sink, &|| false).await
+    }
+
+    /// [`fetch_as`](Self::fetch_as) that stops reading as soon as `stop` returns true (A-5 early stop): it is
+    /// polled after every wire chunk, the response is then dropped (the connection closes) and the call succeeds
+    /// with what the sink received. A body that is over the size cap, or whose cap is reached before `stop` turns
+    /// true, is `too_large` as ever.
+    ///
+    /// # Errors
+    /// As [`fetch_as`](Self::fetch_as).
+    pub async fn fetch_until(
+        &self,
+        url: &str,
+        mode: Mode,
+        sink: &mut (dyn FnMut(&str) + Send),
+        stop: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<Fetched, FetchError> {
         // Queue for a slot for at most the timeout; the fetch deadline starts when the slot is granted.
         let _slot = match timeout(self.limits.timeout, self.slots.acquire()).await {
@@ -130,7 +148,7 @@ impl<R: Resolver> FetchClient<R> {
             }
         };
         let deadline = Instant::now() + self.limits.timeout;
-        match timeout_at(deadline, self.run(url, mode, sink, deadline)).await {
+        match timeout_at(deadline, self.run(url, mode, sink, stop, deadline)).await {
             Ok(r) => r,
             // Dropping the future closes any open connection.
             Err(_) => Err(FetchError::Timeout("the request timed out".into())),
@@ -142,6 +160,7 @@ impl<R: Resolver> FetchClient<R> {
         url: &str,
         mode: Mode,
         sink: &mut (dyn FnMut(&str) + Send),
+        stop: &(dyn Fn() -> bool + Send + Sync),
         deadline: Instant,
     ) -> Result<Fetched, FetchError> {
         let mut current = url.to_string();
@@ -182,7 +201,7 @@ impl<R: Resolver> FetchClient<R> {
             if !status.is_success() {
                 return Err(FetchError::HttpStatus(status.as_u16()));
             }
-            let wire_bytes = self.read_body(resp, mode, &parsed, sink).await?;
+            let wire_bytes = self.read_body(resp, mode, &parsed, sink, stop).await?;
             return Ok(Fetched {
                 final_url: echo_url(&parsed),
                 status: status.as_u16(),
@@ -199,19 +218,21 @@ impl<R: Resolver> FetchClient<R> {
         mode: Mode,
         base: &Url,
         sink: &mut (dyn FnMut(&str) + Send),
+        stop: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<u64, FetchError> {
         let cap = self.limits.max_bytes;
         let gzip = content_encoding_is_gzip(resp.headers())?;
-        // A declared length over the cap aborts before a single body byte is read.
-        if resp.content_length().is_some_and(|n| n > cap) {
-            return Err(too_large());
-        }
+        // A type we do not return is refused before a body byte is read (A-6); so is a declared length over the cap.
         let content_type = resp
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let mut conv = convert::for_response(mode, content_type.as_deref(), Some(base.clone()));
+        let mut conv = convert::for_response(mode, content_type.as_deref(), Some(base.clone()))
+            .map_err(|t| FetchError::UnsupportedContentType(unsupported_text(&t.0)))?;
+        if resp.content_length().is_some_and(|n| n > cap) {
+            return Err(too_large());
+        }
         // The pipeline's sink cannot fail, so a converter failure is parked here and checked per chunk.
         let failure: Mutex<Option<ConvertError>> = Mutex::new(None);
         let mut convert_step = |text: &str| {
@@ -231,6 +252,9 @@ impl<R: Resolver> FetchClient<R> {
             }
             pipe.feed(&chunk).map_err(map_body)?;
             take_failure(&failure)?;
+            if stop() {
+                return Ok(wire); // early stop: dropping `resp` closes the connection
+            }
         }
         pipe.finish().map_err(map_body)?;
         take_failure(&failure)?;
@@ -298,6 +322,12 @@ fn install_ring_provider() {
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+}
+
+fn unsupported_text(media_type: &str) -> String {
+    format!(
+        "the response is {media_type}, which is not text; only HTML, plain text, JSON and XML are returned"
+    )
 }
 
 fn too_large() -> FetchError {

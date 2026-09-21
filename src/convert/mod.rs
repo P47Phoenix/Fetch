@@ -5,6 +5,7 @@
 
 pub mod markdown;
 pub(crate) mod tagscan;
+pub mod window;
 
 use reqwest::Url;
 
@@ -54,14 +55,42 @@ pub enum Mode {
     Markdown,
 }
 
+/// What a `Content-Type` means for the tool (A-6, FR-08).
 #[derive(Debug, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
+    /// `text/html` or `application/xhtml+xml`: converted to markdown.
     Html,
+    /// `text/*`, JSON, XML and a few other textual types: returned as text.
     Text,
+    /// No usable `Content-Type`: sniffed from the body.
     Unknown,
+    /// Anything else (images, PDF, archives, `application/octet-stream`, malformed types). Holds the media type,
+    /// cleaned for display, because the header is upstream-controlled text.
+    Unsupported(String),
 }
 
-fn classify(content_type: Option<&str>) -> Kind {
+/// Textual media types besides `text/*`, JSON and XML (and their `+json` / `+xml` suffix types).
+const TEXTUAL: [&str; 6] = [
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/ecmascript",
+    "application/x-ndjson",
+];
+
+/// The media type for display: printable ASCII only, at most 100 characters. It is echoed into an error, and the
+/// header is written by the server we are fetching from.
+fn display_type(essence: &str) -> String {
+    essence
+        .chars()
+        .take(100)
+        .map(|c| if c.is_ascii_graphic() { c } else { '?' })
+        .collect()
+}
+
+#[must_use]
+pub fn classify(content_type: Option<&str>) -> Kind {
     let Some(ct) = content_type else {
         return Kind::Unknown;
     };
@@ -74,27 +103,44 @@ fn classify(content_type: Option<&str>) -> Kind {
     match essence.as_str() {
         "" => Kind::Unknown,
         "text/html" | "application/xhtml+xml" => Kind::Html,
-        _ => Kind::Text,
+        e if e.starts_with("text/")
+            || TEXTUAL.contains(&e)
+            || e.ends_with("+json")
+            || e.ends_with("+xml") =>
+        {
+            Kind::Text
+        }
+        e => Kind::Unsupported(display_type(e)),
     }
 }
 
-/// The converter for a response: `text/html` and `application/xhtml+xml` are converted, a missing
-/// `Content-Type` is sniffed (HTML markers at the start), everything else is passed through (content-type
-/// rejection and the full sniffing rules are A-6).
-#[must_use]
+/// The response is a media type the tool does not return (A-6). It is refused before any body byte is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedType(pub String);
+
+/// The converter for a response: `text/html` and `application/xhtml+xml` are converted, other text types are
+/// passed through, a missing `Content-Type` is sniffed (HTML markers at the start of the body, otherwise text) and
+/// every other type is refused, `raw` or not.
+///
+/// # Errors
+/// [`UnsupportedType`] naming the media type when it is not text.
 pub fn for_response(
     mode: Mode,
     content_type: Option<&str>,
     base: Option<Url>,
-) -> Box<dyn Converter> {
+) -> Result<Box<dyn Converter>, UnsupportedType> {
+    let kind = classify(content_type);
+    if let Kind::Unsupported(t) = kind {
+        return Err(UnsupportedType(t));
+    }
     if mode == Mode::Raw {
-        return Box::new(Passthrough);
+        return Ok(Box::new(Passthrough));
     }
-    match classify(content_type) {
+    Ok(match kind {
         Kind::Html => Box::new(markdown::MarkdownConverter::new(base)),
-        Kind::Text => Box::new(Passthrough),
+        Kind::Text | Kind::Unsupported(_) => Box::new(Passthrough),
         Kind::Unknown => Box::new(Sniff::new(base)),
-    }
+    })
 }
 
 /// How much of the start of an untyped body is held to decide between HTML and text.
@@ -116,21 +162,39 @@ impl Sniff {
         }
     }
 
+    /// The body starts (after whitespace and a byte-order mark) with `<!doctype html`, `<html`, `<head` or `<body`,
+    /// case-insensitively, the tag name ending there (`<htmlx` is not `<html`).
     fn looks_like_html(head: &str) -> bool {
+        let head = head.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
         let lower: String = head.chars().take(16).flat_map(char::to_lowercase).collect();
-        ["<!doctype html", "<html", "<head", "<body"]
-            .iter()
-            .any(|m| lower.starts_with(m))
+        if let Some(rest) = lower.strip_prefix("<!doctype html") {
+            return rest
+                .chars()
+                .next()
+                .is_none_or(|c| c.is_whitespace() || c == '>');
+        }
+        ["<html", "<head", "<body"].iter().any(|m| {
+            lower.strip_prefix(m).is_some_and(|rest| {
+                rest.chars()
+                    .next()
+                    .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/')
+            })
+        })
     }
 
     fn commit(&mut self, out: &mut dyn FnMut(&str)) -> Result<(), ConvertError> {
-        let mut c: Box<dyn Converter> = if Self::looks_like_html(self.held.trim_start()) {
-            Box::new(markdown::MarkdownConverter::new(self.base.take()))
-        } else {
-            Box::new(Passthrough)
-        };
         let held = std::mem::take(&mut self.held);
-        let r = c.push(&held, out);
+        let (mut c, held): (Box<dyn Converter>, &str) = if Self::looks_like_html(&held) {
+            // A byte-order mark is not page text.
+            let html = held.strip_prefix('\u{feff}').unwrap_or(&held);
+            (
+                Box::new(markdown::MarkdownConverter::new(self.base.take())),
+                html,
+            )
+        } else {
+            (Box::new(Passthrough), &held)
+        };
+        let r = c.push(held, out);
         self.chosen = Some(c);
         r
     }
@@ -142,7 +206,9 @@ impl Converter for Sniff {
             return c.push(text, out);
         }
         self.held.push_str(text);
-        let head = self.held.trim_start();
+        let head = self
+            .held
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
         if self.held.len() >= SNIFF_BYTES || (!head.is_empty() && !head.starts_with('<')) {
             return self.commit(out);
         }
@@ -161,10 +227,10 @@ impl Converter for Sniff {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, for_response, Kind, Mode};
+    use super::{classify, for_response, Kind, Mode, UnsupportedType};
 
     fn run(mode: Mode, ct: Option<&str>, parts: &[&str]) -> String {
-        let mut c = for_response(mode, ct, None);
+        let mut c = for_response(mode, ct, None).expect("a supported type");
         let mut out = String::new();
         for p in parts {
             c.push(p, &mut |s| out.push_str(s)).unwrap();
@@ -182,6 +248,41 @@ mod tests {
         assert_eq!(classify(Some("application/json")), Kind::Text);
         assert_eq!(classify(None), Kind::Unknown);
         assert_eq!(classify(Some("")), Kind::Unknown);
+        for t in [
+            "text/xml",
+            "application/xml; charset=utf-8",
+            "application/ld+json",
+            "application/rss+xml",
+            "application/javascript",
+        ] {
+            assert_eq!(classify(Some(t)), Kind::Text, "{t}");
+        }
+    }
+
+    #[test]
+    fn binary_and_unknown_types_are_refused_with_the_type_named_raw_or_not() {
+        for t in [
+            "image/png",
+            "application/pdf",
+            "application/octet-stream",
+            "video/mp4",
+            "IMAGE/PNG; foo=bar",
+            "garbage",
+        ] {
+            let want = t.split(';').next().unwrap().trim().to_ascii_lowercase();
+            for mode in [Mode::Markdown, Mode::Raw] {
+                let e = for_response(mode, Some(t), None).err();
+                assert_eq!(e, Some(UnsupportedType(want.clone())), "{t} {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hostile_content_type_is_cleaned_before_it_can_be_echoed() {
+        let e = for_response(Mode::Markdown, Some("x/\r\n\u{1b}[31m\u{e9}y"), None).err();
+        assert_eq!(e, Some(UnsupportedType("x/???[31m?y".into())));
+        let long = format!("a/{}", "b".repeat(5000));
+        assert_eq!(classify(Some(&long)), Kind::Unsupported(long[..100].into()));
     }
 
     #[test]
@@ -223,5 +324,35 @@ mod tests {
             "a"
         );
         assert_eq!(run(Mode::Markdown, None, &[""]), "");
+    }
+
+    #[test]
+    fn sniffing_needs_a_real_html_marker_at_the_start() {
+        let html = |b: &str| run(Mode::Markdown, None, &[b]);
+        assert_eq!(
+            html("\u{feff}\n <HTML><body><h1>A</h1></body></html>"),
+            "# A"
+        );
+        assert_eq!(
+            html("<head><title>t</title></head><body><p>x</p></body>"),
+            "x"
+        );
+        assert_eq!(html("<body><p>x</p></body>"), "x");
+        assert_eq!(html("<!DOCTYPE html>"), "");
+        // Not markers: a tag that only starts with one, or a marker that is not at the start.
+        assert_eq!(html("<htmlx><p>x</p></htmlx>"), "<htmlx><p>x</p></htmlx>");
+        assert_eq!(
+            html("<!doctype htmlfoo><p>x</p>"),
+            "<!doctype htmlfoo><p>x</p>"
+        );
+        assert_eq!(
+            html("intro <html><p>x</p></html>"),
+            "intro <html><p>x</p></html>"
+        );
+        // Binary-looking bytes without a type are text, decoded with replacement characters upstream.
+        assert_eq!(html("\u{fffd}PNG\u{1a}"), "\u{fffd}PNG\u{1a}");
+        // A long untyped body that starts as HTML is still decided (512 held bytes at most).
+        let long = format!("<html><body><p>{}</p></body></html>", "w".repeat(2000));
+        assert_eq!(html(&long), "w".repeat(2000));
     }
 }

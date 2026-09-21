@@ -1,10 +1,16 @@
-"""Scenario definitions (data only). IDs and gate assignment follow docs/BENCHMARK.md section 5.
+"""Scenario definitions (data only). A-5 (early stop) changed what "read in full" means: a request with start_index 0 stops after the
+window, so the scenarios that must consume the body ask for a `window`: "end" (the last WINDOW characters of the converted output,
+G1/G2/G3/G4 form), "in-cap" (a window that ends ~200,000 characters before the end of the 5 MiB page's output, inside the cap of a
+50 MiB chunked body, G7b), "beyond-cap" (start_index = the 5 MiB cap in characters, unreachable inside the cap, G5/G7c) or "start"
+(start 0, early stop fires; the one scenario that is NOT a full-consumption sample). measure.py resolves the offsets and learns the
+converted length of a page from the binary under test (a probe fetch past the end states it), see measure.resolve_window. IDs and gate assignment follow docs/BENCHMARK.md section 5.
 `route` is a serve.py path; `expect` is "ok" or "too_large"; `min_bytes` is a callable(manifest)->int, the
 valid-run floor for the server-side byte counter. implemented=False scenarios need fixtures/args E-2 supplies."""
 from fixtures import REDIR_BODY, REDIR_FINAL, HOSTILE_SIZE, ATTRVALUE_SIZE
 fixtures_hostile_size = lambda: ATTRVALUE_SIZE
 MIB = 1024 * 1024
 CAP = 5 * MIB
+WINDOW = 100_000   # the default max_length cap in characters (FETCH_MAX_LENGTH_CAP): every window scenario asks for a full cap-size window
 _size = lambda name: (lambda m: m["fixtures"][name]["size"])
 
 SCENARIOS = {
@@ -12,17 +18,17 @@ SCENARIOS = {
     # Idle RSS of the BENCH build (E-8: the idle delta versus the shipped build is bounded at 0.5 MiB). Recorded next to the
     # shipped figure; never a gate figure itself (gate "none"), and `idle` still refuses a bench-marked binary.
     "idle-bench":      dict(kind="idle", gate="none", binary="bench", implemented=True, ref="E-8 idle delta"),
-    "g4a-5mib-full":   dict(kind="peak", gate="G4a", route="/5mb.html", args={"max_length": 5 * MIB}, expect="ok",
-                            min_bytes=_size("html_5mib"), implemented=True, ref="G1/G2 read-in-full form"),
-    "g4a-5mib-gz":     dict(kind="peak", gate="G4a", route="/5mb.html.gz", args={"max_length": 5 * MIB}, expect="ok",
-                            min_bytes=_size("html_5mib_gz"), implemented=True, ref="G2 read-in-full form"),
-    "g4a-late-landmark": dict(kind="peak", gate="G4a", route="/late-landmark.html", args={"max_length": 5 * MIB}, expect="ok",
-                            min_bytes=_size("late_landmark"), implemented=True, ref="G4 read-in-full form (the holdback itself needs A-4)"),
-    "g4a-50mib-cl":    dict(kind="peak", gate="G4a", route="/50mb-cl.html", args={"max_length": 5 * MIB}, expect="too_large",
+    "g4a-5mib-full":   dict(kind="peak", gate="G4a", route="/5mb.html", args={"max_length": WINDOW}, window="end", expect="ok",
+                            min_bytes=_size("html_5mib"), implemented=True, ref="G1/G2, window at the end (the read-in-full form of Sprint 4)"),
+    "g4a-5mib-gz":     dict(kind="peak", gate="G4a", route="/5mb.html.gz", args={"max_length": WINDOW}, window="end", expect="ok",
+                            min_bytes=_size("html_5mib_gz"), implemented=True, ref="G2, window at the end"),
+    "g4a-late-landmark": dict(kind="peak", gate="G4a", route="/late-landmark.html", args={"max_length": WINDOW}, window="end", expect="ok",
+                            min_bytes=_size("late_landmark"), implemented=True, ref="G4, window at the end"),
+    "g4a-50mib-cl":    dict(kind="peak", gate="G4a", route="/50mb-cl.html", args={"max_length": WINDOW}, expect="too_large",
                             min_bytes=lambda m: 0,  # architecture 11.2: expected_min_bytes for G7a is zero (a correct client aborts on the Content-Length header, before any body write)
                             bounded_vs="g4a-5mib-full", implemented=True, ref="G7a"),
-    "g4a-50mib-chunked": dict(kind="peak", gate="G4a", route="/50mb-chunked.html", args={"max_length": 5 * MIB}, expect="too_large",
-                            min_bytes=lambda m: CAP, bounded_vs="g4a-5mib-full", implemented=True, ref="chunked, no window"),
+    "g4a-50mib-chunked": dict(kind="peak", gate="G4a", route="/50mb-chunked.html", args={"max_length": WINDOW}, window="beyond-cap", expect="too_large",
+                            min_bytes=lambda m: CAP, bounded_vs="g4a-5mib-full", implemented=True, ref="chunked, window beyond the cap (the no-window form of Sprint 4 stops early since A-5; same request as g4b-window-beyond-cap)"),
     # 5 redirect hops, each with a body and (in the product) a fresh client build (A-3b fix-pass 1 note for E-2/E-4).
     # Recorded, outside the gating peak FIGURE (gate "none"), but intentionally fail-closed: an INVALID run or a median over the
     # peak target still fails the invocation (exit 2 / 1). `counter` is the serve.py counter key; floor = 5 hop bodies + the final body.
@@ -31,7 +37,7 @@ SCENARIOS = {
     # G6 (E-4): 10 concurrent full reads of the 5 MiB page in ONE server process. Recorded for NFR-08 documentation, never a
     # pass/fail figure (verdict RECORDED, not in the gating peak); validity still counts: all 10 replies ok and >= 10 x 5 MiB
     # served, or the run is INVALID (exit 2).
-    "g6-concurrent10": dict(kind="peak", gate="none", route="/5mb.html", args={"max_length": 5 * MIB}, expect="ok", concurrency=10,
+    "g6-concurrent10": dict(kind="peak", gate="none", route="/5mb.html", args={"max_length": WINDOW}, window="end", expect="ok", concurrency=10,
                             recorded_only=True, min_bytes=lambda m: 10 * m["fixtures"]["html_5mib"]["size"], implemented=True,
                             ref="G6: 10 concurrent, recorded not gating; E-4"),
     # Fix-pass 1 (architect B2): adversarial-page peaks, 3 concurrent fetches (FETCH_MAX_CONCURRENCY) in one server process. RECORDED,
@@ -43,17 +49,22 @@ SCENARIOS = {
     "hostile-attrs3":  dict(kind="peak", gate="none", route="/hostile-attrs.html", args={"max_length": 5 * MIB}, expect="converter_limit",
                             concurrency=3, recorded_only=True, min_bytes=lambda m: 3 * 4096, implemented=True,   # floor stays low ON PURPOSE: the product may stop reading right after the refusal (early stop is correct here), so a high floor would reject a correct product; a ceiling test would need socket-buffer-stable byte counts, not cheap or stable, so early-refusal vs read-then-refuse is NOT distinguished here (RSS is what is recorded)
                             ref="hostile HTML: attribute bomb, 3 concurrent; fix-pass 1"),
-    "hostile-attrvalue3": dict(kind="peak", gate="none", route="/hostile-attrvalue.html", args={"max_length": 5 * MIB}, expect="ok",
+    "hostile-attrvalue3": dict(kind="peak", gate="none", route="/hostile-attrvalue.html", args={"max_length": WINDOW}, window="end", expect="ok",
                             concurrency=3, recorded_only=True, min_bytes=lambda m: 3 * fixtures_hostile_size(), implemented=True,
                             ref="hostile HTML: one huge attribute value, 3 concurrent; fix-pass 1"),
-    # G4b: need A-5 / A-6 (window, early stop, raw); windows computed by E-2 from the converted-output length.
-    "g4b-window-start": dict(kind="peak", gate="G4b", route="/5mb.html", expect="ok", implemented=False, ref="window at start, early stop"),
-    "g4b-window-end":  dict(kind="peak", gate="G4b", route="/5mb.html", expect="ok", implemented=False, ref="G1"),
-    "g4b-raw":         dict(kind="peak", gate="G4b", route="/5mb.html", args={"raw": True}, expect="ok", implemented=False, ref="G3"),
-    "g4b-chunked-window-in-cap": dict(kind="peak", gate="G4b", route="/50mb-chunked.html", expect="ok", bounded_vs="g4a-5mib-full",
-                            implemented=False, ref="G7b"),
-    "g4b-window-beyond-cap": dict(kind="peak", gate="G4b", route="/50mb-chunked.html", expect="too_large", bounded_vs="g4a-5mib-full",
-                            implemented=False, ref="G5, G7c"),
+    # G4b (A-5 window and early stop, A-6 raw). Windows are resolved by measure.py (see the header). G1 is the same request as
+    # g4a-5mib-full (kept under its own id so G4b is self-contained); the 50 MiB chunked cases are bounded against it (G7b/G7c vs G1).
+    "g4b-window-start": dict(kind="peak", gate="G4b", route="/5mb.html", args={"max_length": WINDOW}, window="start", expect="ok",
+                            min_bytes=lambda m: WINDOW,   # the window's 100,000 characters need at least that many bytes, so a run that ends earlier never produced them
+                            implemented=True, ref="window at start, early stop (not a full-consumption sample)"),
+    "g4b-window-end":  dict(kind="peak", gate="G4b", route="/5mb.html", args={"max_length": WINDOW}, window="end", expect="ok",
+                            min_bytes=_size("html_5mib"), implemented=True, ref="G1"),
+    "g4b-raw":         dict(kind="peak", gate="G4b", route="/5mb.html", args={"max_length": WINDOW, "raw": True}, window="end", expect="ok",
+                            min_bytes=_size("html_5mib"), raw_total="html_5mib", implemented=True, ref="G3"),
+    "g4b-chunked-window-in-cap": dict(kind="peak", gate="G4b", route="/50mb-chunked.html", args={"max_length": WINDOW}, window="in-cap", expect="ok",
+                            min_bytes="window", bounded_vs="g4b-window-end", implemented=True, ref="G7b"),
+    "g4b-window-beyond-cap": dict(kind="peak", gate="G4b", route="/50mb-chunked.html", args={"max_length": WINDOW}, window="beyond-cap", expect="too_large",
+                            min_bytes=lambda m: CAP, bounded_vs="g4b-window-end", implemented=True, ref="G5, G7c"),
 }
 GROUPS = {"g4a": [k for k, v in SCENARIOS.items() if v["gate"] == "G4a"],
           "g4b": [k for k, v in SCENARIOS.items() if v["gate"] == "G4b"]}

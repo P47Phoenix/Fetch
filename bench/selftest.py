@@ -100,19 +100,25 @@ with tempfile.TemporaryDirectory() as d:
     check("bench kind without marker refused", rc == 2)
     rc, _ = run(*F, *bk, "--scenario", "idle")
     check("idle on bench-marked binary refused", rc == 2)
-    rc, _ = run(*F, *bk, "--scenario", "g4b-raw")
-    check("unimplemented scenario refused", rc == 2)
-    rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--child-env", "NOEQUALS", "--smoke", "--runs", "1")
-    check("malformed --child-env is a refusal (exit 2), not a crash-as-'target missed' (NB-1)", rc == 2, f"rc={rc}")
     import measure, io, contextlib
     from scenarios import SCENARIOS
-    SCENARIOS["g4b-raw"]["implemented"] = True   # NB-2: an implemented peak scenario without min_bytes must be refused
+    SCENARIOS["g4b-raw"]["implemented"] = False   # G4b is implemented since Sprint 5; a scenario flagged unimplemented is still refused
     try:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = measure.main(["--binary", STANDIN, *F, *bk, "--scenario", "g4b-raw"])
     finally:
-        SCENARIOS["g4b-raw"]["implemented"] = False
+        SCENARIOS["g4b-raw"]["implemented"] = True
+    check("unimplemented scenario refused", rc == 2 and "not implemented" in buf.getvalue(), f"rc={rc}")
+    rc, _ = run(*F, "--binary-kind", "shipped", "--scenario", "idle", "--child-env", "NOEQUALS", "--smoke", "--runs", "1")
+    check("malformed --child-env is a refusal (exit 2), not a crash-as-'target missed' (NB-1)", rc == 2, f"rc={rc}")
+    floor = SCENARIOS["g4b-raw"].pop("min_bytes")   # NB-2: an implemented peak scenario without min_bytes must be refused
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = measure.main(["--binary", STANDIN, *F, *bk, "--scenario", "g4b-raw"])
+    finally:
+        SCENARIOS["g4b-raw"]["min_bytes"] = floor
     check("peak scenario lacking min_bytes refused (NB-2)", rc == 2 and "min_bytes" in buf.getvalue(), f"rc={rc}")
     real = measure._main
     measure._main = lambda argv=None: 1 / 0
@@ -283,11 +289,49 @@ check("hostile-attrvalue3: a huge peak is recorded, not a miss", "hostile-attrva
 check("fixtures: hostile bodies are deterministic, sized just under 2 MiB, and shaped as documented",
       fixtures.hostile_body("attrs") == fixtures.hostile_body("attrs") and len(fixtures.hostile_body("attrs")) in range(fixtures.HOSTILE_SIZE - 4, fixtures.HOSTILE_SIZE + 1)
       and len(fixtures.hostile_body("attrvalue")) == fixtures.ATTRVALUE_SIZE and fixtures.ATTRVALUE_SIZE <= 0.95 * 2 * 1024 * 1024 and fixtures.hostile_body("attrs").count(b" a") > 900_000)
-for g in ("g4b-window-start", "g4b-window-end", "g4b-raw", "g4b-chunked-window-in-cap", "g4b-window-beyond-cap"):
-    with tempfile.TemporaryDirectory() as gd:
-        fixtures.generate(gd)
-        rc, r = run("--fixtures-dir", gd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", g)
-    check(f"G4b scaffold {g}: defined, refused as not implemented (needs A-5/A-6, Sprint 5), exit 2", rc == 2 and "not implemented" in r[-1].get("reason", ""), f"rc={rc} {r[-1]}")
+# --- G4b (A-5, A-6): the window scenarios are real. Window resolution is a pure function of the probed lengths.
+from scenarios import WINDOW, CAP
+man = fixtures.load_manifest()   # from the committed manifest, not the disk: the unit-test job has no generated fixtures
+for _m in man["fixtures"].values():
+    if _m.get("encoding") == "gzip": _m["size"] = _m["compressed_size_reference"]
+end = measure.resolve_window(dict(SCENARIOS["g4b-window-end"]), lambda route, raw: 1_000_000, man)
+check("resolve_window end: last WINDOW characters, no continuation footer allowed, total footer required",
+      end["args"]["start_index"] == 1_000_000 - WINDOW and end["args"]["max_length"] == WINDOW and "More content available" in end["text_must_not"]
+      and "[Total length: 1000000 characters.]" in end["text_must"], str(end))
+short = measure.resolve_window(dict(SCENARIOS["g4b-window-end"]), lambda route, raw: 50, man)
+check("resolve_window end: a page shorter than the window starts at 0 and needs no total footer", short["args"]["start_index"] == 0 and "text_must" not in short)
+st = measure.resolve_window(dict(SCENARIOS["g4b-window-start"]), lambda route, raw: 1 / 0, man)
+check("resolve_window start: start 0, needs the continuation footer, no probe", st["args"]["start_index"] == 0 and st["text_must"] == ["More content available"])
+inc = measure.resolve_window(dict(SCENARIOS["g4b-chunked-window-in-cap"]), lambda route, raw: 4_000_000 if route == "/5mb.html" else 1 / 0, man)
+check("resolve_window in-cap: window ends 200,000 characters before the end of the 5 MiB page's output, floor is start + WINDOW",
+      inc["args"]["start_index"] == 4_000_000 - 3 * WINDOW and inc["min_bytes"](man) == 4_000_000 - 2 * WINDOW, str(inc["args"]))
+bc = measure.resolve_window(dict(SCENARIOS["g4b-window-beyond-cap"]), lambda route, raw: 1 / 0, man)
+check("resolve_window beyond-cap: start_index is the cap in characters", bc["args"]["start_index"] == CAP)
+try:
+    measure.resolve_window(dict(SCENARIOS["g4b-raw"]), lambda route, raw: 123, man); raw_ok = False
+except RuntimeError:
+    raw_ok = True
+check("resolve_window raw: a probe that disagrees with the fixture size is refused (independent check of the raw total)", raw_ok)
+rc, r = gate_run(scenarios=("g4a", "g4b"))
+g4b = [x for x in r if x.get("gate") == "G4b"]
+check("G4b: complete set (window at start, at end, raw, chunked window in cap, window beyond cap) -> 5 scenarios x 10 valid runs, gate PASS, exit 0",
+      rc == 0 and len(g4b) == 5 and all(x["valid_runs"] == 10 and x["verdict"] == "PASS" for x in g4b) and r[-1]["verdict"] == "PASS",
+      f"rc={rc} {[(x['scenario'], x['verdict'], x['invalid_reasons']) for x in g4b]} {r[-1].get('missed')} {r[-1].get('invalid')}")
+check("G4b: the resolved window is recorded per scenario", all(x.get("window") and "start_index" in x["window"] for x in g4b))
+check("G4b: both 50 MiB chunked cases carry a boundedness ratio against the 5 MiB window-at-end peak",
+      set(r[-1].get("boundedness", {})) >= {"g4b-chunked-window-in-cap", "g4b-window-beyond-cap"}, str(r[-1].get("boundedness")))
+rc, r = gate_run(scenarios=("g4b",))
+check("G4b alone is a complete gate set (its bounded cases reference G1, which is in the group), exit 0", rc == 0 and r[-1]["verdict"] == "PASS", f"rc={rc} {r[-1]}")
+rc, r = gate_run({"STANDIN_TOOLARGE_ALLOC_MIB": "30"}, scenarios=("g4a", "g4b"))
+check("G4b: a 50 MiB chunked case that blows up beyond 1.10 x the 5 MiB peak -> FAIL naming it, exit 1",
+      rc == 1 and r[-1]["verdict"] == "FAIL" and "g4b-window-beyond-cap (boundedness)" in r[-1]["missed"], f"rc={rc} {r[-1].get('missed')}")
+rc, r = gate_run({"STANDIN_ALLOC_MIB": "60"}, scenarios=("g4b",))
+check("G4b: a peak over 40 MiB -> FAIL, exit 1", rc == 1 and r[-1]["verdict"] == "FAIL", f"rc={rc} {r[-1].get('verdict')}")
+rc, r = gate_run({"STANDIN_EARLY_STOP": "1000"}, scenarios=("g4b",))
+check("G4b: a server that stops reading early on the window-at-end scenarios -> INVALID, exit 2", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc} {r[-1].get('verdict')}")
+rc, r = gate_run({"STANDIN_NO_TOTAL": "1"}, scenarios=("g4b",))
+check("G4b: a reply that does not state the total (probe fails) -> INVALID scenarios, exit 2, never a default window",
+      rc == 2 and r[-1]["verdict"] == "INVALID" and any("length probe" in " ".join(x.get("invalid_reasons", [])) for x in r if x.get("kind") == "scenario"), f"rc={rc} {r[-1].get('invalid')}")
 
 # --- redirect-chain scenario (recorded, never in the gating peak) and the E-2 fixtures
 with tempfile.TemporaryDirectory() as rd:

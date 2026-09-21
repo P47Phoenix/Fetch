@@ -104,13 +104,11 @@ jobs:
           python3 bench/measure.py --binary "$RUNNER_TEMP/a1-shipped" --binary-kind shipped --scenario idle \
             --out out/results-${{ matrix.libc }}.jsonl > /dev/null || rc=$?
           echo "idle exit=$rc"; r1=$rc; rc=0
-          python3 bench/measure.py --binary "$RUNNER_TEMP/a1-bench" --binary-kind bench \
-            --scenario g4a-5mib-full --scenario g4a-5mib-gz \
-            --out out/results-${{ matrix.libc }}.jsonl > /dev/null || rc=$?
-          echo "5mib exit=$rc"
-          echo "idle_exit=$r1 peak_exit=$rc" > out/exitcodes-${{ matrix.libc }}.txt
+          # The spike has no start_index/max_length (A-5) and every peak scenario is now a window request, so the spike's peak is no
+          # longer measured (owner decision, Sprint 5); only its idle figure is. The product peak is the bench-gate job.
+          echo "idle_exit=$r1" > out/exitcodes-${{ matrix.libc }}.txt
           # exit 1 = a target missed (a result, reported below); 2/3 = invalid or refused (plumbing failure)
-          [ "$r1" -le 1 ] && [ "$rc" -le 1 ]
+          [ "$r1" -le 1 ]
 
       - name: Job summary
         if: always()
@@ -127,7 +125,7 @@ jobs:
                   o = json.loads(l)
                   if o.get("kind") == "scenario":
                       v = o.get("samples_kB") or [0]
-                      print(f"| {o['scenario']} | {o['metric']} | {o['valid_runs']}/{o['runs']} | {o.get('median_MiB','n/a')} | {min(v)/1024:.2f}-{max(v)/1024:.2f} | {o['verdict']} {o.get('invalid_reasons') or ''} |")
+                      print(f"| {o['scenario']} | {o.get('metric','n/a')} | {o.get('valid_runs','n/a')}/{o.get('runs','n/a')} | {o.get('median_MiB','n/a')} | {min(v)/1024:.2f}-{max(v)/1024:.2f} | {o.get('verdict','n/a')} {o.get('invalid_reasons') or ''} |")
                       tim.append(o)
                   elif o.get("kind") == "summary":
                       print(f"\nsummary: {o.get('verdict')} {o.get('reason','')} (gating={o.get('gating')})")
@@ -215,7 +213,7 @@ jobs:
                   o = json.loads(l)
                   if o.get("kind") == "scenario":
                       v = o.get("samples_kB") or [0]
-                      print(f"idle VmRSS: {o['valid_runs']}/{o['runs']} valid, median {o.get('median_MiB','n/a')} MiB, "
+                      print(f"idle VmRSS: {o.get('valid_runs','n/a')}/{o.get('runs','n/a')} valid, median {o.get('median_MiB','n/a')} MiB, "
                             f"min-max {min(v)/1024:.2f}-{max(v)/1024:.2f} MiB, target 10 MiB, verdict {o['verdict']}\n")
                       t = o.get("timings", {})
                       for k in ("ready_ms", "tools_list_ms"):

@@ -21,6 +21,8 @@ pub enum FetchError {
     /// The overall deadline (queueing excluded from the fetch budget, DNS, connect, TLS, headers, every
     /// redirect hop and the body) elapsed, or the call queued for a slot longer than the timeout.
     Timeout(String),
+    /// The response is not a text type (an image, a PDF, `application/octet-stream`...). Names the media type (A-6).
+    UnsupportedContentType(String),
     /// `Content-Encoding` other than absent, `identity` or a single `gzip` (ADR-004).
     UnsupportedEncoding(String),
     /// A non-2xx final status. Cause-specific structure arrives with A-7.
@@ -47,6 +49,7 @@ impl FetchError {
             Self::DnsFailure(_) => "dns_failure",
             Self::TooLarge(_) => "too_large",
             Self::Timeout(_) => "timeout",
+            Self::UnsupportedContentType(_) => "unsupported_content_type",
             Self::UnsupportedEncoding(_) => "unsupported_encoding",
             Self::HttpStatus(_) => "http_error",
             Self::TooManyRedirects => "too_many_redirects",
@@ -72,6 +75,7 @@ impl fmt::Display for FetchError {
             | Self::DnsFailure(m)
             | Self::TooLarge(m)
             | Self::Timeout(m)
+            | Self::UnsupportedContentType(m)
             | Self::UnsupportedEncoding(m)
             | Self::Network(m)
             | Self::BadResponse(m)

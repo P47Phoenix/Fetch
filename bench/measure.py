@@ -13,7 +13,7 @@ Without --gate the run is advisory (record has gating=false). Sizes are MiB (2**
 """
 import argparse, concurrent.futures as cf, datetime, json, math, os, platform, queue, re, statistics, subprocess, sys, threading, time
 import fixtures, serve
-from scenarios import SCENARIOS, GROUPS
+from scenarios import SCENARIOS, GROUPS, WINDOW, CAP
 
 MIB_KB = 1024                      # kB per MiB: /proc reports kB (KiB)
 IDLE_TARGET_MIB, PEAK_TARGET_MIB, BOUND_RATIO = 10, 40, 1.10
@@ -269,7 +269,8 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
             got_err = bool(res.get("isError"))
             err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
             if scen["expect"] in ("too_large", "converter_limit"): return got_err and scen["expect"] in err_text
-            return not got_err
+            return (not got_err and all(t in err_text for t in scen.get("text_must", ()))
+                    and not any(t in err_text for t in scen.get("text_must_not", ())))
         outcome_ok = all(outcome(res) for res in results)
         sent, need = srv.bytes_sent(key), scen["min_bytes_v"]
         reason = None if outcome_ok else f"unexpected outcome (expected {scen['expect']})"
@@ -279,6 +280,61 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
         return {"valid": False, "reason": f"{type(e).__name__}: {e}", "rss_kB": 0, "hwm_kB": 0}
     finally:
         if s: s.close()
+
+
+TOTAL_RE = re.compile(r"the content is (\d+) characters long")
+
+
+def probe_total(binary, env_extra, srv, base, route, raw=False):
+    """Length in characters of the output the binary produces for `route` (A-5): a fetch with a start_index far past the end reads to the
+    end and its reply states the total. Learned from the binary under test because the converted length is the converter's business;
+    a probe is never a measured sample. Raises RuntimeError when the probe fails or the reply has no total."""
+    s = None
+    try:
+        s = Server(binary, env_extra)
+        s.handshake()
+        srv.reset()
+        args = {"url": base + route, "start_index": 2 ** 40, "max_length": 1, **({"raw": True} if raw else {})}
+        res = s.call_ok("tools/call", {"name": "fetch", "arguments": args}, 300)
+    finally:
+        if s: s.close()
+    text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
+    m = None if res.get("isError") else TOTAL_RE.search(text)
+    if not m: raise RuntimeError(f"length probe of {route} failed: {text[:160]!r}")
+    return int(m.group(1))
+
+
+def resolve_window(scen, totals, manifest):
+    """Turn a scenario's `window` into request arguments and validity rules (returns the updated scenario copy). `totals(route, raw)` gives
+    the probed output length. "end": the last WINDOW characters (full consumption); "start": start 0 (early stop fires); "in-cap": a window
+    ending 3 x WINDOW - WINDOW = 200,000 characters before the end of the 5 MiB page's output, inside the cap of the 50 MiB chunked body;
+    "beyond-cap": start_index = the cap in characters (the first 5 MiB of a body cannot make that many characters: too_large).
+    Text rules (`text_must`/`text_must_not`) make the reply prove the window sat where intended, so a run that silently returned something
+    else is INVALID: an "end" window has no continuation footer (and, past start 0, states the total: the read reached the end)."""
+    w = scen.get("window")
+    if not w: return scen
+    scen = dict(scen); args = dict(scen.get("args", {})); raw = bool(args.get("raw"))
+    info = {"window": w}
+    if w == "start":
+        start = 0; scen["text_must"] = ["More content available"]
+    elif w == "end":
+        total = totals(scen["route"], raw); start = max(0, total - WINDOW); info["probed_total"] = total
+        scen["text_must_not"] = ["More content available"]
+        if start > 0: scen["text_must"] = [f"[Total length: {total} characters.]"]
+        if "raw_total" in scen:   # raw output is the body text itself: its length is the fixture's size, so the probe is checked independently
+            want = manifest["fixtures"][scen["raw_total"]]["size"]
+            if total != want: raise RuntimeError(f"raw probe says {total} characters, the ASCII fixture has {want} bytes")
+    elif w == "in-cap":
+        total = totals("/5mb.html", False); start = max(0, total - 3 * WINDOW); info["probed_total_5mib_page"] = total
+        scen["text_must"] = ["More content available"]
+    elif w == "beyond-cap":
+        start = CAP
+    else:
+        raise RuntimeError(f"unknown window {w!r}")
+    args.update(start_index=start, max_length=WINDOW)
+    scen["args"] = args; info.update(start_index=start, max_length=WINDOW); scen["window_info"] = info
+    if scen.get("min_bytes") == "window": scen["min_bytes"] = lambda m, n=start + WINDOW: n   # characters never outnumber the bytes they came from
+    return scen
 
 
 def version_of(binary, env_extra):
@@ -369,10 +425,20 @@ def _main(argv=None):
 
     srv = serve.FixtureServer(a.fixtures_dir, manifest).start()
     base = f"http://127.0.0.1:{srv.port}"
+    totals = {}
+    def total_of(route, raw):   # one probe per (route, raw) per run, from the binary under test
+        if (route, raw) not in totals: totals[(route, raw)] = probe_total(a.binary, env_extra, srv, base, route, raw)
+        return totals[(route, raw)]
     medians, invalid, missed, incomplete = {}, [], [], []
     try:
         for n in names:
-            scen = dict(SCENARIOS[n]); scen["min_bytes_v"] = scen["min_bytes"](manifest) if "min_bytes" in scen else 0
+            scen = dict(SCENARIOS[n])
+            try:
+                scen = resolve_window(scen, total_of, manifest)
+            except Exception as e:   # a probe or window that cannot be resolved is an INVALID scenario, never a silent default
+                emit({"kind": "scenario", "scenario": n, "gate": scen["gate"], "verdict": "INVALID", "valid_runs": 0, "runs": a.runs,
+                      "invalid_reasons": [f"window: {type(e).__name__}: {e}"]}); invalid.append(n); continue
+            scen["min_bytes_v"] = scen["min_bytes"](manifest) if "min_bytes" in scen else 0
             if scen["kind"] == "idle" and a.parallel_idle > 1:
                 with cf.ThreadPoolExecutor(a.parallel_idle) as ex:
                     ss = list(ex.map(lambda _: sample(a.binary, env_extra, scen, srv, base, a.settle), range(a.runs)))
@@ -384,7 +450,7 @@ def _main(argv=None):
             target_kb = (a.idle_target_mib if scen["kind"] == "idle" else a.peak_target_mib) * MIB_KB
             rec = {"kind": "scenario", "scenario": n, "gate": scen["gate"], "metric": "VmRSS" if key == "rss_kB" else "VmHWM",
                    "binary_kind": a.binary_kind, "runs": a.runs, "valid_runs": len(good), "samples_kB": vals,
-                   "invalid_reasons": sorted({x["reason"] for x in ss if not x["valid"]}), "target_kB": target_kb,
+                   "invalid_reasons": sorted({x["reason"] for x in ss if not x["valid"]}), "target_kB": target_kb, "window": scen.get("window_info"),
                    # timings: recorded, NOT gated (ADR-007 restates the readiness figure); labelled advisory unless --gate
                    "timings": {"unit": "ms", "gated": False, "gating_run": a.gate, "standin": not ver.startswith(VERSION_PREFIX),
                                "label": "recorded, not gated" if a.gate else "advisory (not a gating run)",
