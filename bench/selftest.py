@@ -356,5 +356,56 @@ with tempfile.TemporaryDirectory() as td:
     p = subprocess.run([sys.executable, os.path.join(HERE, "report.py"), "--idle", os.path.join(td, "missing.jsonl")], capture_output=True, text=True)
     check("report.py: a missing file yields an empty report, exit 0", p.returncode == 0 and "| scenario |" in p.stdout, p.stderr)
 
+# --- E-5 smoke runner and report generator (no owner list exists: everything here uses local fixtures and synthetic records)
+import http.server, threading
+class _H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/old": self.send_response(302); self.send_header("Location", "/data.json"); self.send_header("Content-Length", "0"); self.end_headers(); return
+        body = b'{"a": 1}' if self.path.endswith(".json") else b"plain text page\n"
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _H); threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_base = f"http://127.0.0.1:{_srv.server_address[1]}"
+def _smoke(lines, *extra):
+    with tempfile.TemporaryDirectory() as td:
+        lp = os.path.join(td, "list.txt")
+        with open(lp, "w") as f: f.write("\n".join(lines) + "\n")
+        p = subprocess.run([sys.executable, os.path.join(HERE, "smoke.py"), "--binary", STANDIN, "--list", lp, *extra], capture_output=True, text=True)
+        return p.returncode, [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+rc, r = _smoke(["# local fixtures", f"{_base}/old redirect", f"{_base}/data.json json", f"{_base}/page.txt text"], "--dry-run")
+check("smoke.py --dry-run on local fixtures: 3 fetched, labelled dry_run, exit 0", rc == 0 and r[-1]["verdict"] == "DONE" and r[-1]["dry_run"] and r[-1]["ok"] == 3 and r[-1]["list_count"] == 3, f"rc={rc} {r[-1:]}")
+rc, r = _smoke([f"{_base}/data.json json", f"{_base}/page.txt text"])
+check("smoke.py real run refuses a list that is not 10 https URLs with all categories (never invents URLs), exit 2", rc == 2 and r[-1]["verdict"] == "INVALID" and "exactly 10" in r[-1]["reason"] and "https" in r[-1]["reason"], f"rc={rc} {r[-1:]}")
+rc, r = _smoke([f"{_base}/x weird"], "--dry-run")
+check("smoke.py: an unknown category is refused, exit 2", rc == 2 and "unknown category" in r[-1]["reason"], f"rc={rc}")
+rc, r = _smoke(["https://user:pw@example.org/ tls"], "--dry-run")
+check("smoke.py: userinfo in a list URL is refused", rc == 2 and "userinfo" in r[-1]["reason"], f"rc={rc}")
+rc, r = _smoke([f"http://127.0.0.1:1/never json"], "--dry-run", "--timeout", "20")
+check("smoke.py: a failing URL is a recorded result, not a crash (exit 0, failed=1)", rc == 0 and r[-1]["failed"] == 1, f"rc={rc} {r[-1:]}")
+
+def _report(**files):
+    with tempfile.TemporaryDirectory() as td:
+        args = []
+        for k, v in files.items():
+            fp = os.path.join(td, k); open(fp, "w").write(v); args += ["--" + k.replace("_", "-"), fp]
+        p = subprocess.run([sys.executable, os.path.join(HERE, "e5_report.py"), *args], capture_output=True, text=True)
+        return p.returncode, p.stdout
+def _gate(verdict, gating=True): return json.dumps({"kind": "summary", "gating": gating, "verdict": verdict, "missed": ["x"] if verdict == "FAIL" else []}) + "\n"
+_ov = lambda ms: f"CONVERT_1MIB bytes=1048576 median_ms=50.0 p95_ms={ms} max_ms=90.0 arch=aarch64\n"
+def _sm(dry=False, n=10): return json.dumps({"kind": "smoke-summary", "verdict": "DONE", "dry_run": dry, "list_count": n, "ok": n, "failed": 0, "failed_urls": [], "redirected": 1, "by_category": {"tls": [1, 1]}}) + "\n"
+rc, out = _report()
+check("e5_report: no inputs -> 'not decided', exit 2, lists what is missing (never a default pass)", rc == 2 and "**Decision: not decided**" in out and "no results file" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm(dry=True))
+check("e5_report: a dry-run smoke is never the smoke result -> 'not decided', exit 2", rc == 2 and "dry run" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS", gating=False), overhead=_ov(60.0), smoke=_sm())
+check("e5_report: an advisory (non --gate) memory run is not evidence -> 'not decided', exit 2", rc == 2 and "advisory" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm())
+check("e5_report: everything met and a real 10-URL smoke -> 'release' with the config change and the D-1 caveat, exit 0", rc == 0 and "**Decision: release**" in out and "claude mcp add" in out and "D-1" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(700.0), smoke=_sm())
+check("e5_report: a missed target -> 'do not release' with the gap, exit 1", rc == 1 and "**Decision: do not release**" in out and "Gap and follow-up" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm(n=9))
+check("e5_report: a smoke over 9 URLs is not the 10-URL smoke -> 'not decided'", rc == 2 and "not 10" in out, f"rc={rc}")
+_srv.shutdown()
+
 print("SELFTEST", "FAILED: " + ", ".join(fails) if fails else "PASSED")
 sys.exit(1 if fails else 0)
