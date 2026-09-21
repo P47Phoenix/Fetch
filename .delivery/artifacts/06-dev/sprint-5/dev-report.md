@@ -16,7 +16,7 @@ Targets were not changed. The plan says a G4b pass closes the memory gate (Sprin
 
 ## CI
 Pass: fmt, clippy, test, deny, release-guard, a3b-merge-gate, bench-product, bench-product-peak, all four bench-gate cells.
-Fail (advisory, not required): arm-bench `bench (gnu)` and `bench (musl)`. They measure the Sprint 0 A-1 spike, which has no start_index/max_length, so the now window-based peak scenarios resolve as INVALID and the summary step then trips on the missing `metric` key. Fix needed in .github/workflows/arm-bench.yml (drop the spike peak measurement); an attempt to edit it was blocked by the permission classifier, so it is left for the owner.
+The two arm-bench `bench (gnu)`/`bench (musl)` jobs were red on the first heads (they measure the Sprint 0 spike, which has no start_index/max_length). Resolved by owner decision (see the addendum): they measure idle only since cd99c95.
 
 ## Fixes during CI
 The unit-test job has no generated fixtures; bench/selftest.py now reads sizes from the committed manifest (commit b182c4d).
@@ -30,7 +30,11 @@ The unit-test job has no generated fixtures; bench/selftest.py now reads sizes f
 - No macOS reader; container image not measured; branch protection not configured.
 
 ## Decisions needing owner acknowledgement
-See docs/EPICS.md (A-5 status) and plan Revision 14: Total-length footer only on continuation/beyond-end (ADR-006 item 4 deviation); G5 via the 50 MiB chunked variant; G1 duplicates g4a-5mib-full; text/* extras chosen by the developer; G4a read-in-full scenarios redefined as window-at-end. Also pending with the owner: the arm-bench spike jobs.
+See docs/EPICS.md (A-5 status) and plan Revision 14: Total-length footer only on continuation/beyond-end (ADR-006 item 4 deviation); G5 via the 50 MiB chunked variant; G1 duplicates g4a-5mib-full; text/* extras chosen by the developer; G4a read-in-full scenarios redefined as window-at-end.
 
 ## Addendum: arm-bench spike jobs
-Owner authorised (AskUserQuestion answer "Drop spike peak, keep idle"): .github/workflows/arm-bench.yml now measures only the spike idle figure in `bench (gnu)`/`bench (musl)` and the summary step tolerates records without `metric`/`valid_runs`/`runs`/`verdict`. The spike peak is no longer measured because the spike has no pagination; Sprint 0 peak evidence remains in git history and BENCHMARK s11/s15. No other job, action pin or permission changed; actionlint clean. CI results on the final head are in the coordinator reply.
+Owner authorised (AskUserQuestion answer "Drop spike peak, keep idle"): .github/workflows/arm-bench.yml now measures only the spike idle figure in `bench (gnu)`/`bench (musl)` and the summary step tolerates records without `metric`/`valid_runs`/`runs`/`verdict`. The spike peak is no longer measured because the spike has no pagination; Sprint 0 peak evidence remains in git history and BENCHMARK s11/s15. No other job, action pin or permission changed; actionlint clean. Final-head results at cd99c95: all 14 checks green (fmt, clippy, test, deny, release-guard, a3b-merge-gate, bench-product, bench-product-peak, bench (gnu), bench (musl), bench-gate x4; runs ci 35651351749, arm-bench 35651351874, bench 35651351728). bench-gate at cd99c95: gating peaks amd64 gnu 6.16, amd64 musl 4.46, arm64 gnu 5.45, arm64 musl 4.38 MiB; shipped idle 4.74, 2.37, 3.91, 2.59 MiB; G4b ratios at most 1.021; PASS.
+
+## Fix pass (tech-writer, QA, code review, architect findings)
+Done: README, BENCHMARK, plan, EPICS, ci-branch-protection staleness; run counts and ranges (BENCHMARK s17, verified against the CI logs of runs 35639776795, 35641694726, 35643750672, 35651351728); ADR-006 dated amendment; README notes (content types, sniffing and binary bodies, control characters, charset until A-8, empty-page message, `bench-loopback` for the stdio tests, error-prefix uniformity to A-7). Code: NB-1 bench/report.py tolerates partial records; NB-2 the clamp note appears only when the caller passed a max_length above the cap.
+Skipped, with reasons: NB-4 (max_bytes ceiling on g4b-window-start) and NB-6/7 (moving hostile-attrs3 to WINDOW, resolve_window coupling) change harness validity semantics and were not re-verified; NB-3 refusal of binary magic in the untyped-body sniff path is a behaviour change for A-6 follow-up, stated precisely in the README instead; NB-5 documented (empty-page message kept).

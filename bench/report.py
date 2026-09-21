@@ -43,8 +43,8 @@ def main():
         for o in scenarios(recs):
             v = o.get("samples_kB") or [0]
             med[o["scenario"]] = o.get("median_kB")
-            print(f"| {o['scenario']} | {o['binary_kind']} | {o['metric']} | {o['valid_runs']}/{o['runs']} | {o.get('median_MiB', 'n/a')} | "
-                  f"{min(v)/MIB:.2f}-{max(v)/MIB:.2f} | {o['target_kB']/MIB:g} | {o['verdict']} {o.get('invalid_reasons') or ''} |")
+            print(f"| {o['scenario']} | {o.get('binary_kind', 'n/a')} | {o.get('metric', 'n/a')} | {o.get('valid_runs', 'n/a')}/{o.get('runs', 'n/a')} | {o.get('median_MiB', 'n/a')} | "
+                  f"{min(v)/MIB:.2f}-{max(v)/MIB:.2f} | {o.get('target_kB', 0)/MIB:g} | {o.get('verdict', 'n/a')} {o.get('invalid_reasons') or ''} |")
         s = summary(recs)
         if s: print(f"\n{label}: summary **{s.get('verdict')}** {s.get('reason', '')} (gating={s.get('gating')}) missed={s.get('missed')} "
                     f"invalid={s.get('invalid')} incomplete={s.get('incomplete')} boundedness={s.get('boundedness')} gating_peak_MiB={s.get('gating_peak_MiB')}\n")

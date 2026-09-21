@@ -153,7 +153,8 @@ impl Fetch {
         }
         let asked = p.max_length.unwrap_or(DEFAULT_MAX_LENGTH);
         let max_length = asked.min(self.max_length_cap);
-        let clamped_to = (asked > max_length).then_some(max_length);
+        // The note is for a caller who asked for more than the cap; a default that exceeds a configured cap is not the caller's request.
+        let clamped_to = p.max_length.filter(|m| *m > max_length).map(|_| max_length);
         let mut window = Window::new(p.start_index.unwrap_or(0), max_length);
         let done = window.stop_flag();
         let mode = if p.raw.unwrap_or(false) {
