@@ -129,8 +129,8 @@ Per-fetch items (all budgets, worst case per item):
 | c | gzip inflate state + step buffer (flate2) | 0.094 (32 KiB + 64 KiB) | bounded output steps |
 | d | Charset prescan hold | 0.004 | prefix hold until decoder chosen |
 | e | Decoder working buffer | 0.016 | encoding_rs streaming decoder |
-| f | lol_html rewriter | 2.0 | `MemorySettings.max_allowed_memory_usage = 2 MiB`; exceed -> `converter_limit` |
-| g | Markdown emitter state | 1.0 | depth 256; href <= 2 KiB; pending block <= 64 KiB; table row <= 64 KiB |
+| f | lol_html rewriter | 2.0 | `MemorySettings.max_allowed_memory_usage = 2 MiB`; exceed -> `converter_limit`. NOTE (fix-pass 1): this limit does NOT count lol_html's per-attribute outlines (~140 B per attribute with growth; a 1.6 MiB tag of `a a a` cost ~114 MB RSS). A raw pre-scan (`convert/tagscan.rs`, ATTR_CAP 1024 attributes per tag) refuses such input with `converter_limit`; a single 1.9 MiB attribute is allowed and costs ~5-7 MiB per fetch. Shown by `tests/hostile_rss.rs` (3 concurrent, peak <= 40 MiB) |
+| g | Markdown emitter state | 1.0 | depth 256; href <= 2 KiB; pending block <= 64 KiB; table row <= 256 KiB (cell 64 KiB) |
 | h | Landmark holdback (ADR-002) | 0.25 | overflow -> flush, whole-body mode |
 | i | Output window String | 0.38 (100,000 chars x 4 B = 0.4 MB) | `FETCH_MAX_LENGTH_CAP` default lowered from 200,000 to 100,000 (see Required doc changes); default `max_length` 5000 -> 0.02 |
 | j | Result copy handed to rmcp (`CallToolResult` text clone) | 0.38 | ASSUMPTION: one clone; rmcp clone count is NOT verified. A-2 must measure by allocation count (counting allocator in a test) and this row is revised to the measured number |

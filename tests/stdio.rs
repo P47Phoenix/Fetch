@@ -323,6 +323,26 @@ fn version_flag_prints_one_line_and_exits() {
     let s = String::from_utf8(out.stdout).unwrap();
     assert!(s.starts_with("fetch-mcp "), "{s}");
     assert_eq!(s.lines().count(), 1);
+    // E-4: build identity (commit is 40 hex chars, `<40 hex>-dirty` when tracked files were modified, or `unknown` outside a
+    // git checkout; lock hash is SHA-256 hex).
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let commit = words
+        .iter()
+        .find_map(|w| w.strip_prefix("commit="))
+        .expect("commit= in --version");
+    let sha = commit.strip_suffix("-dirty").unwrap_or(commit);
+    assert!(
+        commit == "unknown" || (sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{s}"
+    );
+    let lock = words
+        .iter()
+        .find_map(|w| w.strip_prefix("cargo-lock="))
+        .expect("cargo-lock= in --version");
+    assert!(
+        lock.len() == 64 && lock.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{s}"
+    );
 }
 
 #[test]
@@ -423,5 +443,119 @@ fn too_deeply_nested_frame_gets_no_reply_but_server_survives() {
         s.raw.iter().all(|l| !l.contains("\"id\":900")),
         "pinned rmcp behaviour changed (a reply to the deep frame now exists): revisit F-1"
     );
+    s.finish_and_assert_pure();
+}
+
+/// Serve `body` as `text/html` to every connection (loopback fixture for `bench-loopback` builds).
+#[cfg(feature = "bench-loopback")]
+fn serve_html(body: Vec<u8>) -> u16 {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let body = std::sync::Arc::new(body);
+    std::thread::spawn(move || {
+        while let Ok((mut c, _)) = listener.accept() {
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                let _ = c.read(&mut buf);
+                let _ = write!(
+                    c,
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(&body);
+            });
+        }
+    });
+    port
+}
+
+#[cfg(feature = "bench-loopback")]
+fn tool_text(r: &Value) -> String {
+    r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Peak RSS (`VmHWM`, KiB) of a running process.
+#[cfg(all(feature = "bench-loopback", target_os = "linux"))]
+fn peak_rss_kib(pid: u32) -> usize {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.split_whitespace().next().and_then(|n| n.parse().ok()))
+        .expect("VmHWM")
+}
+
+/// Code review B1 end to end through the real binary: script, style, iframe and nav text must not reach the
+/// output at any nesting depth (it used to leak from 256 open elements on). Failing closed is allowed.
+#[cfg(feature = "bench-loopback")]
+#[test]
+fn real_stdio_drop_rules_hold_at_any_depth() {
+    let mut s = Session::start();
+    s.handshake();
+    for depth in [255usize, 256, 300, 10_000] {
+        let html = format!(
+            "{}<script>SECRET_JS()</script><style>.SECRETCSS{{x:y}}</style><iframe>SECRETIFRAME</iframe>\
+             <nav>SECRETNAV</nav><div hidden>SECRETHIDDEN</div><p>body</p>{}",
+            "<div>".repeat(depth),
+            "</div>".repeat(depth)
+        );
+        let port = serve_html(html.into_bytes());
+        let r = s.tool_call(&json!({"url": format!("http://127.0.0.1:{port}/")}));
+        let text = tool_text(&r);
+        assert!(!text.contains("SECRET"), "depth {depth} leaked: {text:?}");
+        if r["result"]["isError"] == true {
+            assert!(text.contains("converter_limit"), "depth {depth}: {text}");
+        } else {
+            assert!(text.contains("body"), "depth {depth}: {text:?}");
+        }
+    }
+    s.finish_and_assert_pure();
+}
+
+/// Architect B2 end to end: an attribute bomb is refused (`converter_limit`) and a 1.9 MiB single attribute
+/// converts, three fetches at a time, with the peak RSS of the real server process under the 40 MiB target.
+#[cfg(all(feature = "bench-loopback", target_os = "linux"))]
+#[test]
+fn real_stdio_attribute_bomb_is_refused_and_peak_rss_stays_under_40_mib() {
+    let bomb = format!("<div {}>x</div>", "a ".repeat(950 * 1024));
+    let big_attr = format!("<img alt=\"{}\">x", "z".repeat(1900 * 1024));
+    let mut s = Session::start();
+    s.handshake();
+    let pid = s.child.id();
+    for (name, html, refused) in [("bomb", bomb, true), ("huge attribute", big_attr, false)] {
+        let port = serve_html(html.into_bytes());
+        // three concurrent calls: FETCH_MAX_CONCURRENCY defaults to 3
+        for id in 101..104u64 {
+            s.send(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"fetch","arguments":{"url": format!("http://127.0.0.1:{port}/")}}}));
+        }
+        let mut seen = 0;
+        while seen < 3 {
+            let l = s
+                .lines
+                .recv_timeout(Duration::from_secs(30))
+                .expect("reply within 30s");
+            s.raw.push(l.clone());
+            let v: Value = serde_json::from_str(&l).expect("json");
+            if v["id"].as_u64().is_some_and(|i| (101..104).contains(&i)) {
+                seen += 1;
+                let text = tool_text(&v);
+                if refused {
+                    assert_eq!(v["result"]["isError"], true, "{name}: {v}");
+                    assert!(text.contains("converter_limit"), "{name}: {text}");
+                } else {
+                    assert_ne!(v["result"]["isError"], true, "{name}: {text}");
+                }
+            }
+        }
+        let peak = peak_rss_kib(pid) / 1024;
+        eprintln!("stdio hostile rss after {name} x3: peak {peak} MiB");
+        assert!(peak <= 40, "{name}: server peak RSS {peak} MiB > 40 MiB");
+    }
     s.finish_and_assert_pure();
 }

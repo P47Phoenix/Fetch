@@ -31,6 +31,8 @@ pub enum FetchError {
     Network(String),
     /// A malformed response: oversized or too many headers, bad redirect `Location`, corrupt gzip.
     BadResponse(String),
+    /// The HTML converter hit a memory or output limit (or could not process the page). `raw=true` returns the text unconverted.
+    ConverterLimit(String),
     /// An unexpected internal failure on an `Err` path (panics abort instead).
     Internal(String),
 }
@@ -50,6 +52,7 @@ impl FetchError {
             Self::TooManyRedirects => "too_many_redirects",
             Self::Network(_) => "network_error",
             Self::BadResponse(_) => "bad_response",
+            Self::ConverterLimit(_) => "converter_limit",
             Self::Internal(_) => "internal",
         }
     }
@@ -72,6 +75,7 @@ impl fmt::Display for FetchError {
             | Self::UnsupportedEncoding(m)
             | Self::Network(m)
             | Self::BadResponse(m)
+            | Self::ConverterLimit(m)
             | Self::Internal(m) => f.write_str(m),
             Self::HttpStatus(code) => write!(f, "the server answered with HTTP status {code}"),
             Self::TooManyRedirects => f.write_str("too many redirects"),

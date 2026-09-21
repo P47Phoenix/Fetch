@@ -4,11 +4,13 @@
 //! failures (ADR-006 amendment 2026-09-19). On success the text is returned as fetched: no label, wrapper or
 //! notice is added (OQ-5 decided NO on 2026-09-20, ADR-006 note).
 //!
-//! Interim scope: the body is decoded as UTF-8 and the requested character window (`start_index`,
-//! `max_length`) is kept while the whole body is still read and size-checked; HTML conversion, early stop,
-//! pagination messages and `raw` handling arrive with A-4, A-5 and A-6.
+//! Interim scope: the body is decoded as UTF-8, HTML is converted to markdown as it streams (A-4; `raw=true`
+//! skips the conversion), and the requested character window (`start_index`, `max_length`) is kept while the
+//! whole body is still read and size-checked; early stop and pagination messages arrive with A-5, content-type
+//! rejection with A-6.
 
 use crate::config::Config;
+use crate::convert::Mode;
 use crate::fetch::dns::SystemResolver;
 use crate::fetch::{FetchClient, Fetched, Limits};
 use crate::policy::Policy;
@@ -128,7 +130,9 @@ pub fn with_header(f: &Fetched, body: String) -> String {
 
 #[tool_router(server_handler)]
 impl Fetch {
-    #[tool(description = "Fetch a URL and return its content as markdown")]
+    #[tool(
+        description = "Fetch a URL and return its content. HTML pages are converted to markdown (scripts, styles and navigation dropped); other text is returned as is. Set raw=true for the unconverted body."
+    )]
     async fn fetch(
         &self,
         Parameters(p): Parameters<FetchParams>,
@@ -138,9 +142,14 @@ impl Fetch {
             .unwrap_or(DEFAULT_MAX_LENGTH)
             .min(self.max_length_cap);
         let mut window = Window::new(p.start_index.unwrap_or(0), max_length);
+        let mode = if p.raw.unwrap_or(false) {
+            Mode::Raw
+        } else {
+            Mode::Markdown
+        };
         let result = self
             .client
-            .fetch(&p.url, &mut |text: &str| window.push(text))
+            .fetch_as(&p.url, mode, &mut |text: &str| window.push(text))
             .await;
         Ok(match result {
             Ok(f) => CallToolResult::success(vec![ContentBlock::text(with_header(

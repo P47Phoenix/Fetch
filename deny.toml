@@ -24,6 +24,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # crate itself, which is OQ-7 (open).
 [licenses]
 version = 2
+# Note: `cargo deny check` prints "license was not encountered" warnings for BSD-2-Clause and CC0-1.0 (allowed but no
+# current dependency uses them). Harmless (the check passes); kept as allowances, drop them if the warning is unwanted.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -37,6 +39,16 @@ allow = [
     # webpki-roots (embedded Mozilla trust anchors, ADR-001, added by A-3b) is licensed CDLA-Permissive-2.0, a
     # permissive data licence.
     "CDLA-Permissive-2.0",
+]
+
+# MPL-2.0 (file-level weak copyleft) is allowed ONLY for the crates lol_html (A-4, ADR-002) pulls in for CSS
+# selector matching: cssparser, cssparser-macros, dtoa-short and selectors (Servo). They are used unmodified as
+# crates.io dependencies, which MPL-2.0 permits without extending its terms to this crate; nothing else may use it.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cssparser" },
+    { allow = ["MPL-2.0"], crate = "cssparser-macros" },
+    { allow = ["MPL-2.0"], crate = "dtoa-short" },
+    { allow = ["MPL-2.0"], crate = "selectors" },
 ]
 
 # publish = false crate: its own licence is not checked here (OQ-7 open).

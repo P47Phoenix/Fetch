@@ -3,7 +3,7 @@
 Speaks minimal MCP over stdio. `fetch` streams the URL body (discarding it), refusing above a 5 MiB
 cap with a too_large error, then holds STANDIN_ALLOC_MIB of touched memory so peak RSS is known.
 Env: STANDIN_IDLE_ALLOC_MIB (at start), STANDIN_ALLOC_MIB (on successful fetch),
-STANDIN_EARLY_STOP=<bytes> (read only that many bytes: must be flagged invalid), STANDIN_TOOLARGE_ALLOC_MIB (on too_large, to test boundedness FAIL), STANDIN_NO_REDIRECT=1 (do not follow redirects: redirect-chain must be INVALID), STANDIN_BENCH=1 (--version marker), STANDIN_DELAY_MS (startup delay, timing self-test).
+STANDIN_EARLY_STOP=<bytes> (read only that many bytes: must be flagged invalid), STANDIN_TOOLARGE_ALLOC_MIB (on too_large, to test boundedness FAIL), STANDIN_NO_REDIRECT=1 (do not follow redirects: redirect-chain must be INVALID), STANDIN_BENCH=1 (--version marker), STANDIN_DELAY_MS (startup delay, timing self-test), STANDIN_NO_HOSTILE_REFUSAL=1 (convert the hostile-attrs page instead of refusing it: hostile-attrs3 must be INVALID).
 """
 import http.client, json, os, sys, time, urllib.parse
 
@@ -26,6 +26,8 @@ def fetch(url):
         if r.status in (301, 302, 303, 307, 308) and loc and not os.environ.get("STANDIN_NO_REDIRECT"):
             r.read(); c.close(); url = urllib.parse.urljoin(url, loc); continue
         break
+    if "hostile-attrs" in url and not os.environ.get("STANDIN_NO_HOSTILE_REFUSAL"):   # the product refuses the attribute bomb after the first slices
+        r.read(64 * 1024); c.close(); return "converter_limit"
     cl = r.getheader("Content-Length")
     if cl and int(cl) > CAP:
         c.close(); return "too_large"

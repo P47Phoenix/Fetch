@@ -1,6 +1,6 @@
 # ADR-002: Streaming HTML-to-markdown converter and main-content extraction
 
-Status: Proposed (memory case proven on x86 with a crude emitter; quality unproven)
+Status: Accepted, with the amendment at the end (fix-pass 1, Sprint 4). Quality (95%/50%) remains unproven until the E-7 check.
 Date: 2026-09-19
 
 ## Context
@@ -41,3 +41,9 @@ Quality risk controls: golden fixtures; 50-URL set metrics in CI; `raw=true` alw
 - If `converter_limit` errors exceed 2% on the URL set on any platform, raise the lol_html limit (2 -> 4 MiB) within budget or move to option C.
 - If html5gum-based prototype uses >= 20% less memory AND yields equal or better golden results, swap via the trait.
 - Not an ARM-only question: if token reduction < 50% or FR-03 goldens fail after tuning, revisit option A as a hybrid (DOM for the first N KB) with explicit memory numbers.
+
+## Amendment (Sprint 4 fix-pass 1)
+- Tier 2 (the fallback ladder beyond the streaming emitter) is NOT implemented; only the streaming lol_html emitter exists.
+- The 2 MiB lol_html limit does not bound attribute memory; an attribute-count guard (ATTR_CAP 1024, `converter_limit`) was added. The limit itself is unchanged at 2 MiB.
+- Table row bound is 256 KiB (cell 64 KiB), not 64 KiB.
+- The flip rules above (2% `converter_limit`, 50% token reduction) are still unevaluated until the E-7 check.

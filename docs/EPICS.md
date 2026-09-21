@@ -103,6 +103,8 @@ As a developer on ARM, I want peak memory verified during fetches so that large 
 - Given the 50 MiB fixture served chunked (no `Content-Length`) and a full read without a window, when `fetch` runs, then reading stops at the cap, the call returns a `too_large` error and peak RSS is within 10% of the 5 MiB-page peak. (The windowed variants, chunked window inside the cap succeeding and window beyond the cap, need A-5 and are G4b scenarios.)
 - Given 10 concurrent fetches of the 5 MiB page, when they run, then peak RSS is recorded and reported (NFR-08 documentation).
 - Given allocator candidates from A-1, when compared here, then the chosen allocator and its RSS effect are recorded.
+- **E-4 hostile-input scenarios (fix-pass 1):** `hostile-attrs3` and `hostile-attrvalue3` (3 concurrent, generated pages) are RECORDED, not gates: the pages are generated from constants rather than hash-pinned files and no hostile-input gate exists in the PRD or architecture. They still fail closed on validity (refusal expected for the bomb, success for the huge attribute).
+- **E-4 status (Sprint 4, PR #8; results in BENCHMARK.md section 16).** Implemented: `--version` commit and Cargo.lock hash via `build.rs`, enforced by `scripts/build-candidates.sh` and `measure.py --gate --peer-binary`; `g6-concurrent10` (recorded, verdict RECORDED); G4b scenarios stay defined and refused as not implemented (A-5 and A-6, Sprint 5); G4a run on all four hosted cells (arm64 gnu and musl required, amd64 also run): all PASS in CI run 35557702662 (re-run as 35562347553 and 35563535561, all PASS, no trend claim) (gating peak 4.56 to 6.16 MiB, idle 2.35 to 4.62 MiB, boundedness at most 1.027); allocator recorded (system allocator, no swap needed); shipped-vs-bench record (idle delta at most 0.13 MiB, size delta 80 to 144 B). Deviations: the public-host cross-check used a ~2 MiB public page (no ~5 MiB public page is known) and is an advisory CI step; the amd64 cells run beyond the aarch64-only wording of the G4a AC (ADR-007). A G4a pass is not the memory gate closing (G4b, Sprint 5).
 - Re-homed from E-2 (pending owner acknowledgement, recorded Sprint 3 fix-pass 1): the `g6-concurrent10` scenario and the G4b scenario implementations are defined in the harness but marked not implemented; E-4 (with A-5 and A-6 for G4b) implements them. The E-2 macOS `/usr/bin/time -l` reader is not built (no macOS gate host); it is a known deviation from the E-2 acceptance text, also pending owner acknowledgement.
 
 
@@ -128,7 +130,7 @@ As the project owner, I want the 50 curated pages captured once as offline snaps
 - [Prerequisite: the URL list is DEFERRED from E-1 to the project owner; E-7 cannot start without it] Given the URL list from E-1, when the snapshots are captured (a script using the A-3b client or `curl`, run once by the author), then each page is stored as an HTML file with a manifest carrying its URL, capture date, size and sha256, and the harness or test refuses a hash mismatch.
 - Given the set, when committed, then the total size and licensing of the stored pages are recorded and the set contains no page that needs cookies or authentication.
 - Given the set, when the 10-URL live smoke list is defined, then it is stored as a separate non-gating list.
-- The 95% conversion success and 50% median token reduction checks run in A-4 (Sprint 4); this story only supplies the set.
+- The 95% conversion success and 50% median token reduction checks are implemented against the set in A-4 (Sprint 4) but cannot run until E-7 lands; this story only supplies the set (E-7 was planned for Sprint 2 but has slipped: it needs the owner's URL lists, so the A-4 checks run when E-7 lands and A-4 is not Done until then).
 
 ### E-8: Bench-only loopback policy build (1 pt) [CONFIRMED by the user 2026-09-19; added in plan revision 2]
 Maps to: NFR-14, NFR-11, Goal 1d, Risk 2.
@@ -220,6 +222,8 @@ As a developer on ARM, I want the body read as a stream and capped so that memor
 Note: B-1, B-2 and B-3 own test depth (encodings, mixed answers, rebinding simulation), the coverage gate and hardening for what A-3a and A-3b land. Split rationale and cut: see `.delivery/artifacts/05-plan/po/sprint-plan.md`.
 
 ### A-4: HTML to markdown conversion (5 pts)
+**Status (Sprint 4, PR #8): implemented, NOT Done.** The 95% conversion success, 50% median token reduction and no-`<script>` checks run against the E-7 snapshot set and have not been run (E-7 has not landed); A-4 is Done only when they pass. Fix-pass 1 (after the DoD reviews) fixed the drop-rule leak past 256 open elements and added a 1,024-attribute guard (`converter_limit`). Follow-ups recorded below.
+**Follow-ups from the Sprint 4 DoD reviews (not fixed in fix-pass 1):** (1) literal `<script>` text can appear in output from an img alt, an `<xmp>` or escaped text; the E-7 no-`<script>` check needs a defined rule for that (test the tag, or allow the literal text); (2) there is no early stop until A-5; (3) sniffing untyped bodies is A-6; (4) evaluate lol_html 3.x (attribute memory accounting); (5) conversion overhead on musl is not measured (gnu only: 62.7 ms arm64, 75.0 ms amd64 in the CI run on f9e4c9d).
 Maps to: FR-03, NFR-02.
 As an LLM agent, I want clean markdown so that I spend fewer tokens.
 - Given an HTML page with headings, links, lists and code blocks, when `fetch` is called, then those elements are preserved in markdown.
@@ -497,7 +501,7 @@ Assumes 2-week sprints, 10 points capacity, at most 8 committed.
 | 1 | Walking skeleton and SSRF core (no network code yet) | A-2, A-3a | 8 |
 | 2 | Bounded streaming fetch, SSRF-guarded; 50-URL snapshots captured; bench loopback build | A-3b, E-7, E-8 | 8 |
 | 3 | Benchmark harness and idle RSS | E-2, E-3, A-9 | 8 |
-| 4 | Convert (95%/50% checks), and memory gate G4a | A-4, E-4 | 8 |
+| 4 | Convert (95%/50% checks run at the end, A-4 not Done until they pass), and memory gate G4a | A-4, E-4 | 8 |
 | 5 | Paginate and content types; memory gate G4b | A-5, A-6 | 6 |
 | 6 | Clear errors and private-IP test depth | A-7, B-1 | 8 |
 | 7 | Redirect limit, encoded forms, benchmark report | B-3, B-2, E-5 | 8 |

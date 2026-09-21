@@ -11,7 +11,7 @@ incomplete gate set, a boundedness scenario without its 5 MiB reference); 3 --ga
 (checked after every other --gate rule, so those refusals are exercisable anywhere).
 Without --gate the run is advisory (record has gating=false). Sizes are MiB (2**20). Linux only (macOS /usr/bin/time -l is not implemented: open gap).
 """
-import argparse, concurrent.futures as cf, datetime, json, math, os, platform, queue, statistics, subprocess, sys, threading, time
+import argparse, concurrent.futures as cf, datetime, json, math, os, platform, queue, re, statistics, subprocess, sys, threading, time
 import fixtures, serve
 from scenarios import SCENARIOS, GROUPS
 
@@ -73,6 +73,12 @@ def host_record():
     mem = next((l.split()[1] for l in read_file("/proc/meminfo", "").splitlines() if l.startswith("MemTotal")), "unknown")
     cpu = next((l.split(":", 1)[1].strip() for l in read_file("/proc/cpuinfo", "").splitlines()
                 if l.startswith(("model name", "Model", "Hardware"))), "unknown")
+    if cpu == "unknown":   # arm64 /proc/cpuinfo has no model name; lscpu does
+        try:
+            out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=5, env={"LC_ALL": "C", "PATH": os.environ.get("PATH", "")}).stdout
+            cpu = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("Model name")), "unknown")
+        except (OSError, subprocess.SubprocessError):
+            pass
     return {"kind": "host", "machine": platform.machine(), "kernel": platform.release(), "cpu": cpu,
             "mem_total_kB": mem, "pagesize": os.sysconf("SC_PAGE_SIZE"),
             "thp": read_file("/sys/kernel/mm/transparent_hugepage/enabled"),
@@ -109,6 +115,30 @@ def check_identity(binary, ver, kind, machine=None):
     has_marker = MARKER_PREFIX in data
     if kind == "shipped" and has_marker: return "binary contains a FETCH_MCP_MARKER_ token: not a shipped build"
     if kind == "bench" and b"FETCH_MCP_MARKER_BENCH_LOOPBACK_V1" not in data: return "bench binary lacks the FETCH_MCP_MARKER_BENCH_LOOPBACK_V1 marker"
+    return None
+
+
+IDENTITY_RE = re.compile(r"\bcommit=([0-9a-f]{40}|unknown) cargo-lock=([0-9a-f]{64}|unknown)\b")
+
+
+def build_identity(ver):
+    """(commit, cargo_lock_sha256) from a `--version` line (E-4, re-homed from E-8), or None when the line carries neither."""
+    m = IDENTITY_RE.search(ver)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def check_build_identity(ver, peer_ver):
+    """--gate rule (E-4): both the measured binary and its peer (the shipped build for a bench run and vice versa) must report a
+    real commit and Cargo.lock hash in `--version`, and the two pairs must be equal, so the bench build is provably the
+    same commit and lock file as the shipped one. Returns None if OK, else the refusal reason."""
+    for v in (ver, peer_ver or ""):
+        m = re.search(r"\bcommit=[0-9a-f]{40}-dirty\b", v)
+        if m: return f"a build from a modified working tree ({m.group(0)}) never gates: rebuild from a clean checkout"
+    mine, other = build_identity(ver), build_identity(peer_ver or "")
+    if mine is None: return f"--version carries no commit=/cargo-lock= identity: {ver[:80]!r}"
+    if other is None: return f"peer binary --version carries no commit=/cargo-lock= identity: {(peer_ver or '')[:80]!r}"
+    if "unknown" in mine + other: return f"commit or Cargo.lock hash is unknown (build outside a git checkout?): {mine} / {other}"
+    if mine != other: return f"shipped and bench builds differ: {mine} versus {other}"
     return None
 
 
@@ -167,6 +197,20 @@ class Server:
             except ValueError: continue   # non-JSON stdout line: ignore, the timeout still bounds the wait
             if isinstance(m, dict) and m.get("id") == want: return m
 
+    def call_many(self, method, params, n, timeout=300, label=""):
+        """Send n identical requests back to back, then collect the n replies (any order). Used by the concurrent scenarios
+        (g6-concurrent10, hostile-*); `label` names the scenario in a stall report."""
+        want = {self.send(method, params) for _ in range(n)}
+        got, end = [], time.time() + timeout
+        while want:
+            try: line = self.q.get(timeout=max(0.1, end - time.time()))
+            except queue.Empty: raise RuntimeError(f"{label or method}: stalled, {len(want)} of {n} concurrent replies still outstanding after {timeout}s") from None
+            if line is None: raise RuntimeError("server closed stdout")
+            try: m = json.loads(line)
+            except ValueError: continue
+            if isinstance(m, dict) and m.get("id") in want: want.discard(m["id"]); got.append(m)
+        return got
+
     def call_ok(self, method, params=None, timeout=120):
         """call() that requires a JSON-RPC result: an error reply (or no result) is a protocol failure."""
         m = self.call(method, params, timeout)
@@ -209,18 +253,24 @@ def _sample(binary, env_extra, scen, srv, base_url, settle, t):
             return {"valid": True, "rss_kB": st["VmRSS"], "hwm_kB": st["VmHWM"]}
         srv.reset()
         t_call = time.monotonic()
-        r = s.call("tools/call", {"name": "fetch", "arguments": {"url": base_url + scen["route"], **scen.get("args", {})}})
+        params = {"name": "fetch", "arguments": {"url": base_url + scen["route"], **scen.get("args", {})}}
+        n = scen.get("concurrency", 1)
+        replies = s.call_many("tools/call", params, n, label=scen["route"]) if n > 1 else [s.call("tools/call", params)]
         t["fetch_ms"] = ms_since(t_call)
         key = scen.get("counter", scen["route"])
         fb = srv.first_byte_at(key)   # fixture server's first body write (same process, same monotonic clock)
         if fb is not None and fb >= t_call: t["first_byte_ms"] = round((fb - t_call) * 1000, 3)
         st = proc_status(s.p.pid)  # VmHWM read after the call returned, before exit
-        if "error" in r or not isinstance(r.get("result"), dict): raise RuntimeError(f"tools/call returned a JSON-RPC error: {json.dumps(r)[:200]}")
-        res = r["result"]
-        got_err = bool(res.get("isError"))
-        # too_large must be a tool error whose content text (not any field) says so.
-        err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
-        outcome_ok = (got_err and "too_large" in err_text) if scen["expect"] == "too_large" else (not got_err)
+        for r in replies:
+            if "error" in r or not isinstance(r.get("result"), dict): raise RuntimeError(f"tools/call returned a JSON-RPC error: {json.dumps(r)[:200]}")
+        results = [r["result"] for r in replies]
+        # too_large must be a tool error whose content text (not any field) says so; every concurrent call must agree.
+        def outcome(res):
+            got_err = bool(res.get("isError"))
+            err_text = " ".join(c.get("text", "") for c in res.get("content", []) if isinstance(c, dict))
+            if scen["expect"] in ("too_large", "converter_limit"): return got_err and scen["expect"] in err_text
+            return not got_err
+        outcome_ok = all(outcome(res) for res in results)
         sent, need = srv.bytes_sent(key), scen["min_bytes_v"]
         reason = None if outcome_ok else f"unexpected outcome (expected {scen['expect']})"
         reason = reason or (None if sent >= need else f"early stop: server wrote {sent} < expected_min_bytes {need}")
@@ -244,6 +294,7 @@ def _main(argv=None):
     ap.add_argument("--binary", required=True)
     ap.add_argument("--binary-kind", required=True, choices=["shipped", "bench"])
     ap.add_argument("--scenario", action="append", required=True)
+    ap.add_argument("--peer-binary", help="the other build of the same commit (bench for a shipped run, shipped for a bench run); --gate requires it and asserts equal commit and Cargo.lock hash (E-4)")
     ap.add_argument("--runs", type=int, default=10)
     ap.add_argument("--settle", type=float, default=30.0, help="idle settle seconds after tools/list (default 30)")
     ap.add_argument("--parallel-idle", type=int, default=1, help="idle samples may run in parallel processes")
@@ -301,13 +352,18 @@ def _main(argv=None):
     if a.gate:
         why = check_identity(a.binary, ver, a.binary_kind)
         if why: return refuse(f"--gate binary identity: {why}")
+        if not a.peer_binary: return refuse("--gate requires --peer-binary (the other build of the same commit) to assert equal commit and Cargo.lock hash (E-4)")
+        if not (os.path.isfile(a.peer_binary) and os.access(a.peer_binary, os.X_OK)): return refuse(f"peer binary not found or not executable: {a.peer_binary}")
+        why = check_build_identity(ver, version_of(a.peer_binary, env_extra))
+        if why: return refuse(f"--gate build identity: {why}")
     for n in names:
         need = SCENARIOS[n].get("binary", "bench")
         if need != a.binary_kind: return refuse(f"scenario {n} is gated on the {need} binary, got {a.binary_kind}")
 
     run_start = utc_now()
-    host = host_record(); host["native_aarch64"] = native_aarch64()[0]; host["native_gate_host"] = native_host()[0]
-    emit({**host, "run_start_utc": run_start, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "binary_sha256": fixtures.sha256_file(a.binary),
+    host = host_record(); host["native_aarch64"] = native_aarch64()[0]; host["native_gate_host"] = native_host(strict=True)[0]
+    emit({**host, "run_start_utc": run_start, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "build_identity": build_identity(ver),
+          "peer_version": version_of(a.peer_binary, env_extra) if a.peer_binary else None, "binary_sha256": fixtures.sha256_file(a.binary),
           "child_env": {**PINNED_ENV, **env_extra}, "runs": a.runs, "settle_s": a.settle, "gating": a.gate,
           "fixture_sha256": {k: v.get("sha256") or v["decompressed_sha256"] for k, v in manifest["fixtures"].items()}, "unit": "MiB=2^20 bytes"})
 
@@ -340,6 +396,8 @@ def _main(argv=None):
                 med = statistics.median(vals); medians[n] = med
                 rec.update(median_kB=med, min_kB=min(vals), max_kB=max(vals), median_MiB=round(med / MIB_KB, 2),
                            verdict="PASS" if med <= target_kb else "FAIL")
+                if scen.get("recorded_only"):   # G6: reported (NFR-08 documentation), never a pass/fail figure
+                    rec["verdict"] = "RECORDED"; rec["recorded_only"] = True
                 if rec["verdict"] == "FAIL": missed.append(n)
             else:
                 rec["verdict"] = "INVALID"; invalid.append(n)

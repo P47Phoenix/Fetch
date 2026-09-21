@@ -217,19 +217,21 @@ with tempfile.TemporaryDirectory() as bd:
     with tempfile.TemporaryDirectory() as empty:
         check("native_host: readable (empty) binfmt dir passes under strict", measure.native_host("x86_64", empty, strict=True)[0])
 
-def gate_run(extra_env=None):
+GOOD_ID = "commit=" + "a" * 40 + " cargo-lock=" + "b" * 64
+
+def gate_run(extra_env=None, scenarios=("g4a",), peer=STANDIN, version=None):
     """In-process --gate run of the stand-in as a bench build with identity and host checks satisfied by patches
     (a stand-in cannot be an ELF). Exercises the real gating verdict/exit-code paths, whatever the host arch."""
     saved = (measure.native_host, measure.check_identity, measure.version_of, dict(measure.PINNED_ENV))
     measure.native_host = lambda *a, **k: (True, "ok")
     measure.check_identity = lambda *a, **k: None
-    measure.version_of = lambda *a, **k: "fetch-mcp 0.0.0 bench-loopback"
+    measure.version_of = version or (lambda *a, **k: "fetch-mcp 0.0.0 " + GOOD_ID + " bench-loopback")
     measure.PINNED_ENV.update(extra_env or {})
     buf = io.StringIO()
     try:
         with tempfile.TemporaryDirectory() as gd, contextlib.redirect_stdout(buf):
             fixtures.generate(gd)
-            rc = measure.main(["--binary", STANDIN, "--binary-kind", "bench", "--scenario", "g4a", "--gate", "--fixtures-dir", gd])
+            rc = measure.main(["--binary", STANDIN, "--binary-kind", "bench", *[x for sc in scenarios for x in ("--scenario", sc)], "--gate", "--fixtures-dir", gd, *(["--peer-binary", peer] if peer else [])])
     finally:
         measure.native_host, measure.check_identity, measure.version_of = saved[:3]
         measure.PINNED_ENV.clear(); measure.PINNED_ENV.update(saved[3])
@@ -243,6 +245,50 @@ check("gate mode: peak over 40 MiB -> FAIL, exit 1", rc == 1 and r[-1]["verdict"
 rc, r = gate_run({"STANDIN_EARLY_STOP": "1000"})
 check("gate mode: early-stopping server -> INVALID, exit 2", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc} {r[-1].get('verdict')}")
 
+# --- E-4: build identity (commit and Cargo.lock hash in --version) and the peer-binary rule under --gate
+ID2 = "commit=" + "c" * 40 + " cargo-lock=" + "b" * 64
+check("build identity: parsed from a --version line", measure.build_identity("fetch-mcp 0.0.0 " + GOOD_ID + " bench-loopback") == ("a" * 40, "b" * 64))
+check("build identity: equal pairs pass", measure.check_build_identity("fetch-mcp 0.0.0 " + GOOD_ID, "fetch-mcp 0.0.0 " + GOOD_ID + " bench-loopback") is None)
+check("build identity: differing commit refused", "differ" in (measure.check_build_identity("fetch-mcp 0.0.0 " + GOOD_ID, "fetch-mcp 0.0.0 " + ID2) or ""))
+check("build identity: differing Cargo.lock hash refused", "differ" in (measure.check_build_identity("fetch-mcp 0.0.0 " + GOOD_ID, "fetch-mcp 0.0.0 commit=" + "a" * 40 + " cargo-lock=" + "d" * 64) or ""))
+check("build identity: missing identity refused (old binary or stand-in)", measure.check_build_identity("fetch-mcp 0.0.0", "fetch-mcp 0.0.0 " + GOOD_ID) is not None)
+check("build identity: a -dirty commit is refused with the reason", "modified working tree" in (measure.check_build_identity("fetch-mcp 0.0.0 commit=" + "a" * 40 + "-dirty cargo-lock=" + "b" * 64, "fetch-mcp 0.0.0 " + GOOD_ID) or ""))
+check("build identity: unknown commit refused", "unknown" in (measure.check_build_identity("fetch-mcp 0.0.0 commit=unknown cargo-lock=" + "b" * 64, "fetch-mcp 0.0.0 commit=unknown cargo-lock=" + "b" * 64) or ""))
+rc, r = gate_run(peer=None)
+check("gate mode: no --peer-binary -> REFUSED, exit 2", rc == 2 and r[-1]["verdict"] == "REFUSED" and "--peer-binary" in r[-1]["reason"], f"rc={rc} {r[-1]}")
+n = [0]
+def alternating(*a, **k):   # measured binary and peer disagree on the commit
+    n[0] += 1
+    return "fetch-mcp 0.0.0 " + (GOOD_ID if n[0] == 1 else ID2) + " bench-loopback"
+rc, r = gate_run(version=alternating)
+check("gate mode: bench and shipped report different commits -> REFUSED, exit 2", rc == 2 and r[-1]["verdict"] == "REFUSED" and "differ" in r[-1]["reason"], f"rc={rc} {r[-1]}")
+rc, r = gate_run(scenarios=("g4a", "g6-concurrent10"))
+g6 = next((x for x in r if x.get("scenario") == "g6-concurrent10"), {})
+check("g6-concurrent10: 10 concurrent calls, 10 valid runs, verdict RECORDED (never PASS/FAIL), outside the gating peak, gate run still PASS",
+      rc == 0 and g6.get("verdict") == "RECORDED" and g6.get("valid_runs") == 10 and g6.get("gate") == "none" and r[-1]["verdict"] == "PASS", f"rc={rc} {g6.get('verdict')} {g6.get('invalid_reasons')}")
+rc, r = gate_run({"STANDIN_ALLOC_MIB": "60"}, scenarios=("g4a", "g6-concurrent10"))
+check("g6-concurrent10: a huge peak is recorded, not a miss (missed lists only gating scenarios)", "g6-concurrent10" not in r[-1].get("missed", []) and "g6-concurrent10" not in r[-1].get("invalid", []), str(r[-1].get("missed")))
+# Fix-pass 1: hostile-HTML peaks (3 concurrent), recorded like g6, still fail closed on validity
+rc, r = gate_run(scenarios=("g4a", "hostile-attrs3", "hostile-attrvalue3"))
+ha = next((x for x in r if x.get("scenario") == "hostile-attrs3"), {})
+hv = next((x for x in r if x.get("scenario") == "hostile-attrvalue3"), {})
+check("hostile-attrs3 / hostile-attrvalue3: 3 concurrent calls, 10 valid runs each, verdict RECORDED, outside the gating peak, gate run still PASS",
+      rc == 0 and ha.get("verdict") == "RECORDED" and hv.get("verdict") == "RECORDED" and ha.get("valid_runs") == 10 and hv.get("valid_runs") == 10
+      and ha.get("gate") == "none" and r[-1]["verdict"] == "PASS", f"rc={rc} {ha.get('verdict')} {ha.get('invalid_reasons')} {hv.get('verdict')} {hv.get('invalid_reasons')}")
+rc, r = gate_run({"STANDIN_NO_HOSTILE_REFUSAL": "1"}, scenarios=("g4a", "hostile-attrs3"))
+check("hostile-attrs3: a server that converts the attribute bomb instead of refusing it is INVALID (unexpected outcome), exit 2",
+      rc == 2 and "hostile-attrs3" in r[-1].get("invalid", []), f"rc={rc} {r[-1].get('invalid')}")
+rc, r = gate_run({"STANDIN_ALLOC_MIB": "60"}, scenarios=("g4a", "hostile-attrvalue3"))
+check("hostile-attrvalue3: a huge peak is recorded, not a miss", "hostile-attrvalue3" not in r[-1].get("missed", []) and "hostile-attrvalue3" not in r[-1].get("invalid", []), str(r[-1].get("missed")))
+check("fixtures: hostile bodies are deterministic, sized just under 2 MiB, and shaped as documented",
+      fixtures.hostile_body("attrs") == fixtures.hostile_body("attrs") and len(fixtures.hostile_body("attrs")) in range(fixtures.HOSTILE_SIZE - 4, fixtures.HOSTILE_SIZE + 1)
+      and len(fixtures.hostile_body("attrvalue")) == fixtures.ATTRVALUE_SIZE and fixtures.ATTRVALUE_SIZE <= 0.95 * 2 * 1024 * 1024 and fixtures.hostile_body("attrs").count(b" a") > 900_000)
+for g in ("g4b-window-start", "g4b-window-end", "g4b-raw", "g4b-chunked-window-in-cap", "g4b-window-beyond-cap"):
+    with tempfile.TemporaryDirectory() as gd:
+        fixtures.generate(gd)
+        rc, r = run("--fixtures-dir", gd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", g)
+    check(f"G4b scaffold {g}: defined, refused as not implemented (needs A-5/A-6, Sprint 5), exit 2", rc == 2 and "not implemented" in r[-1].get("reason", ""), f"rc={rc} {r[-1]}")
+
 # --- redirect-chain scenario (recorded, never in the gating peak) and the E-2 fixtures
 with tempfile.TemporaryDirectory() as rd:
     fixtures.generate(rd)
@@ -253,6 +299,18 @@ with tempfile.TemporaryDirectory() as rd:
     rc, r = run("--fixtures-dir", rd, "--binary-kind", "bench", "--child-env", "STANDIN_BENCH=1", "--scenario", "redirect-chain5", "--child-env", "STANDIN_NO_REDIRECT=1")
     check("redirect-chain5: a client that does not follow the redirects is INVALID (chain not followed), not a pass", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc}")
     check("redirect-chain5: INVALID counts in the summary (intended: a gate=none scenario still fails closed on validity)", "redirect-chain5" in r[-1]["invalid"], str(r[-1].get("invalid")))
+
+# --- report.py tolerates a truncated / malformed JSONL (carry-forward): skips the bad line, warns, keeps the good ones
+with tempfile.TemporaryDirectory() as td:
+    good = json.dumps({"kind": "scenario", "scenario": "idle", "binary_kind": "shipped", "metric": "VmRSS", "valid_runs": 10, "runs": 10,
+                       "median_kB": 3000, "median_MiB": 2.93, "samples_kB": [3000], "target_kB": 10240, "verdict": "PASS"})
+    jp = os.path.join(td, "idle.jsonl")
+    with open(jp, "w") as f: f.write("{\"kind\": \"scenario\", \"scen\n" + good + "\n{not json}\nplain text line\n" + good[:20])
+    p = subprocess.run([sys.executable, os.path.join(HERE, "report.py"), "--idle", jp], capture_output=True, text=True)
+    check("report.py: malformed JSONL lines are skipped with a warning, valid ones reported, exit 0",
+          p.returncode == 0 and len(set(p.stderr.splitlines())) == 3 and p.stderr.count("skipped a malformed JSONL line") >= 3 and "| idle | shipped |" in p.stdout, f"rc={p.returncode} {p.stderr!r}")
+    p = subprocess.run([sys.executable, os.path.join(HERE, "report.py"), "--idle", os.path.join(td, "missing.jsonl")], capture_output=True, text=True)
+    check("report.py: a missing file yields an empty report, exit 0", p.returncode == 0 and "| scenario |" in p.stdout, p.stderr)
 
 print("SELFTEST", "FAILED: " + ", ".join(fails) if fails else "PASSED")
 sys.exit(1 if fails else 0)

@@ -6,6 +6,7 @@
 #![deny(clippy::print_stdout)]
 
 pub mod config;
+pub mod convert;
 pub mod error;
 pub mod fetch;
 pub mod obs;
@@ -29,12 +30,20 @@ pub fn build_markers() -> Vec<&'static str> {
     .to_vec()
 }
 
-/// The `--version` line: crate name and version, then one marker per forbidden feature compiled in
-/// (none in a release build). Commit and Cargo.lock hash are NOT there yet: that E-8 acceptance criterion is re-homed to E-4 (it must land
-/// before G4a) and needs a build script.
+/// Git commit the binary was built from (`unknown` outside a git checkout); set by `build.rs`.
+pub const COMMIT: &str = env!("FETCH_MCP_COMMIT");
+/// SHA-256 (hex) of `Cargo.lock` at build time; set by `build.rs`.
+pub const CARGO_LOCK_SHA256: &str = env!("FETCH_MCP_CARGO_LOCK_SHA256");
+
+/// The `--version` line: crate name and version, `commit=<sha>` and `cargo-lock=<sha256>` (E-4, re-homed from
+/// E-8: the shipped and bench builds of one commit must report the same pair), then one marker per forbidden
+/// feature compiled in (none in a release build).
 #[must_use]
 pub fn version_line() -> String {
-    let mut line = format!("fetch-mcp {}", env!("CARGO_PKG_VERSION"));
+    let mut line = format!(
+        "fetch-mcp {} commit={COMMIT} cargo-lock={CARGO_LOCK_SHA256}",
+        env!("CARGO_PKG_VERSION")
+    );
     for m in build_markers() {
         line.push(' ');
         line.push_str(m);
@@ -56,6 +65,33 @@ mod tests {
     #[test]
     fn version_line_has_crate_version() {
         assert!(version_line().starts_with(concat!("fetch-mcp ", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn version_line_carries_commit_and_lock_hash() {
+        let v = version_line();
+        assert!(v.contains(&format!(" commit={}", super::COMMIT)));
+        assert!(v.contains(&format!(" cargo-lock={}", super::CARGO_LOCK_SHA256)));
+        assert_eq!(super::CARGO_LOCK_SHA256.len(), 64);
+        assert!(super::CARGO_LOCK_SHA256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn embedded_lock_hash_matches_cargo_lock() {
+        // Independent check of build.rs's SHA-256: compare with the system tool when it exists.
+        let out = std::process::Command::new("sha256sum")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
+            .output()
+            .ok();
+        if let Some(o) = out.filter(|o| o.status.success()) {
+            let s = String::from_utf8(o.stdout).unwrap();
+            assert_eq!(
+                s.split_whitespace().next().unwrap(),
+                super::CARGO_LOCK_SHA256
+            );
+        }
     }
 
     #[cfg(feature = "bench-loopback")]

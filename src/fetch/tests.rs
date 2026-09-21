@@ -334,6 +334,59 @@ async fn redirect_fragment_is_not_echoed_in_final_url() {
     );
 }
 
+/// A-9 end to end: the header text a redirected call returns never carries userinfo or a fragment, from either the
+/// request URL or the redirect Location. Userinfo cannot survive to the echo at all (the SSRF core refuses it on
+/// the first hop and on every redirect target), so the credential is proved absent from the refusal text too.
+#[tokio::test]
+async fn a9_echo_has_no_userinfo_or_fragment_end_to_end() {
+    let srv = spawn_server(handler(|mut s, head| async move {
+        let resp = if head.starts_with("GET /final") {
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\ndone"
+        } else {
+            "HTTP/1.1 302 Found\r\nConnection: close\r\nContent-Length: 0\r\nLocation: /final?a=1#locfrag\r\n\r\n"
+        };
+        let _ = s.write_all(resp.as_bytes()).await;
+    }))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(
+        &c,
+        &format!("http://public.test:{}/start#reqfrag", srv.port),
+    )
+    .await;
+    let f = res.unwrap();
+    let echoed = crate::server::with_header(&f, text);
+    assert!(echoed.starts_with(&format!(
+        "URL: http://public.test:{}/final?a=1\nStatus: 200\n\ndone",
+        srv.port
+    )));
+    for bad in ["reqfrag", "locfrag", "#", "@", "secret"] {
+        assert!(!echoed.contains(bad), "{bad} leaked into {echoed}");
+    }
+    // userinfo on the request URL, and on a redirect Location: refused, never echoed
+    let (res, _, _) = get(
+        &c,
+        &format!("http://u:secret@public.test:{}/start", srv.port),
+    )
+    .await;
+    let e = res.unwrap_err();
+    assert!(
+        ["invalid_argument", "blocked_target"].contains(&e.code()),
+        "{e:?}"
+    );
+    assert!(!e.tool_text().contains("secret"));
+    let srv2 = spawn_server(fixed(
+        "302 Found",
+        &["Location: http://u:secret@public.test/x"],
+        Vec::new(),
+    ))
+    .await;
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv2.port)).await;
+    let e = res.unwrap_err();
+    assert_eq!(e.code(), "blocked_target");
+    assert!(!e.tool_text().contains("secret"));
+}
+
 #[tokio::test]
 async fn redirect_loop_stops_at_the_bound() {
     let srv = spawn_server(handler(|mut s, _| async move {
@@ -1037,4 +1090,168 @@ async fn a3b_merge_gate() {
 fn pinned_is_send_and_sync_for_the_client_builder() {
     fn ok<T: Send + Sync + 'static>() {}
     ok::<Pinned>();
+}
+
+// ---- A-4: HTML to markdown through the real client ---------------------------------------------------------
+
+async fn get_as(
+    c: &FetchClient<FakeResolver>,
+    url: &str,
+    mode: crate::convert::Mode,
+) -> (Result<super::Fetched, FetchError>, String) {
+    let mut text = String::new();
+    let r = tokio::time::timeout(
+        Duration::from_secs(60),
+        c.fetch_as(url, mode, &mut |s: &str| text.push_str(s)),
+    )
+    .await
+    .expect("fetch hung");
+    (r, text)
+}
+
+const PAGE: &str = "<html><head><title>T</title><script>evil()</script></head><body><nav>menu</nav>\
+    <h1>Hello</h1><p>See <a href=\"/next\">next</a> &amp; more.</p><ul><li>a<li>b</ul></body></html>";
+const PAGE_MD: &str = "# Hello\n\nSee [next](http://public.test:PORT/next) & more.\n\n- a\n- b";
+
+#[tokio::test]
+async fn html_is_converted_and_links_resolve_against_the_final_url() {
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html; charset=utf-8"],
+        PAGE.as_bytes().to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    res.unwrap();
+    assert_eq!(text, PAGE_MD.replace("PORT", &srv.port.to_string()));
+    // raw mode and non-HTML types come back untouched
+    let (_, raw) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Raw,
+    )
+    .await;
+    assert_eq!(raw, PAGE);
+    let srv2 = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/plain"],
+        PAGE.as_bytes().to_vec(),
+    ))
+    .await;
+    let (_, plain) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv2.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    assert_eq!(plain, PAGE);
+}
+
+#[tokio::test]
+async fn gzip_html_is_converted_too() {
+    let mut e = GzEncoder::new(Vec::new(), Compression::default());
+    e.write_all(PAGE.as_bytes()).unwrap();
+    let gz = e.finish().unwrap();
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html", "Content-Encoding: gzip"],
+        gz,
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    res.unwrap();
+    assert_eq!(text, PAGE_MD.replace("PORT", &srv.port.to_string()));
+}
+
+#[tokio::test]
+async fn untyped_html_is_sniffed_and_a_converter_limit_is_a_clear_error() {
+    let srv = spawn_server(fixed("200 OK", &[], PAGE.as_bytes().to_vec())).await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    res.unwrap();
+    assert!(text.starts_with("# Hello"));
+    // unclosed elements nest without end in the tokenizer: past its memory limit the call fails cleanly
+    let hostile = "<div>x".repeat(60_000).into_bytes();
+    let srv = spawn_server(fixed("200 OK", &["Content-Type: text/html"], hostile)).await;
+    let (res, _) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    let e = res.unwrap_err();
+    assert_eq!(e.code(), "converter_limit");
+    assert!(e.tool_text().contains("raw=true"));
+}
+
+/// A converter failure ends the read at the next chunk (mutant M5, QA review): the user-visible error would be
+/// the same if the reader carried on to the end (`conv.finish` reports it again), so the test looks at the
+/// server: with the abort it has sent a few MiB at most of a 32 MiB body, without it all of it.
+#[tokio::test]
+async fn converter_failure_stops_reading_the_body_early() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let total: usize = 32 << 20;
+    let s2 = sent.clone();
+    let h = handler(move |mut s, _| {
+        let sent = s2.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: {total}\r\n\r\n"
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            // more attributes than the converter allows in one tag, then plain text for the rest
+            let bomb = format!("<div {}>", "a ".repeat(4000)).into_bytes();
+            let mut written = bomb.len();
+            if s.write_all(&bomb).await.is_err() {
+                return;
+            }
+            sent.fetch_add(bomb.len(), Ordering::SeqCst);
+            let filler = vec![b'x'; 16 * 1024];
+            while written < total {
+                let n = filler.len().min(total - written);
+                match s.write_all(&filler[..n]).await {
+                    Ok(()) => {
+                        written += n;
+                        sent.fetch_add(n, Ordering::SeqCst);
+                    }
+                    Err(_) => return,
+                }
+            }
+            let _ = s.shutdown().await;
+        }
+    });
+    let srv = spawn_server(h).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let (res, _) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    assert_eq!(res.unwrap_err().code(), "converter_limit");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = sent.load(Ordering::SeqCst);
+    assert!(
+        sent < total / 2,
+        "the reader carried on after the converter failed: {sent} of {total} bytes were sent"
+    );
 }
