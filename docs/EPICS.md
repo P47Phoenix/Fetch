@@ -223,7 +223,7 @@ Note: B-1, B-2 and B-3 own test depth (encodings, mixed answers, rebinding simul
 
 ### A-4: HTML to markdown conversion (5 pts)
 **Status (Sprint 4, PR #8): implemented, NOT Done.** The 95% conversion success, 50% median token reduction and no-`<script>` checks run against the E-7 snapshot set and have not been run (E-7 has not landed); A-4 is Done only when they pass. Fix-pass 1 (after the DoD reviews) fixed the drop-rule leak past 256 open elements and added a 1,024-attribute guard (`converter_limit`). Follow-ups recorded below.
-**Follow-ups from the Sprint 4 DoD reviews (not fixed in fix-pass 1):** (1) literal `<script>` text can appear in output from an img alt, an `<xmp>` or escaped text; the E-7 no-`<script>` check needs a defined rule for that (test the tag, or allow the literal text); (2) there is no early stop until A-5; (3) sniffing untyped bodies is A-6; (4) evaluate lol_html 3.x (attribute memory accounting); (5) conversion overhead on musl is not measured (gnu only: 59.9 ms arm64, 56.7 ms amd64 in CI).
+**Follow-ups from the Sprint 4 DoD reviews (not fixed in fix-pass 1):** (1) literal `<script>` text can appear in output from an img alt, an `<xmp>` or escaped text; the E-7 no-`<script>` check needs a defined rule for that (test the tag, or allow the literal text); (2) there is no early stop until A-5; (3) sniffing untyped bodies is A-6; (4) evaluate lol_html 3.x (attribute memory accounting); (5) conversion overhead on musl is not measured (gnu only: 62.7 ms arm64, 75.0 ms amd64 in the CI run on f9e4c9d).
 Maps to: FR-03, NFR-02.
 As an LLM agent, I want clean markdown so that I spend fewer tokens.
 - Given an HTML page with headings, links, lists and code blocks, when `fetch` is called, then those elements are preserved in markdown.

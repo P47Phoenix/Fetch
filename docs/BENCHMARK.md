@@ -535,3 +535,24 @@ Idle deltas are within the 0.5 MiB bound in every cell. The size delta is 80 to 
 **Allocator record (ADR-005, E-4).** The product uses the system allocator: glibc malloc on the gnu builds and musl malloc on the musl builds. No allocator swap was tried here. ADR-005 criterion 5 (try mimalloc or jemalloc) applies only if both libcs fail the gates; both pass, and the ADR-005 headroom rule (idle above 8 MiB or peak above 32 MiB triggers an experiment) is not triggered (highest idle 4.62, highest peak 6.16). The RSS effect of an alternative allocator is only the Sprint 0 x86 spike evidence (mimalloc raised idle to about 11 MiB and peak by 6 to 17 MiB, so it was rejected). ADR-005 criterion 2 data (libc preference, decided in D-1/D-2, not here): musl peak over gnu peak is 0.85 (arm64) and 0.76 (amd64), so within 1.10; musl idle minus gnu idle is -1.3 (arm64) and -2.3 MiB (amd64), so within +1 MiB; the 1 MiB conversion p95 is 59.9 ms (arm64 gnu) and 56.7 ms (amd64 gnu) against the 500 ms bound, measured on gnu only (no musl figure yet); real HTTPS name resolution for `.local` and split-DNS names was not tested. The libc choice is therefore NOT made by this record.
 
 **What this does not show.** G4b is not run; the G4a pass does not close the memory gate. One run per cell; CPU models differ between cells, and run-to-run spread was seen in earlier sections. The peak scenarios are the bench-loopback build (plain HTTP on loopback); TLS is covered only by the public-host check. The E-2 macOS `/usr/bin/time -l` reader is still not built (no macOS gate host). Conversion quality is not measured here (E-7 snapshot set). The image is not measured (D-2).
+
+**Fix-pass 1 re-run and hostile-HTML scenarios (CI run 35562347553, head f9e4c9d, PR #8).** After the DoD reviews, the converter got an attribute-count guard (`converter_limit` above 1,024 attributes in one tag; the 2 MiB lol_html limit does not count attribute outlines, a 1.6 MiB tag of `a a a` cost about 114 MB RSS before the guard) and the drop rules were fixed past 256 open elements. All four cells re-ran; every G4a verdict is still PASS, nothing was loosened. Median of 10 valid runs, bench-loopback build for peaks, shipped build for idle (MiB):
+
+| Scenario | amd64 gnu | amd64 musl | arm64 gnu | arm64 musl |
+|---|---|---|---|---|
+| idle (shipped, target 10) | 4.52 | 2.36 | 3.85 | 2.65 |
+| g4a-5mib-full | 5.72 | 4.27 | 5.13 | 4.38 |
+| g4a-5mib-gz | 6.09 | 4.58 | 5.38 | 4.50 |
+| g4a-late-landmark | 5.99 | 4.58 | 5.38 | 4.62 |
+| g4a-50mib-cl | 5.45 | 3.80 | 4.74 | 4.01 |
+| g4a-50mib-chunked | 5.75 | 4.33 | 5.20 | 4.38 |
+| gating peak (target 40) | 6.09 | 4.58 | 5.38 | 4.62 |
+| boundedness cl / chunked (<= 1.10) | 0.953 / 1.006 | 0.891 / 1.015 | 0.923 / 1.012 | 0.917 / 1.000 |
+| redirect-chain5 (own target 40) | 5.68 | 5.87 | 5.00 | 6.80 |
+| g6-concurrent10 (RECORDED) | 8.87 | 9.52 | 8.10 | 13.16 |
+| hostile-attrs3 (RECORDED, refused `converter_limit`) | 5.82 | 4.62 | 5.13 | 5.00 |
+| hostile-attrvalue3 (RECORDED, one 2 MiB attribute converts) | 15.54 | 14.67 | 14.49 | 15.16 |
+
+The hostile scenarios are RECORDED, not gates: the pages are generated from constants rather than hash-pinned files and no hostile-input gate exists in the PRD or architecture. They still fail closed on validity: `hostile-attrs3` is INVALID unless every call returns `converter_limit` (self-tested with a stand-in that converts the bomb), and `hostile-attrvalue3` must succeed. The hard bound on hostile memory is asserted by tests instead (`tests/hostile_rss.rs`, and a real-stdio test: peak at most 40 MiB with 3 concurrent hostile fetches). 1 MiB conversion overhead in CI (gnu cells, native): 62.7 ms p95 on arm64 and 75.0 ms on amd64 (target 500 ms on aarch64; musl not measured).
+
+**Build identity marker.** `build.rs` appends `-dirty` to the commit when `git status --porcelain --untracked-files=no` is non-empty (`commit=<40 hex>-dirty`); the gate tooling accepts only 40 hex, so a dirty build is refused as a gate figure. `FETCH_MCP_COMMIT=<value>` overrides the commit verbatim (trusted, used for builds without `.git`, such as a `git archive`); the override is not validated by `build.rs`, but the gate still requires 40 hex and equal values for both builds. `build.rs` re-runs when `src`, `Cargo.toml`, the git HEAD, the index, `packed-refs` or the checked-out ref change (worktree-safe).
