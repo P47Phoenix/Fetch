@@ -8,7 +8,8 @@
 //! (A-4; `raw=true` skips the conversion) and the character window (`start_index`, `max_length`) is kept as
 //! the text goes by. Reading stops as soon as the window is complete and one more character has been seen
 //! (early stop), so the result can say "more content" without reading on. Continuation and clamp notes are a
-//! footer outside the offsets; the total length is stated only when the stream was read to its end.
+//! footer outside the offsets; the total length is stated only when the stream was read to its end. Content
+//! types other than text are refused (A-6) before the body is read.
 
 use crate::config::Config;
 use crate::convert::window::{Window, WindowOutput};
@@ -135,7 +136,7 @@ pub fn render(w: &WindowOutput, clamped_to: Option<u64>) -> String {
 #[tool_router(server_handler)]
 impl Fetch {
     #[tool(
-        description = "Fetch a URL and return its content. HTML pages are converted to markdown (scripts, styles and navigation dropped); other text is returned as is. Set raw=true for the unconverted body. Output is limited to max_length characters from start_index; when truncated, the result ends with the start_index to continue from."
+        description = "Fetch a URL and return its content. HTML pages are converted to markdown (scripts, styles and navigation dropped); other text, JSON and XML are returned as is; images and other binary types are refused. Set raw=true for the unconverted body. Output is limited to max_length characters from start_index; when truncated, the result ends with the start_index to continue from."
     )]
     async fn fetch(
         &self,

@@ -664,3 +664,46 @@ fn pagination_end_to_end() {
     assert!(t.starts_with("error[invalid_argument]: max_length:"), "{t}");
     s.finish_and_assert_pure();
 }
+
+/// A-6 end to end (FR-08): text types are returned as text (HTML converted unless raw=true), binary types are an
+/// `isError` result naming the type (raw or not), an untyped body is sniffed.
+#[cfg(feature = "bench-loopback")]
+#[test]
+fn content_types_end_to_end() {
+    let html = "<html><body><h1>Hi</h1><p>there</p></body></html>";
+    let mut s = Session::start();
+    s.handshake();
+    let call = |s: &mut Session, ct: &'static str, body: &str, extra: Value| {
+        let port = serve_typed(ct, body.as_bytes().to_vec());
+        let mut args = json!({"url": format!("http://127.0.0.1:{port}/")});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        s.tool_call(&args)
+    };
+    let r = call(&mut s, "text/html", html, json!({}));
+    assert_eq!(tool_text(&r), "# Hi\n\nthere", "{r}");
+    let r = call(&mut s, "text/html", html, json!({"raw": true}));
+    assert_eq!(tool_text(&r), html, "{r}");
+    let r = call(&mut s, "application/json", "{\"a\": [1, 2]}", json!({}));
+    assert_eq!(tool_text(&r), "{\"a\": [1, 2]}", "{r}");
+    let r = call(&mut s, "application/xml", "<a><b>1</b></a>", json!({}));
+    assert_eq!(tool_text(&r), "<a><b>1</b></a>", "{r}");
+    let r = call(&mut s, "", html, json!({}));
+    assert_eq!(tool_text(&r), "# Hi\n\nthere", "{r}");
+    let r = call(&mut s, "", "just some words <b>here</b>", json!({}));
+    assert_eq!(tool_text(&r), "just some words <b>here</b>", "{r}");
+    for (ct, raw) in [
+        ("image/png", false),
+        ("application/pdf", false),
+        ("image/png", true),
+    ] {
+        let r = call(&mut s, ct, "\u{fffd}PNG", json!({"raw": raw}));
+        let t = rejection_text(&r).expect("binary types are an isError result");
+        assert!(
+            t.starts_with("error[unsupported_content_type]:") && t.contains(ct),
+            "{t}"
+        );
+    }
+    s.finish_and_assert_pure();
+}

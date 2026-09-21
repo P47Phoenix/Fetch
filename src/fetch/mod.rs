@@ -112,7 +112,8 @@ impl<R: Resolver> FetchClient<R> {
     /// depend on the body size.
     ///
     /// # Errors
-    /// As [`fetch`](Self::fetch), plus `converter_limit` when the converter's memory or output limit is hit.
+    /// As [`fetch`](Self::fetch), plus `converter_limit` when the converter's memory or output limit is hit and
+    /// `unsupported_content_type` when the response is not text (A-6).
     pub async fn fetch_as(
         &self,
         url: &str,
@@ -221,16 +222,17 @@ impl<R: Resolver> FetchClient<R> {
     ) -> Result<u64, FetchError> {
         let cap = self.limits.max_bytes;
         let gzip = content_encoding_is_gzip(resp.headers())?;
-        // A declared length over the cap aborts before a single body byte is read.
-        if resp.content_length().is_some_and(|n| n > cap) {
-            return Err(too_large());
-        }
+        // A type we do not return is refused before a body byte is read (A-6); so is a declared length over the cap.
         let content_type = resp
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let mut conv = convert::for_response(mode, content_type.as_deref(), Some(base.clone()));
+        let mut conv = convert::for_response(mode, content_type.as_deref(), Some(base.clone()))
+            .map_err(|t| FetchError::UnsupportedContentType(unsupported_text(&t.0)))?;
+        if resp.content_length().is_some_and(|n| n > cap) {
+            return Err(too_large());
+        }
         // The pipeline's sink cannot fail, so a converter failure is parked here and checked per chunk.
         let failure: Mutex<Option<ConvertError>> = Mutex::new(None);
         let mut convert_step = |text: &str| {
@@ -320,6 +322,12 @@ fn install_ring_provider() {
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+}
+
+fn unsupported_text(media_type: &str) -> String {
+    format!(
+        "the response is {media_type}, which is not text; only HTML, plain text, JSON and XML are returned"
+    )
 }
 
 fn too_large() -> FetchError {

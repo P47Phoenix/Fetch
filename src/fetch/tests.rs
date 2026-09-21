@@ -1412,6 +1412,72 @@ async fn four_sequential_windows_reproduce_the_page() {
     assert_eq!((w.text.as_str(), w.total), ("", Some(20_000)));
 }
 
+#[tokio::test]
+async fn binary_content_types_are_refused_naming_the_type_and_text_types_are_returned() {
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    for (ct, body) in [
+        ("image/png", &b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..]),
+        ("application/pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3"),
+        ("application/octet-stream", b"\0\x01\x02"),
+    ] {
+        let hdr: &'static str = Box::leak(format!("Content-Type: {ct}").into_boxed_str());
+        let srv = spawn_server(fixed(
+            "200 OK",
+            std::slice::from_ref(Box::leak(Box::new(hdr))),
+            body.to_vec(),
+        ))
+        .await;
+        let url = format!("http://public.test:{}/", srv.port);
+        for mode in [crate::convert::Mode::Markdown, crate::convert::Mode::Raw] {
+            let (res, text) = get_as(&c, &url, mode).await;
+            let e = res.unwrap_err();
+            assert_eq!(e.code(), "unsupported_content_type", "{ct}");
+            assert!(e.tool_text().contains(ct), "{}", e.tool_text());
+            assert_eq!(text, "", "no body text may reach the sink");
+        }
+    }
+    for (ct, body) in [
+        ("application/json", "{\"a\":1}"),
+        ("application/xml", "<a>1</a>"),
+        ("text/csv; charset=utf-8", "a,b\n1,2"),
+        ("application/ld+json", "{}"),
+    ] {
+        let hdr: &'static str = Box::leak(format!("Content-Type: {ct}").into_boxed_str());
+        let srv = spawn_server(fixed(
+            "200 OK",
+            std::slice::from_ref(Box::leak(Box::new(hdr))),
+            body.as_bytes().to_vec(),
+        ))
+        .await;
+        let (res, text) = get_as(
+            &c,
+            &format!("http://public.test:{}/", srv.port),
+            crate::convert::Mode::Markdown,
+        )
+        .await;
+        res.unwrap();
+        assert_eq!(text, body, "{ct}");
+    }
+}
+
+/// An over-cap declared length of a binary type is reported as the type (the cheaper, more useful answer), and a
+/// refused type never reads the body.
+#[tokio::test]
+async fn a_refused_type_reads_no_body() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let srv = spawn_server(chunked_stream("image/png", 32 << 20, 0, sent.clone())).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let (res, _) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    assert_eq!(code(&res), "unsupported_content_type");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent.load(Ordering::SeqCst) < 4 << 20);
+}
+
 /// Hostile bodies through the whole path (panic = abort in the product, so none of this may panic): an untyped
 /// binary body, invalid UTF-8 declared as text, NUL bytes and a lone BOM.
 #[tokio::test]
