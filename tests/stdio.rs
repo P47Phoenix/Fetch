@@ -168,7 +168,10 @@ fn bad_input_is_rejected_with_the_field_named() {
     for (args, field) in cases {
         let r = s.tool_call(&args);
         let m = rejection_text(&r).unwrap_or_else(|| panic!("{args} must be rejected: {r}"));
-        assert!(m.contains(field), "{args}: error must name {field}: {m}");
+        assert!(
+            m.starts_with(&format!("error[invalid_argument]: {field}: ")),
+            "{args}: error must be error[invalid_argument] naming {field}: {m}"
+        );
     }
     s.finish_and_assert_pure();
 }

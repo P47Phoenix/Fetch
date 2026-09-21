@@ -18,46 +18,103 @@ use crate::error::FetchError;
 use crate::fetch::dns::SystemResolver;
 use crate::fetch::{FetchClient, Fetched, Limits};
 use crate::policy::Policy;
+use rmcp::serde_json::Value as Json;
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
     schemars, tool, tool_router, ErrorData as McpError,
 };
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-/// Deserialise `T`, prefixing any error with the field name so a validation error always names the field.
-fn named<'de, D: Deserializer<'de>, T: Deserialize<'de>>(field: &str, d: D) -> Result<T, D::Error> {
-    T::deserialize(d).map_err(|e| serde::de::Error::custom(format!("{field}: {e}")))
-}
-fn de_url<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    named("url", d)
-}
-fn de_max_length<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    named("max_length", d)
-}
-fn de_start_index<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    named("start_index", d)
-}
-fn de_raw<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
-    named("raw", d)
-}
-
+/// The tool arguments. The fields are captured as JSON and validated by [`FetchParams::parse`] so that every
+/// argument failure (missing, wrong type, out of range) is the same `error[invalid_argument]: <field>: <why>` result as
+/// our other checks (A-7; rmcp's own prefix `failed to deserialize parameters:` never appears). The schema
+/// advertised to clients still shows the real types.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[schemars(extend("required" = ["url"]))]
 pub struct FetchParams {
     /// URL to fetch (http or https only)
-    #[serde(deserialize_with = "de_url")]
-    pub url: String,
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub url: Json,
     /// Maximum number of characters to return (default 5000)
-    #[serde(default, deserialize_with = "de_max_length")]
-    pub max_length: Option<u64>,
+    #[serde(default)]
+    #[schemars(with = "Option<u64>")]
+    pub max_length: Json,
     /// Character offset to start from (default 0)
-    #[serde(default, deserialize_with = "de_start_index")]
-    pub start_index: Option<u64>,
+    #[serde(default)]
+    #[schemars(with = "Option<u64>")]
+    pub start_index: Json,
     /// Return the raw body without HTML simplification
-    #[serde(default, deserialize_with = "de_raw")]
-    pub raw: Option<bool>,
+    #[serde(default)]
+    #[schemars(with = "Option<bool>")]
+    pub raw: Json,
+}
+
+/// Validated arguments.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Args {
+    pub url: String,
+    pub max_length: Option<u64>,
+    pub start_index: Option<u64>,
+    pub raw: bool,
+}
+
+fn bad(field: &'static str, message: &str) -> FetchError {
+    FetchError::InvalidArgument {
+        field,
+        message: message.into(),
+    }
+}
+
+fn optional_u64(field: &'static str, v: &Json) -> Result<Option<u64>, FetchError> {
+    match v {
+        Json::Null => Ok(None),
+        Json::Number(n) => n
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| bad(field, "must be a non-negative whole number")),
+        _ => Err(bad(field, "must be a non-negative whole number")),
+    }
+}
+
+impl FetchParams {
+    /// # Errors
+    /// `InvalidArgument` naming the first offending field.
+    pub fn parse(&self) -> Result<Args, FetchError> {
+        let url = match &self.url {
+            Json::String(u) => u.clone(),
+            Json::Null => return Err(bad("url", "is required")),
+            _ => return Err(bad("url", "must be a string")),
+        };
+        let max_length = optional_u64("max_length", &self.max_length)?;
+        if max_length == Some(0) {
+            return Err(bad("max_length", "must be at least 1"));
+        }
+        let raw = match &self.raw {
+            Json::Null => false,
+            Json::Bool(b) => *b,
+            _ => return Err(bad("raw", "must be true or false")),
+        };
+        Ok(Args {
+            url,
+            max_length,
+            start_index: optional_u64("start_index", &self.start_index)?,
+            raw,
+        })
+    }
+}
+
+/// The `isError` result for a failure (A-7). An unexpected internal failure gets the generic text and its detail goes
+/// to stderr only, so nothing but JSON-RPC ever reaches stdout and the server keeps serving.
+#[must_use]
+pub fn error_result(e: &FetchError) -> CallToolResult {
+    if let FetchError::Internal(detail) = e {
+        crate::obs::stderr_line(format_args!("ERROR internal {detail}"));
+    }
+    CallToolResult::error(vec![ContentBlock::text(e.tool_text())])
 }
 
 /// Default `max_length` (FR-02).
@@ -142,26 +199,17 @@ impl Fetch {
         &self,
         Parameters(p): Parameters<FetchParams>,
     ) -> Result<CallToolResult, McpError> {
-        if p.max_length == Some(0) {
-            let e = FetchError::InvalidArgument {
-                field: "max_length",
-                message: "must be at least 1".into(),
-            };
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                e.tool_text(),
-            )]));
-        }
+        let p = match p.parse() {
+            Ok(p) => p,
+            Err(e) => return Ok(error_result(&e)),
+        };
         let asked = p.max_length.unwrap_or(DEFAULT_MAX_LENGTH);
         let max_length = asked.min(self.max_length_cap);
         // The note is for a caller who asked for more than the cap; a default that exceeds a configured cap is not the caller's request.
         let clamped_to = p.max_length.filter(|m| *m > max_length).map(|_| max_length);
         let mut window = Window::new(p.start_index.unwrap_or(0), max_length);
         let done = window.stop_flag();
-        let mode = if p.raw.unwrap_or(false) {
-            Mode::Raw
-        } else {
-            Mode::Markdown
-        };
+        let mode = if p.raw { Mode::Raw } else { Mode::Markdown };
         let result = self
             .client
             .fetch_until(
@@ -176,16 +224,18 @@ impl Fetch {
                 &f,
                 render(&window.finish(), clamped_to),
             ))]),
-            Err(e) => CallToolResult::error(vec![ContentBlock::text(e.tool_text())]),
+            Err(e) => error_result(&e),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{render, with_header};
+    use super::{error_result, render, with_header, FetchParams};
     use crate::convert::window::{Window, WindowOutput};
+    use crate::error::{FetchError, INTERNAL_MESSAGE};
     use crate::fetch::Fetched;
+    use rmcp::serde_json::json;
 
     fn fetched(redirects: usize) -> Fetched {
         Fetched {
@@ -279,6 +329,108 @@ mod tests {
             render(&win(9, 5, &["hi"]), Some(5)),
             "[No content at start_index=9: the content is 2 characters long.]\n\
              [max_length was reduced to 5 characters, the maximum.]"
+        );
+    }
+
+    fn params(v: rmcp::serde_json::Value) -> FetchParams {
+        rmcp::serde_json::from_value(v).expect("any JSON object deserialises")
+    }
+
+    #[test]
+    fn every_argument_failure_is_an_invalid_argument_result_naming_the_field() {
+        for (args, field) in [
+            (json!({}), "url"),
+            (json!({"url": 5}), "url"),
+            (
+                json!({"url": "https://a.test", "max_length": -1}),
+                "max_length",
+            ),
+            (
+                json!({"url": "https://a.test", "max_length": 1.5}),
+                "max_length",
+            ),
+            (
+                json!({"url": "https://a.test", "max_length": 0}),
+                "max_length",
+            ),
+            (
+                json!({"url": "https://a.test", "max_length": "9"}),
+                "max_length",
+            ),
+            (
+                json!({"url": "https://a.test", "start_index": -3}),
+                "start_index",
+            ),
+            (
+                json!({"url": "https://a.test", "start_index": "7"}),
+                "start_index",
+            ),
+            (json!({"url": "https://a.test", "raw": "yes"}), "raw"),
+        ] {
+            let e = params(args.clone()).parse().unwrap_err();
+            let r = error_result(&e);
+            assert_eq!(r.is_error, Some(true), "{args}");
+            let text = format!("{:?}", r.content);
+            assert!(
+                text.contains(&format!("error[invalid_argument]: {field}: ")),
+                "{args}: {text}"
+            );
+        }
+        let ok = params(
+            json!({"url": "https://a.test", "max_length": 7, "start_index": 2, "raw": true}),
+        )
+        .parse()
+        .unwrap();
+        assert_eq!(
+            (ok.max_length, ok.start_index, ok.raw),
+            (Some(7), Some(2), true)
+        );
+        assert!(
+            !params(json!({"url": "https://a.test", "raw": null}))
+                .parse()
+                .unwrap()
+                .raw
+        );
+    }
+
+    /// A-7: every cause gives `isError: true` and text naming that cause.
+    #[test]
+    fn every_cause_sets_the_flag_and_names_the_cause() {
+        let causes: Vec<(FetchError, &str)> = vec![
+            (FetchError::HttpStatus(404), "error[http_error]: the server refused the request with HTTP status 404 (Not Found)"),
+            (FetchError::HttpStatus(500), "error[http_error]: the server failed with HTTP status 500 (Internal Server Error)"),
+            (FetchError::DnsFailure("hostname did not resolve".into()), "error[dns_failure]: hostname did not resolve"),
+            (FetchError::Timeout("the request timed out".into()), "error[timeout]: the request timed out"),
+            (FetchError::BlockedTarget("host is not public".into()), "error[blocked_target]: host is not public"),
+            (FetchError::TooLarge("the response is larger than the size limit".into()), "error[too_large]: the response is larger"),
+            (FetchError::UnsupportedContentType("image/png".into()), "error[unsupported_content_type]: image/png"),
+            (FetchError::UnsupportedEncoding("Content-Encoding must be gzip or absent".into()), "error[unsupported_encoding]: "),
+            (FetchError::TooManyRedirects, "error[too_many_redirects]: too many redirects"),
+            (FetchError::Network("could not connect to the host".into()), "error[network_error]: could not connect"),
+            (FetchError::BadResponse("the gzip body is corrupt".into()), "error[bad_response]: the gzip body"),
+            (FetchError::ConverterLimit("x".into()), "error[converter_limit]: x"),
+        ];
+        for (e, want) in causes {
+            let r = error_result(&e);
+            assert_eq!(r.is_error, Some(true), "{e:?}");
+            let text = format!("{:?}", r.content);
+            assert!(text.contains(want), "{e:?}: {text}");
+        }
+    }
+
+    /// A-7: an unexpected internal error is a generic error result; its detail is not shown to the caller.
+    #[test]
+    fn an_internal_error_is_generic_and_leaks_no_detail() {
+        let r = error_result(&FetchError::Internal("secret detail 10.0.0.1".into()));
+        assert_eq!(r.is_error, Some(true));
+        let text = format!("{:?}", r.content);
+        assert!(
+            text.contains(&format!("error[internal]: {INTERNAL_MESSAGE}")),
+            "{text}"
+        );
+        assert!(
+            !text.contains("secret") && !text.contains("10.0.0.1"),
+            "{text}"
         );
     }
 }

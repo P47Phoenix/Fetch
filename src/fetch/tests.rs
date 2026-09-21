@@ -197,6 +197,77 @@ async fn non_success_status_is_reported() {
     assert!(text.is_empty());
 }
 
+// ---- A-7: each cause end to end, flag and message text through the tool result --------------------------
+
+/// The tool result text for a failed fetch, asserting `isError: true`.
+fn failure_text(res: Result<super::Fetched, FetchError>) -> String {
+    let r = crate::server::error_result(&res.expect_err("the fetch must fail"));
+    assert_eq!(r.is_error, Some(true));
+    format!("{:?}", r.content)
+}
+
+#[tokio::test]
+async fn a7_each_cause_is_flagged_and_names_itself() {
+    let base = |port| format!("http://public.test:{port}/");
+    let c = client(loopback(), &public_resolver(), limits(400, 1 << 20, 3));
+    for (status, want) in [
+        (
+            "404 Not Found",
+            "error[http_error]: the server refused the request with HTTP status 404 (Not Found)",
+        ),
+        (
+            "500 Internal Server Error",
+            "error[http_error]: the server failed with HTTP status 500 (Internal Server Error)",
+        ),
+    ] {
+        let srv = spawn_server(fixed(status, &[], b"x".to_vec())).await;
+        let (res, _, _) = get(&c, &base(srv.port)).await;
+        let t = failure_text(res);
+        assert!(t.contains(want), "{t}");
+    }
+    // DNS failure.
+    let dns = client(
+        Policy::default(),
+        &Arc::new(FakeResolver::new().fail("gone.test")),
+        limits(5000, 1 << 20, 3),
+    );
+    let (res, _, _) = get(&dns, "http://gone.test/").await;
+    assert!(failure_text(res).contains("error[dns_failure]: hostname did not resolve"));
+    // Blocked target.
+    let (res, _, _) = get(&dns, "http://10.0.0.1/").await;
+    assert!(failure_text(res).contains("error[blocked_target]: "));
+    // Timeout.
+    let srv = spawn_server(handler(|mut s, _| async move {
+        let _ = s
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\npartial")
+            .await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }))
+    .await;
+    let (res, _, _) = get(&c, &base(srv.port)).await;
+    assert!(failure_text(res).contains("error[timeout]: the request timed out"));
+    // Too large.
+    let small = client(loopback(), &public_resolver(), limits(5000, 10, 3));
+    let srv = spawn_server(fixed("200 OK", &[], vec![b'a'; 100])).await;
+    let (res, _, _) = get(&small, &base(srv.port)).await;
+    assert!(
+        failure_text(res).contains("error[too_large]: the response is larger than the size limit")
+    );
+    // Unsupported type.
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: image/png"],
+        vec![0x89, b'P', b'N', b'G'],
+    ))
+    .await;
+    let (res, _, _) = get(&c, &base(srv.port)).await;
+    let t = failure_text(res);
+    assert!(
+        t.contains("error[unsupported_content_type]: ") && t.contains("image/png"),
+        "{t}"
+    );
+}
+
 // ---- the four refusals (EPICS A-3b: not Done until these pass) --------------------------------------
 
 #[tokio::test]
@@ -402,6 +473,65 @@ async fn redirect_loop_stops_at_the_bound() {
 }
 
 // ---- dial-once and dial-only-validated ---------------------------------------------------------------
+
+/// B-1 end to end: every blocked class reached by name (alone or mixed with a public answer) and by literal is
+/// refused before a connection is made, and the message never carries the address.
+#[tokio::test]
+async fn b1_every_blocked_class_by_name_mixed_and_literal_is_refused_before_any_connection() {
+    let srv = spawn_server(fixed("200 OK", &[], b"lan".to_vec())).await;
+    let blocked = [
+        "127.0.0.1",
+        "127.9.9.9",
+        "10.0.0.1",
+        "172.16.0.1",
+        "172.31.255.254",
+        "192.168.1.1",
+        "169.254.169.254",
+        "169.254.0.1",
+        "100.64.0.1",
+        "0.0.0.0",
+        "::1",
+        "::",
+        "fc00::1",
+        "fd12:3456::1",
+        "fe80::1",
+        "::ffff:10.0.0.1",
+        "::ffff:127.0.0.1",
+    ];
+    let mut resolver = FakeResolver::new();
+    for (i, ip) in blocked.iter().enumerate() {
+        resolver = resolver
+            .on(&format!("alone{i}.test"), &[ip])
+            .on(&format!("mixed{i}.test"), &["93.184.216.34", ip])
+            .on(&format!("mixedfirst{i}.test"), &[ip, "93.184.216.34"]);
+    }
+    let r = Arc::new(resolver);
+    let c = client(Policy::default(), &r, limits(5000, 1 << 20, 3));
+    let mut lookups = 0;
+    for (i, ip) in blocked.iter().enumerate() {
+        for kind in ["alone", "mixed", "mixedfirst"] {
+            let (res, text, _) = get(&c, &format!("http://{kind}{i}.test:{}/", srv.port)).await;
+            lookups += 1;
+            assert_eq!(code(&res), "blocked_target", "{kind} {ip}: {res:?}");
+            assert!(text.is_empty());
+            let msg = res.unwrap_err().tool_text();
+            assert!(!msg.contains(ip) && !msg.contains("93.184"), "{msg}");
+        }
+        let literal = if ip.contains(':') {
+            format!("http://[{ip}]:{}/", srv.port)
+        } else {
+            format!("http://{ip}:{}/", srv.port)
+        };
+        let (res, _, _) = get(&c, &literal).await;
+        assert_eq!(code(&res), "blocked_target", "literal {ip}: {res:?}");
+    }
+    assert_eq!(
+        r.count(),
+        lookups,
+        "names resolve once each, literals never"
+    );
+    assert_eq!(srv.accepted(), 0, "no connection to any blocked answer");
+}
 
 #[tokio::test]
 async fn dial_once_a_second_private_answer_is_never_looked_up_or_dialled() {
