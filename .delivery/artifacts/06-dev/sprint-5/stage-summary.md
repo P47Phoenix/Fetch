@@ -35,3 +35,5 @@ Four DoD reviews (architect, QA, tech writer, PR code review) then a fix pass (c
 
 ## Owner items still open
 E-7 lists (impact: Sprint 7 E-5 needs the 10-URL smoke result; A-4 stays not Done), OQ-7, OQ-3 and OQ-4 (before Sprint 10), acknowledgement of the E-2 re-homed items and the deviations above, branch protection (`a3b-merge-gate` required), A-2 throwaway-config check, cargo-audit.
+
+Note: `.delivery/state.md` is gitignored, so it is updated locally and is not part of the Sprint 5 record commit (the commit contains the stage summary and sprint plan only).

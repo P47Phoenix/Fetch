@@ -209,7 +209,9 @@ fn failure_text(res: Result<super::Fetched, FetchError>) -> String {
 #[tokio::test]
 async fn a7_each_cause_is_flagged_and_names_itself() {
     let base = |port| format!("http://public.test:{port}/");
-    let c = client(loopback(), &public_resolver(), limits(400, 1 << 20, 3));
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    // Only the timeout case needs a short deadline.
+    let short = client(loopback(), &public_resolver(), limits(400, 1 << 20, 3));
     for (status, want) in [
         (
             "404 Not Found",
@@ -244,7 +246,7 @@ async fn a7_each_cause_is_flagged_and_names_itself() {
         tokio::time::sleep(Duration::from_secs(30)).await;
     }))
     .await;
-    let (res, _, _) = get(&c, &base(srv.port)).await;
+    let (res, _, _) = get(&short, &base(srv.port)).await;
     assert!(failure_text(res).contains("error[timeout]: the request timed out"));
     // Too large.
     let small = client(loopback(), &public_resolver(), limits(5000, 10, 3));
@@ -498,12 +500,15 @@ async fn b1_every_blocked_class_by_name_mixed_and_literal_is_refused_before_any_
         "::ffff:10.0.0.1",
         "::ffff:127.0.0.1",
     ];
+    // A public address (example.com's) mixed into the blocked answers: the whole answer must be refused, in either order.
+    // The FakeResolver stands in for the OS resolver, so this covers our filter, not getaddrinfo's behaviour.
+    const PUBLIC: &str = "93.184.216.34";
     let mut resolver = FakeResolver::new();
     for (i, ip) in blocked.iter().enumerate() {
         resolver = resolver
             .on(&format!("alone{i}.test"), &[ip])
-            .on(&format!("mixed{i}.test"), &["93.184.216.34", ip])
-            .on(&format!("mixedfirst{i}.test"), &[ip, "93.184.216.34"]);
+            .on(&format!("mixed{i}.test"), &[PUBLIC, ip])
+            .on(&format!("mixedfirst{i}.test"), &[ip, PUBLIC]);
     }
     let r = Arc::new(resolver);
     let c = client(Policy::default(), &r, limits(5000, 1 << 20, 3));
@@ -515,7 +520,7 @@ async fn b1_every_blocked_class_by_name_mixed_and_literal_is_refused_before_any_
             assert_eq!(code(&res), "blocked_target", "{kind} {ip}: {res:?}");
             assert!(text.is_empty());
             let msg = res.unwrap_err().tool_text();
-            assert!(!msg.contains(ip) && !msg.contains("93.184"), "{msg}");
+            assert!(!msg.contains(ip) && !msg.contains(PUBLIC), "{msg}");
         }
         let literal = if ip.contains(':') {
             format!("http://[{ip}]:{}/", srv.port)
@@ -524,12 +529,16 @@ async fn b1_every_blocked_class_by_name_mixed_and_literal_is_refused_before_any_
         };
         let (res, _, _) = get(&c, &literal).await;
         assert_eq!(code(&res), "blocked_target", "literal {ip}: {res:?}");
+        let msg = res.unwrap_err().tool_text();
+        assert!(!msg.contains(ip), "literal {ip}: {msg}");
     }
     assert_eq!(
         r.count(),
         lookups,
         "names resolve once each, literals never"
     );
+    // `accepted()` counts real connections (positive control: `fetches_a_small_body_through_a_validated_name` and
+    // `dial_once_...` assert accepted() == 1 for an allowed loopback fetch against the same helper).
     assert_eq!(srv.accepted(), 0, "no connection to any blocked answer");
 }
 

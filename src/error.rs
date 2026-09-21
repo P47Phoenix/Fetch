@@ -93,6 +93,10 @@ impl fmt::Display for FetchError {
                     .map(|r| format!(" ({r})"))
                     .unwrap_or_default();
                 match code {
+                    408 | 425 | 429 => write!(
+                        f,
+                        "the server refused the request with HTTP status {code}{reason}; it may work if retried after a delay"
+                    ),
                     400..=499 => write!(
                         f,
                         "the server refused the request with HTTP status {code}{reason}; retrying the same URL is unlikely to help"

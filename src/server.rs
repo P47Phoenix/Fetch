@@ -28,16 +28,22 @@ use serde::Deserialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+/// Removes the `default: null` that `#[serde(default)]` would add to the schema (the field stays required).
+fn drop_default(schema: &mut schemars::Schema) {
+    schema.remove("default");
+}
+
 /// The tool arguments. The fields are captured as JSON and validated by [`FetchParams::parse`] so that every
-/// argument failure (missing, wrong type, out of range) is the same `error[invalid_argument]: <field>: <why>` result as
-/// our other checks (A-7; rmcp's own prefix `failed to deserialize parameters:` never appears). The schema
-/// advertised to clients still shows the real types.
+/// argument failure in a JSON object (missing, wrong type, out of range) is the same
+/// `error[invalid_argument]: <field>: <why>` result as our other checks (A-7; rmcp's own prefix
+/// `failed to deserialize parameters:` no longer appears for these). Arguments that are not a JSON object are still
+/// rejected by rmcp before this code runs (pinned in `tests/stdio.rs`). The advertised schema shows the real types.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[schemars(extend("required" = ["url"]))]
 pub struct FetchParams {
     /// URL to fetch (http or https only)
     #[serde(default)]
-    #[schemars(with = "String")]
+    #[schemars(with = "String", transform = drop_default)]
     pub url: Json,
     /// Maximum number of characters to return (default 5000)
     #[serde(default)]
@@ -112,7 +118,7 @@ impl FetchParams {
 #[must_use]
 pub fn error_result(e: &FetchError) -> CallToolResult {
     if let FetchError::Internal(detail) = e {
-        crate::obs::stderr_line(format_args!("ERROR internal {detail}"));
+        crate::obs::stderr_line(format_args!("error internal {detail}"));
     }
     CallToolResult::error(vec![ContentBlock::text(e.tool_text())])
 }
@@ -399,6 +405,7 @@ mod tests {
         let causes: Vec<(FetchError, &str)> = vec![
             (FetchError::HttpStatus(404), "error[http_error]: the server refused the request with HTTP status 404 (Not Found)"),
             (FetchError::HttpStatus(500), "error[http_error]: the server failed with HTTP status 500 (Internal Server Error)"),
+            (FetchError::HttpStatus(429), "error[http_error]: the server refused the request with HTTP status 429 (Too Many Requests); it may work if retried after a delay"),
             (FetchError::DnsFailure("hostname did not resolve".into()), "error[dns_failure]: hostname did not resolve"),
             (FetchError::Timeout("the request timed out".into()), "error[timeout]: the request timed out"),
             (FetchError::BlockedTarget("host is not public".into()), "error[blocked_target]: host is not public"),
