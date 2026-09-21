@@ -13,11 +13,11 @@ Be careful not to read more into this document than it says.
 | Hosted GitHub Actions running this repository's workflow | Has run on several pull requests (first #2, most recently #5); all five required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`) have passed each time. That is still not a trend claim, and branch protection is not configured yet. |
 | `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. |
 | `cargo-audit` | Never run (not installed on the dev host). |
-| The benchmark scripts | Run against the stand-in, against the real `fetch-mcp` idle scenario (advisory, section 13), and in `--gate` runs on both hosted platforms (section 15, CI job `bench-gate`). |
+| The benchmark scripts | Run against the stand-in, against the real `fetch-mcp` idle scenario (advisory, section 13), and in `--gate` runs on both hosted platforms (sections 15 and 16, CI job `bench-gate`). `--gate` now also refuses unless the shipped and bench builds report the same commit and `Cargo.lock` hash (E-4). |
 | The `fetch-mcp` binary | A real stdio MCP server with one `fetch` tool (A-2) and, since A-3b, a guarded streaming download. The idle figure with the client compiled in is 3.58 MiB on hosted arm64 (section 13, advisory); the older 2.59 and 3.15 figures predate the client. |
 | Native aarch64 measurement | Advisory runs earlier (A-1 spike, section 11; early product idle, section 13). Since Sprint 3, `--gate` runs on the hosted arm64 runner (gnu and musl): section 15, three CI runs, idle 2.16 to 3.55 MiB, read-in-full peak 4.14 to 4.66 MiB. |
 | Native amd64 measurement | `--gate` runs on the hosted amd64 runner (gnu and musl): section 15, three CI runs, idle 2.27 to 4.06 MiB, read-in-full peak 4.25 to 5.27 MiB. Runner CPUs vary between runs (Xeon 8573C, 8370C, 6973P-C, AMD EPYC 7763). |
-| Product memory gates (G4a, G4b on amd64 and arm64) | Not decided. The E-3 idle gate (strict 10 MiB) passed on all four cells, and the peak gate ran in its read-in-full form (before A-4 conversion exists), which is NOT a G4a pass. G4b scenarios and `g6-concurrent10` are not run. The container image has not been measured (D-2 builds it). |
+| Product memory gates (G4a, G4b on amd64 and arm64) | **G4a: PASS in one CI run on all four cells (section 16, run 35557702662, single run), including conversion. G4b: not run (Sprint 5).** A G4a pass is NOT the memory gate closing: that is G4b at the end of Sprint 5. The old note follows. Not decided. The E-3 idle gate (strict 10 MiB) passed on all four cells, and the peak gate ran in its read-in-full form (before A-4 conversion exists), which is NOT a G4a pass. G4b scenarios are not run (stubs only, section 5). `g6-concurrent10` is now run and recorded (section 16). The container image has not been measured (D-2 builds it). |
 | Branch protection on `main` | Not configured yet (see `docs/ci-branch-protection.md`). |
 
 ## Glossary
@@ -46,6 +46,10 @@ Each term is explained here once. Later sections use the short form.
 | Bench binary (`bench-loopback`) | A special build that is allowed to reach loopback so the benchmark can fetch from the local test server. Never released. |
 | Marker | A fixed piece of text (`FETCH_MCP_MARKER_...`) that a special build prints in `--version` and carries inside the binary. Checks look for it to tell builds apart. |
 | Scenario | One named test case, for example `idle` or `g4a-5mib-full`. |
+| Build identity | The commit and `Cargo.lock` SHA-256 printed in `--version` (`commit=... cargo-lock=...`). The harness requires the shipped and bench builds to report the same pair. |
+| Peer binary | `--peer-binary`: the other build of the same commit (bench for a shipped run and the reverse). Only used to compare build identity. |
+| RECORDED | Verdict of a scenario that is measured and reported but has no pass/fail target (`g6-concurrent10`). Not a pass. |
+| G4a | Memory gate part 1 (end of Sprint 4): idle plus the peak and 50 MiB scenarios that need only fetch and conversion. A pass does NOT close the memory gate; G4b (Sprint 5) does. |
 | Gate | A point in the project plan where we must take a memory verdict: G0 (end of Sprint 0), G4a (end of Sprint 4), G4b (end of Sprint 5). Not the same as the scenario IDs G1 to G7 (see "Gate names versus scenario IDs" below). |
 | Gating run | A run made with `--gate`. Only a gating run can prove a target is met. |
 | Advisory run | Any run without `--gate`, including `--smoke` runs. Useful for testing the tools. Proves nothing about a target. |
@@ -263,14 +267,16 @@ Both binaries come from one commit, one `Cargo.lock` hash and the D-7 release pr
 - The D-7 guard searches the binary for the `FETCH_MCP_MARKER_` prefix. Any marker (including a renamed feature) fails a release build.
 - Every figure is labelled with its binary (`binary_kind`).
 
-**Bench-versus-shipped bounds** (E-8, part of the G4a pass). No script enforces them yet. E-8 (a story ID) checks the idle delta, size record, public-host cross-check and commit/lock-hash equality when `--version` gains commit and lock hash. Until then the manual E-8/G4a report checks them.
+**Bench-versus-shipped bounds** (E-8, part of the G4a pass). Since E-4: the build identity rule is enforced by scripts (`scripts/build-candidates.sh` fails the build and `measure.py --gate` refuses unless both binaries report the same commit and `Cargo.lock` hash, see "Build identity" below); the idle delta and binary size delta are printed by `bench/report.py` in every job summary and recorded in section 16; the public-host cross-check runs as an advisory CI step (`bench/public_check.py`) and is recorded in section 16. The idle delta bound is still checked by reading the record (no script fails on it): section 16 states the result.
 
 | Bound | Rule |
 |---|---|
 | Idle delta | <= 0.5 MiB |
 | Binary size delta | recorded and explained (no bound) |
 | Public-host cross-check | one manual 5 MiB fetch of a public host on the shipped binary: within 10% of the bench peak and <= 40 MiB |
-| Build identity | same commit and `Cargo.lock` hash |
+| Build identity | same commit and `Cargo.lock` hash (enforced, E-4) |
+
+**Build identity (E-4, re-homed from E-8).** `build.rs` embeds the git commit (`git rev-parse HEAD`, or `unknown` outside a git checkout; `FETCH_MCP_COMMIT` overrides) and the SHA-256 of `Cargo.lock`, with no timestamps and no extra dependency (the hash is written out in `build.rs` and cross-checked against `sha256sum` by a unit test). `--version` prints `fetch-mcp <ver> commit=<40 hex> cargo-lock=<64 hex>` and then any marker. `measure.py --gate` requires `--peer-binary` (the other build) and refuses (exit 2) if either identity is missing, `unknown` or different. A build from a `git archive` (no `.git`) reports `commit=unknown` and can never be a gate figure.
 
 Exceeding a bound fails G4a until it is explained and re-measured.
 
@@ -301,10 +307,10 @@ E-2 fixtures (Sprint 3): `late_landmark` (about 5 MiB of navigation markup with 
 | `idle` | handshake + 30 s | G0, G4a, G4b (shipped) | implemented |
 | `g4a-5mib-full` | 5 MiB HTML read in full and converted (G1/G2 full form) | G4a | implemented |
 | `g4a-5mib-gz` | same, gzip (G2) | G4a | implemented |
-| `g4a-late-landmark` | late-landmark holdback-full HTML (G4), read-in-full form until A-4 adds the holdback | G4a | implemented (E-2) |
+| `g4a-late-landmark` | late-landmark holdback-full HTML (G4), fully read and converted (A-4 holdback is in the converter; its quality is untuned, see the A-4 report) | G4a | implemented (E-2), G4a with A-4 |
 | `g4a-50mib-cl` | 50 MiB with `Content-Length` -> `too_large` (G7a), <= 1.10x 5 MiB | G4a | implemented |
 | `g4a-50mib-chunked` | 50 MiB chunked, no window, `too_large` at cap, <= 1.10x | G4a | implemented |
-| `g6-concurrent10` | 10 concurrent (G1/G2 mix), recorded not gating | none | defined, E-4 |
+| `g6-concurrent10` | 10 concurrent calls (in one process) for the 5 MiB page, recorded, verdict `RECORDED` (never PASS or FAIL); valid only if all 10 replies are ok and at least 10 x 5 MiB were served. The server runs at most 3 fetches at once (`FETCH_MAX_CONCURRENCY` default 3), so 10 requests queue behind 3 | none | implemented (E-4) |
 | `g4b-window-start`, `g4b-window-end` (G1), `g4b-raw` (G3), `g4b-chunked-window-in-cap` (G7b), `g4b-window-beyond-cap` (G5, G7c) | need A-5 / A-6; same 40 MiB target; 50 MiB cases <= 1.10x | G4b | defined, args/windows are E-2 |
 
 **The `g4a-50mib-cl` early-stop floor is ZERO bytes** (`min_bytes` = 0). Architecture 11.2 sets `expected_min_bytes` for G7a to zero, because a correct client stops on the `Content-Length` header, before any body is written. This has a consequence. Nothing per-scenario confirms the request reached the server. A fetch-less or error-only stub that returns `too_large` for every call passes this scenario line (reproduced). The gate is still not falsely passed, because that same server fails `g4a-5mib-full` and `g4a-5mib-gz` (their byte floors are above zero), and the handshake requires a real `fetch` tool. Treat the `g4a-50mib-cl` line as meaningful only alongside the passing 5 MiB scenarios.
@@ -349,7 +355,7 @@ Output is JSONL: one `host` line, one line per scenario, and one `summary` line 
 - Both gnu and musl product binaries are built (`scripts/build-candidates.sh`) and gated by `bench.yml` on amd64 and arm64 (section 15). The older advisory figures in sections 11 and 13 were gnu-only or spike-only.
 - No other load on the runner that the job itself starts. The hosted VM has a runner agent and other neighbours, so the load-average rule is recorded and applied, with the baseline taken in the same job.
 
-Skeleton status: the host record, pinned environment, hash check, preflight and binary sha are implemented. The load-average repeat rule, the dry-run discard, the libc/allocator/profile/commit fields (from `--version`) are E-2 work still open; macOS `/usr/bin/time -l` is NOT implemented.
+Skeleton status: the host record, pinned environment, hash check, preflight and binary sha are implemented. The load-average repeat rule, the dry-run discard, the libc/allocator/profile fields are still open (the commit and `Cargo.lock` hash now come from `--version`, E-4); macOS `/usr/bin/time -l` is NOT implemented.
 
 ## 8. TLS approach (decision)
 
@@ -484,3 +490,48 @@ What these numbers are not: the peak gate ran before A-4 (conversion) exists, so
 Design notes recorded in fix-pass 1: `redirect-chain5` has gate `none`, meaning it is excluded from the reported gating peak figure, but it is intentionally still fail-closed (an INVALID run or a median above the peak target fails the gating invocation; tested). The `idle-bench` step is advisory (exit 1 is recorded, exit 2/3 fail the job). The native-host preflight fails closed under `--gate` if `/proc/sys/fs/binfmt_misc` cannot be read.
 
 **Correction (fix-pass 1, appended, not a rewrite of the above).** The sentence above in the first version of this section, that the workflow "now also records CPU part", was false: the CPU model was empty on arm64 in every run so far. The workflow now records `cpu:` from `lscpu` (`Model name`), with `/proc/cpuinfo` and `CPU implementer`/`CPU part` as fallbacks, and a `cpu_id:` line. First run with the fix (CI run 35541676701, commit afb1613): arm64 `cpu: Neoverse-N2`, `cpu_id: implementer=0x41 part=0xd49 vendor=ARM` in both libc cells (amd64: AMD EPYC 7763 and Xeon 6973P-C). Its gate figures (idle/peak MiB): amd64 gnu 3.90/5.17, amd64 musl 2.27/4.25, arm64 gnu 3.55/4.61, arm64 musl 2.16/4.20, all PASS: a third run, in agreement with the first two.
+
+
+## 16. G4a: peak RSS and boundedness with conversion, on both hosted platforms (E-4; CI run 35557702662, PR #8)
+
+**Read this as one CI run per cell, on one runner instance each. It is a G4a result, not the closed memory gate.** G4b (window at start and end, early stop, chunked window inside the cap, window beyond the cap, `raw=true`) needs A-5 and A-6 and is decided at the end of Sprint 5. The runs are bare binaries, not the container image (D-2). A single run cannot show a trend.
+
+Run: workflow `bench`, job `bench-gate`, four cells, CI run **35557702662** (event `pull_request`, PR #8). Measured commit: GitHub checks out the PR merge commit, so every binary reported `commit=acddaaeb3a9e5db467a936dcce87bb59b89597dc` (merge of PR head 8b5b489 into main; the source is the PR head 8b5b489, which has A-4 and the E-4 code) and `cargo-lock=65a5a943b0f1f2aa31f26b87c3958c5413bfa2a57c889076e3b7a4ed0454cce1` for shipped and bench in all four cells (checked by `build-candidates.sh` and by `measure.py --gate --peer-binary`). Binaries: `scripts/build-candidates.sh` (cargo-zigbuild 0.23.4, ziglang 0.16.0, the D-7 release profile), native on each runner. Every figure is the median of 10 valid fresh processes from a `--gate` run, summary verdict PASS. Hosts (from the job artifacts): amd64 gnu Intel Xeon Platinum 8573C; amd64 musl AMD EPYC 9V74; arm64 gnu and musl Neoverse-N2 (`ubuntu-24.04-arm`, image ubuntu24-arm64 20260907.118.1; amd64 image ubuntu24 20260907.300.1). Requirement: arm64 gnu and musl must pass (they did); amd64 was also run (it passed).
+
+Peak (VmHWM, MiB; target 40 for the gating peak; bench-loopback build):
+
+| scenario | amd64 gnu | amd64 musl | arm64 gnu | arm64 musl |
+|---|---|---|---|---|
+| g4a-5mib-full (5 MiB read in full and converted) | 5.81 | 4.33 | 5.13 | 4.32 |
+| g4a-5mib-gz (same page gzipped) | 6.16 | 4.64 | 5.38 | 4.56 |
+| g4a-late-landmark | 6.03 | 4.70 | 5.35 | 4.43 |
+| g4a-50mib-cl (Content-Length, `too_large`) | 5.51 | 3.86 | 4.74 | 4.02 |
+| g4a-50mib-chunked (no window, `too_large` at the cap) | 5.81 | 4.39 | 5.16 | 4.43 |
+| **gating peak (max of the medians)** | **6.16** | **4.70** | **5.38** | **4.56** |
+| 50 MiB CL over the 5 MiB run (bound 1.10) | 0.949 | 0.891 | 0.923 | 0.930 |
+| 50 MiB chunked over the 5 MiB run (bound 1.10) | 1.000 | 1.014 | 1.006 | 1.027 |
+| redirect-chain5 (recorded, own target 40) | 5.79 | 7.25 | 5.00 | 6.80 |
+| g6-concurrent10 (recorded only, RECORDED) | 8.85 | 8.82 | 8.18 | 13.33 |
+| idle, shipped binary (E-3, target 10) | 4.62 | 2.35 | 3.91 | 2.59 |
+| idle, bench binary (advisory) | 4.75 | 2.29 | 3.91 | 2.59 |
+
+All 5 MiB scenarios are well under the 40 MiB target (largest median 6.16 MiB, about 15% of it) and 50 MiB boundedness is within 1.03 of the 5 MiB run. Noise seen: two of the ten musl amd64 idle samples were 4.3 MiB against 2.35 typical (median unaffected), and the musl amd64 5 MiB samples included a 6.3 MiB outlier; musl arm64 `g6-concurrent10` samples fall in two groups (about 8 and about 14 MiB), so treat that figure as a range (all samples, all cells: 7.4 to 16.0 MiB). amd64 gnu idle (4.62) is higher than the Sprint 3 figure (3.9 to 4.06): conversion code is now linked in and runners vary; still under half of the 10 MiB target.
+
+**g6-concurrent10 (NFR-08 documentation).** Ten concurrent `fetch` calls for the 5 MiB page inside one server process: 7.4 to 16.0 MiB across all samples and cells (medians in the table). Because the default `FETCH_MAX_CONCURRENCY` is 3, at most 3 downloads are in flight and the other 7 queue, so this is the peak of 3 concurrent fetches plus queued requests, not of 10 simultaneous downloads. Not a pass or fail figure.
+
+**Shipped-versus-bench record (E-8 bounds, part of G4a).**
+
+| cell | idle delta bench minus shipped (bound 0.5 MiB) | binary size shipped / bench (bytes) | size delta |
+|---|---|---|---|
+| amd64 gnu | +0.13 MiB | 3706976 / 3707056 | +80 B |
+| amd64 musl | -0.06 MiB | 3536984 / 3537128 | +144 B |
+| arm64 gnu | 0.00 MiB | 3349168 / 3349248 | +80 B |
+| arm64 musl | 0.00 MiB | 3185992 / 3186072 | +80 B |
+
+Idle deltas are within the 0.5 MiB bound in every cell. The size delta is 80 to 144 bytes (no bound, recorded); the only source difference is the `bench-loopback` cfg (the marker string `FETCH_MCP_MARKER_BENCH_LOOPBACK_V1:bench-loopback` and the loopback branch of the policy constructor). Build identity equal in all four cells.
+
+**Public-host cross-check (E-8), shipped versus bench, advisory CI step `bench/public_check.py`.** Each build fetched the same real public HTTPS page (`https://en.wikipedia.org/wiki/List_of_minor_planets:_1%E2%80%931000`, about 2.0 MiB of HTML; median of 5 fresh processes each): amd64 gnu shipped 6.27 vs bench 6.27 MiB (ratio 0.999); amd64 musl 3.99 vs 3.91 (1.02); arm64 gnu 5.40 vs 5.40 (1.00); arm64 musl 3.92 vs 3.93 (0.997). All within 10% and under 40 MiB. **Deviation from the acceptance text:** the criterion says a 5 MiB page of a public host; no public HTML page of about 5 MiB is known, so this used the largest public page found that fits the cap (about 2 MiB). That is a stated gap, not a 5 MiB figure. The step is advisory: it needs the network and is not part of the job's pass condition.
+
+**Allocator record (ADR-005, E-4).** The product uses the system allocator: glibc malloc on the gnu builds and musl malloc on the musl builds. No allocator swap was tried here. ADR-005 criterion 5 (try mimalloc or jemalloc) applies only if both libcs fail the gates; both pass, and the ADR-005 headroom rule (idle above 8 MiB or peak above 32 MiB triggers an experiment) is not triggered (highest idle 4.62, highest peak 6.16). The RSS effect of an alternative allocator is only the Sprint 0 x86 spike evidence (mimalloc raised idle to about 11 MiB and peak by 6 to 17 MiB, so it was rejected). ADR-005 criterion 2 data (libc preference, decided in D-1/D-2, not here): musl peak over gnu peak is 0.85 (arm64) and 0.76 (amd64), so within 1.10; musl idle minus gnu idle is -1.3 (arm64) and -2.3 MiB (amd64), so within +1 MiB; the 1 MiB conversion p95 is 59.9 ms (arm64 gnu) and 56.7 ms (amd64 gnu) against the 500 ms bound, measured on gnu only (no musl figure yet); real HTTPS name resolution for `.local` and split-DNS names was not tested. The libc choice is therefore NOT made by this record.
+
+**What this does not show.** G4b is not run; the G4a pass does not close the memory gate. One run per cell; CPU models differ between cells, and run-to-run spread was seen in earlier sections. The peak scenarios are the bench-loopback build (plain HTTP on loopback); TLS is covered only by the public-host check. The E-2 macOS `/usr/bin/time -l` reader is still not built (no macOS gate host). Conversion quality is not measured here (E-7 snapshot set). The image is not measured (D-2).

@@ -24,6 +24,7 @@ on:
       - "bench/**"
       - "src/**"
       - "Cargo.toml"
+      - "build.rs"
       - "Cargo.lock"
       - "scripts/build-candidates.sh"
       - ".github/workflows/bench.yml"
