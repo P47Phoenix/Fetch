@@ -282,7 +282,7 @@ rc, r = gate_run({"STANDIN_ALLOC_MIB": "60"}, scenarios=("g4a", "hostile-attrval
 check("hostile-attrvalue3: a huge peak is recorded, not a miss", "hostile-attrvalue3" not in r[-1].get("missed", []) and "hostile-attrvalue3" not in r[-1].get("invalid", []), str(r[-1].get("missed")))
 check("fixtures: hostile bodies are deterministic, sized just under 2 MiB, and shaped as documented",
       fixtures.hostile_body("attrs") == fixtures.hostile_body("attrs") and len(fixtures.hostile_body("attrs")) in range(fixtures.HOSTILE_SIZE - 4, fixtures.HOSTILE_SIZE + 1)
-      and len(fixtures.hostile_body("attrvalue")) == fixtures.HOSTILE_SIZE and fixtures.hostile_body("attrs").count(b" a") > 900_000)
+      and len(fixtures.hostile_body("attrvalue")) == fixtures.ATTRVALUE_SIZE and fixtures.ATTRVALUE_SIZE <= 0.95 * 2 * 1024 * 1024 and fixtures.hostile_body("attrs").count(b" a") > 900_000)
 for g in ("g4b-window-start", "g4b-window-end", "g4b-raw", "g4b-chunked-window-in-cap", "g4b-window-beyond-cap"):
     with tempfile.TemporaryDirectory() as gd:
         fixtures.generate(gd)

@@ -24,6 +24,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # crate itself, which is OQ-7 (open).
 [licenses]
 version = 2
+# Note: `cargo deny check` prints "license was not encountered" warnings for BSD-2-Clause and CC0-1.0 (allowed but no
+# current dependency uses them). Harmless (the check passes); kept as allowances, drop them if the warning is unwanted.
 allow = [
     "MIT",
     "Apache-2.0",

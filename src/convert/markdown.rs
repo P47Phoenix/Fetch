@@ -6,7 +6,9 @@
 //! Rules (ADR-002 tier 1 and 3; tier 2, link density, is deliberately NOT implemented, see the dev report):
 //! * dropped with their whole subtree: `script style noscript template svg canvas iframe object embed dialog
 //!   head title nav footer aside select textarea button`, `[hidden]`, `[aria-hidden=true]`, roles
-//!   navigation/banner/contentinfo/complementary/search, inline `display:none` / `visibility:hidden`, and
+//!   navigation/banner/contentinfo/complementary/search, inline `display:none` / `visibility:hidden` (the attribute
+//!   based ones, `hidden`, `aria-hidden`, `display:none`, are NOT applied to the optional-end and void tags in
+//!   `OPTIONAL_END` and to void elements, e.g. `<p hidden>`, `<li hidden>`, `<td hidden>` are kept), and
 //!   containers whose class or id token is a noise word (cookie, consent, banner, popup, modal, advert, ad,
 //!   sidebar, share, newsletter). `form` containers are traversed (ASP.NET pages wrap the body in one).
 //! * landmark holdback: output is held (at most [`HOLDBACK`] bytes) until a `main`, `article` or `[role=main]`
@@ -45,7 +47,7 @@ const DRAW_CAP: usize = 6;
 /// Link and image destination bound (ADR-002).
 const HREF_CAP: usize = 2048;
 /// Table cell buffer (ADR-002: 64 KB) and row buffer. ADR-002 said row <= 64 KB; a cell alone may use 64 KB, so
-/// the row bound is 256 KB in total (a row over it is abandoned and its text emitted as plain lines).
+/// the stored (escaped) cells of a row total at most 256 KiB, plus the one cell still being collected (at most CELL_CAP), so a row holds at most about 320 KiB (a row over the bound is abandoned and its text emitted as plain lines).
 const CELL_CAP: usize = 64 * 1024;
 const ROW_BYTES: usize = 256 * 1024;
 const ROW_CELLS: usize = 256;
@@ -144,6 +146,8 @@ struct Tbl {
     broken: bool,
     cell: Option<String>,
     row: Vec<String>,
+    /// Sum of the lengths of the stored (already `|`-escaped) cells in `row`, kept so closing a cell is O(1).
+    row_bytes: usize,
     row_has_th: bool,
     rows: u32,
 }
@@ -934,19 +938,23 @@ impl Md {
         let Some(cell) = self.tbl.cell.take() else {
             return;
         };
-        let row_bytes: usize = self.tbl.row.iter().map(String::len).sum();
-        if row_bytes + cell.len() > ROW_BYTES {
+        // The bound is on the bytes actually stored: the escaped form (each `|` becomes `\|`, one byte longer), so the
+        // stored row never exceeds ROW_BYTES; a cell is measured after escaping.
+        let escaped_len = cell.len() + cell.matches('|').count();
+        if self.tbl.row_bytes + escaped_len > ROW_BYTES {
             self.tbl.cell = Some(cell);
             self.abandon_table();
             return;
         }
         if self.tbl.row.len() < ROW_CELLS {
+            self.tbl.row_bytes += escaped_len;
             self.tbl.row.push(cell.replace('|', "\\|"));
         }
     }
 
     fn close_row(&mut self) {
         let row = std::mem::take(&mut self.tbl.row);
+        self.tbl.row_bytes = 0;
         if row.iter().all(String::is_empty) {
             return;
         }
@@ -980,6 +988,7 @@ impl Md {
     fn abandon_table(&mut self) {
         self.tbl.broken = true;
         let mut parts: Vec<String> = std::mem::take(&mut self.tbl.row);
+        self.tbl.row_bytes = 0;
         if let Some(c) = self.tbl.cell.take() {
             parts.push(c);
         }

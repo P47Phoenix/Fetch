@@ -621,3 +621,19 @@ fn a_row_of_many_large_cells_is_bounded() {
         "| a | b |\n| --- | --- |\n| 1 | 2 |"
     );
 }
+
+/// Final cleanup: the row bound counts the escaped bytes (each `|` becomes `\|`), so a row of cells made of pipes cannot
+/// store up to twice ROW_BYTES; it is abandoned to plain text like any oversized row.
+#[test]
+fn a_row_of_pipe_heavy_cells_is_bounded_on_escaped_size() {
+    let cell = "|".repeat(40 * 1024); // 80 KiB escaped
+    let html = format!(
+        "<table><tr>{}</tr></table>",
+        format!("<td>{cell}</td>").repeat(4)
+    );
+    let out = md(&html);
+    assert!(
+        !out.starts_with('|'),
+        "an oversized escaped row degrades to plain text"
+    );
+}
