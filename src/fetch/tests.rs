@@ -334,6 +334,59 @@ async fn redirect_fragment_is_not_echoed_in_final_url() {
     );
 }
 
+/// A-9 end to end: the header text a redirected call returns never carries userinfo or a fragment, from either the
+/// request URL or the redirect Location. Userinfo cannot survive to the echo at all (the SSRF core refuses it on
+/// the first hop and on every redirect target), so the credential is proved absent from the refusal text too.
+#[tokio::test]
+async fn a9_echo_has_no_userinfo_or_fragment_end_to_end() {
+    let srv = spawn_server(handler(|mut s, head| async move {
+        let resp = if head.starts_with("GET /final") {
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\ndone"
+        } else {
+            "HTTP/1.1 302 Found\r\nConnection: close\r\nContent-Length: 0\r\nLocation: /final?a=1#locfrag\r\n\r\n"
+        };
+        let _ = s.write_all(resp.as_bytes()).await;
+    }))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(
+        &c,
+        &format!("http://public.test:{}/start#reqfrag", srv.port),
+    )
+    .await;
+    let f = res.unwrap();
+    let echoed = crate::server::with_header(&f, text);
+    assert!(echoed.starts_with(&format!(
+        "URL: http://public.test:{}/final?a=1\nStatus: 200\n\ndone",
+        srv.port
+    )));
+    for bad in ["reqfrag", "locfrag", "#", "@", "secret"] {
+        assert!(!echoed.contains(bad), "{bad} leaked into {echoed}");
+    }
+    // userinfo on the request URL, and on a redirect Location: refused, never echoed
+    let (res, _, _) = get(
+        &c,
+        &format!("http://u:secret@public.test:{}/start", srv.port),
+    )
+    .await;
+    let e = res.unwrap_err();
+    assert!(
+        ["invalid_argument", "blocked_target"].contains(&e.code()),
+        "{e:?}"
+    );
+    assert!(!e.tool_text().contains("secret"));
+    let srv2 = spawn_server(fixed(
+        "302 Found",
+        &["Location: http://u:secret@public.test/x"],
+        Vec::new(),
+    ))
+    .await;
+    let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv2.port)).await;
+    let e = res.unwrap_err();
+    assert_eq!(e.code(), "blocked_target");
+    assert!(!e.tool_text().contains("secret"));
+}
+
 #[tokio::test]
 async fn redirect_loop_stops_at_the_bound() {
     let srv = spawn_server(handler(|mut s, _| async move {

@@ -73,6 +73,12 @@ def host_record():
     mem = next((l.split()[1] for l in read_file("/proc/meminfo", "").splitlines() if l.startswith("MemTotal")), "unknown")
     cpu = next((l.split(":", 1)[1].strip() for l in read_file("/proc/cpuinfo", "").splitlines()
                 if l.startswith(("model name", "Model", "Hardware"))), "unknown")
+    if cpu == "unknown":   # arm64 /proc/cpuinfo has no model name; lscpu does
+        try:
+            out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=5, env={"LC_ALL": "C", "PATH": os.environ.get("PATH", "")}).stdout
+            cpu = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("Model name")), "unknown")
+        except (OSError, subprocess.SubprocessError):
+            pass
     return {"kind": "host", "machine": platform.machine(), "kernel": platform.release(), "cpu": cpu,
             "mem_total_kB": mem, "pagesize": os.sysconf("SC_PAGE_SIZE"),
             "thp": read_file("/sys/kernel/mm/transparent_hugepage/enabled"),
@@ -306,7 +312,7 @@ def _main(argv=None):
         if need != a.binary_kind: return refuse(f"scenario {n} is gated on the {need} binary, got {a.binary_kind}")
 
     run_start = utc_now()
-    host = host_record(); host["native_aarch64"] = native_aarch64()[0]; host["native_gate_host"] = native_host()[0]
+    host = host_record(); host["native_aarch64"] = native_aarch64()[0]; host["native_gate_host"] = native_host(strict=True)[0]
     emit({**host, "run_start_utc": run_start, "binary": a.binary, "binary_kind": a.binary_kind, "version": ver, "binary_sha256": fixtures.sha256_file(a.binary),
           "child_env": {**PINNED_ENV, **env_extra}, "runs": a.runs, "settle_s": a.settle, "gating": a.gate,
           "fixture_sha256": {k: v.get("sha256") or v["decompressed_sha256"] for k, v in manifest["fixtures"].items()}, "unit": "MiB=2^20 bytes"})

@@ -313,8 +313,6 @@ fn check_head(h: &HeaderMap) -> Result<(), FetchError> {
     Ok(())
 }
 
-/// Accept absent, `identity`, or exactly one `gzip` (checked before any decode); everything else, stacked
-/// encodings included, is `unsupported_encoding` (ADR-004).
 /// The URL echoed back in the A-9 header: the request URL without userinfo or fragment (neither is sent to the
 /// server, and credentials must never be reflected into the model's context).
 pub(crate) fn echo_url(u: &Url) -> String {
@@ -325,6 +323,8 @@ pub(crate) fn echo_url(u: &Url) -> String {
     u.to_string()
 }
 
+/// Accept absent, `identity`, or exactly one `gzip` (checked before any decode); everything else, stacked
+/// encodings included, is `unsupported_encoding` (ADR-004).
 fn content_encoding_is_gzip(h: &HeaderMap) -> Result<bool, FetchError> {
     let mut values = h.get_all(CONTENT_ENCODING).iter();
     let Some(first) = values.next() else {

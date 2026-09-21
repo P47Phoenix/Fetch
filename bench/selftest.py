@@ -254,5 +254,17 @@ with tempfile.TemporaryDirectory() as rd:
     check("redirect-chain5: a client that does not follow the redirects is INVALID (chain not followed), not a pass", rc == 2 and r[-1]["verdict"] == "INVALID", f"rc={rc}")
     check("redirect-chain5: INVALID counts in the summary (intended: a gate=none scenario still fails closed on validity)", "redirect-chain5" in r[-1]["invalid"], str(r[-1].get("invalid")))
 
+# --- report.py tolerates a truncated / malformed JSONL (carry-forward): skips the bad line, warns, keeps the good ones
+with tempfile.TemporaryDirectory() as td:
+    good = json.dumps({"kind": "scenario", "scenario": "idle", "binary_kind": "shipped", "metric": "VmRSS", "valid_runs": 10, "runs": 10,
+                       "median_kB": 3000, "median_MiB": 2.93, "samples_kB": [3000], "target_kB": 10240, "verdict": "PASS"})
+    jp = os.path.join(td, "idle.jsonl")
+    with open(jp, "w") as f: f.write("{\"kind\": \"scenario\", \"scen\n" + good + "\n{not json}\nplain text line\n" + good[:20])
+    p = subprocess.run([sys.executable, os.path.join(HERE, "report.py"), "--idle", jp], capture_output=True, text=True)
+    check("report.py: malformed JSONL lines are skipped with a warning, valid ones reported, exit 0",
+          p.returncode == 0 and len(set(p.stderr.splitlines())) == 3 and p.stderr.count("skipped a malformed JSONL line") >= 3 and "| idle | shipped |" in p.stdout, f"rc={p.returncode} {p.stderr!r}")
+    p = subprocess.run([sys.executable, os.path.join(HERE, "report.py"), "--idle", os.path.join(td, "missing.jsonl")], capture_output=True, text=True)
+    check("report.py: a missing file yields an empty report, exit 0", p.returncode == 0 and "| scenario |" in p.stdout, p.stderr)
+
 print("SELFTEST", "FAILED: " + ", ".join(fails) if fails else "PASSED")
 sys.exit(1 if fails else 0)
