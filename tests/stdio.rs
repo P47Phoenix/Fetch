@@ -130,6 +130,10 @@ fn initialize_lists_exactly_one_fetch_tool_with_schema() {
         assert!(props.contains_key(f), "schema lacks {f}: {props:?}");
     }
     assert_eq!(tools[0]["inputSchema"]["required"], json!(["url"]));
+    assert!(
+        props["url"].get("default").is_none(),
+        "url must not advertise a default: {props:?}"
+    );
     s.finish_and_assert_pure();
 }
 
@@ -168,8 +172,21 @@ fn bad_input_is_rejected_with_the_field_named() {
     for (args, field) in cases {
         let r = s.tool_call(&args);
         let m = rejection_text(&r).unwrap_or_else(|| panic!("{args} must be rejected: {r}"));
-        assert!(m.contains(field), "{args}: error must name {field}: {m}");
+        assert!(
+            m.starts_with(&format!("error[invalid_argument]: {field}: ")),
+            "{args}: error must be error[invalid_argument] naming {field}: {m}"
+        );
     }
+    s.finish_and_assert_pure();
+}
+
+/// `arguments` that is not a JSON object never reaches our validation: rmcp answers with a JSON-RPC error (A-7 README note).
+#[test]
+fn non_object_arguments_get_the_documented_rmcp_protocol_error() {
+    let mut s = Session::start();
+    s.handshake();
+    let r = s.call("tools/call", json!({"name": "fetch", "arguments": []}));
+    assert_eq!(r["error"]["code"], -32601, "{r}");
     s.finish_and_assert_pure();
 }
 

@@ -269,6 +269,8 @@ As an LLM agent, I want distinct error messages so that I can choose the right r
 - Given each cause, when tested, then a test asserts both the flag and the message text.
 - Given an unexpected internal error, when it occurs, then the server returns a generic error result and keeps running without writing to stdout.
 
+- **A-7 status (Sprint 6).** Implemented: every failure is an `isError` result `error[<code>]: <message>`; argument failures (missing, wrong type, out of range) are uniformly `error[invalid_argument]: <field>: <why>` (the rmcp `failed to deserialize parameters:` prefix is gone for JSON-object arguments; the advertised schema is unchanged and pinned by `initialize_lists_exactly_one_fetch_tool_with_schema`; validation moved from serde `deserialize_with` into `FetchParams::parse`, the fields are now `serde_json::Value`; non-object `arguments` still get rmcp's `-32601`, pinned in tests/stdio.rs); HTTP 4xx and 5xx messages name the class and reason (408, 425 and 429 say it may work after a delay); an `internal` error shows a generic message and logs its detail to stderr. Tests assert flag and text for each cause (`src/server.rs`, `src/fetch/tests.rs` `a7_each_cause_is_flagged_and_names_itself`, `tests/stdio.rs`). Deviation: the third AC ("unexpected internal error ... keeps running") holds for `Err` paths only; a panic aborts the process because of `panic = "abort"` (memory budget, D-7), so it cannot return a result. The `internal` path is unit-tested only (no input triggers it, so the stderr detail line and the empty stdout are not tested end to end). Needs owner acknowledgement.
+
 ### A-8: Charset decoding and User-Agent (2 pts)
 Maps to: FR-09.
 As a developer, I want correct text decoding so that non-UTF-8 pages read properly.
@@ -314,6 +316,8 @@ Note: the first implementation of the range table, resolver filter and per-hop r
 - Given a DNS name that resolves to a private IP, when `fetch` is called, then it is refused.
 - Given a name resolves to a public IP, when connecting, then the connection uses that validated IP so a second lookup cannot change it (rebinding defense).
 - Given a name returns mixed public and private addresses, when `fetch` is called, then it is refused.
+
+- **B-1 status (Sprint 6).** The A-3a code already met every AC; B-1 adds end-to-end test depth (`b1_every_blocked_class_by_name_mixed_and_literal_is_refused_before_any_connection`: 17 blocked addresses by literal, by name, and mixed public/private in both orders; no connection, one lookup per name, no address in the message) on top of the existing resolver, range-table and rebinding tests. No code change.
 
 ### B-2: Encoded and IPv6 address forms (3 pts)
 Maps to: FR-06.

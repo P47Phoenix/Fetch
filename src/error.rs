@@ -35,9 +35,13 @@ pub enum FetchError {
     BadResponse(String),
     /// The HTML converter hit a memory or output limit (or could not process the page). `raw=true` returns the text unconverted.
     ConverterLimit(String),
-    /// An unexpected internal failure on an `Err` path (panics abort instead).
+    /// An unexpected internal failure on an `Err` path (panics abort instead, `panic = "abort"`). The detail is logged, never shown.
     Internal(String),
 }
+
+/// The only text a caller sees for an unexpected internal failure (A-7).
+pub const INTERNAL_MESSAGE: &str =
+    "an unexpected internal error occurred; the server is still running, you may retry";
 
 impl FetchError {
     /// Stable machine-readable code.
@@ -79,9 +83,31 @@ impl fmt::Display for FetchError {
             | Self::UnsupportedEncoding(m)
             | Self::Network(m)
             | Self::BadResponse(m)
-            | Self::ConverterLimit(m)
-            | Self::Internal(m) => f.write_str(m),
-            Self::HttpStatus(code) => write!(f, "the server answered with HTTP status {code}"),
+            | Self::ConverterLimit(m) => f.write_str(m),
+            // The detail of an unexpected failure is for the log (stderr), never for the caller.
+            Self::Internal(_) => f.write_str(INTERNAL_MESSAGE),
+            Self::HttpStatus(code) => {
+                let reason = reqwest::StatusCode::from_u16(*code)
+                    .ok()
+                    .and_then(|s| s.canonical_reason())
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default();
+                match code {
+                    408 | 425 | 429 => write!(
+                        f,
+                        "the server refused the request with HTTP status {code}{reason}; it may work if retried after a delay"
+                    ),
+                    400..=499 => write!(
+                        f,
+                        "the server refused the request with HTTP status {code}{reason}; retrying the same URL is unlikely to help"
+                    ),
+                    500..=599 => write!(
+                        f,
+                        "the server failed with HTTP status {code}{reason}; it may work if retried later"
+                    ),
+                    _ => write!(f, "the server answered with HTTP status {code}{reason}"),
+                }
+            }
             Self::TooManyRedirects => f.write_str("too many redirects"),
         }
     }
@@ -103,10 +129,9 @@ mod tests {
         assert_eq!(e.tool_text(), "error[invalid_argument]: url: missing");
         assert_eq!(FetchError::TooLarge("x".into()).code(), "too_large");
         assert_eq!(FetchError::Timeout("x".into()).code(), "timeout");
-        assert_eq!(
-            FetchError::HttpStatus(404).tool_text(),
-            "error[http_error]: the server answered with HTTP status 404"
-        );
+        assert!(FetchError::HttpStatus(404).tool_text().starts_with(
+            "error[http_error]: the server refused the request with HTTP status 404 (Not Found)"
+        ));
         assert_eq!(FetchError::TooManyRedirects.code(), "too_many_redirects");
         let b = FetchError::BlockedTarget("host is not public".into());
         assert_eq!(b.tool_text(), "error[blocked_target]: host is not public");
