@@ -291,7 +291,9 @@ check("fixtures: hostile bodies are deterministic, sized just under 2 MiB, and s
       and len(fixtures.hostile_body("attrvalue")) == fixtures.ATTRVALUE_SIZE and fixtures.ATTRVALUE_SIZE <= 0.95 * 2 * 1024 * 1024 and fixtures.hostile_body("attrs").count(b" a") > 900_000)
 # --- G4b (A-5, A-6): the window scenarios are real. Window resolution is a pure function of the probed lengths.
 from scenarios import WINDOW, CAP
-man = fixtures.resolve(fixtures.load_manifest(), os.path.join(HERE, "fixtures"))
+man = fixtures.load_manifest()   # from the committed manifest, not the disk: the unit-test job has no generated fixtures
+for _m in man["fixtures"].values():
+    if _m.get("encoding") == "gzip": _m["size"] = _m["compressed_size_reference"]
 end = measure.resolve_window(dict(SCENARIOS["g4b-window-end"]), lambda route, raw: 1_000_000, man)
 check("resolve_window end: last WINDOW characters, no continuation footer allowed, total footer required",
       end["args"]["start_index"] == 1_000_000 - WINDOW and end["args"]["max_length"] == WINDOW and "More content available" in end["text_must_not"]
