@@ -375,13 +375,27 @@ def _smoke(lines, *extra):
 rc, r = _smoke(["# local fixtures", f"{_base}/old redirect", f"{_base}/data.json json", f"{_base}/page.txt text"], "--dry-run")
 check("smoke.py --dry-run on local fixtures: 3 fetched, labelled dry_run, exit 0", rc == 0 and r[-1]["verdict"] == "DONE" and r[-1]["dry_run"] and r[-1]["ok"] == 3 and r[-1]["list_count"] == 3, f"rc={rc} {r[-1:]}")
 rc, r = _smoke([f"{_base}/data.json json", f"{_base}/page.txt text"])
-check("smoke.py real run refuses a list that is not 10 https URLs with all categories (never invents URLs), exit 2", rc == 2 and r[-1]["verdict"] == "INVALID" and "exactly 10" in r[-1]["reason"] and "https" in r[-1]["reason"], f"rc={rc} {r[-1:]}")
+check("smoke.py real run refuses a list that is not 10 https URLs with all categories (never invents URLs), exit 2", rc == 2 and r[-1]["verdict"] == "INVALID" and "exactly 10" in r[-1]["reason"], f"rc={rc} {r[-1:]}")
 rc, r = _smoke([f"{_base}/x weird"], "--dry-run")
 check("smoke.py: an unknown category is refused, exit 2", rc == 2 and "unknown category" in r[-1]["reason"], f"rc={rc}")
 rc, r = _smoke(["https://user:pw@example.org/ tls"], "--dry-run")
 check("smoke.py: userinfo in a list URL is refused", rc == 2 and "userinfo" in r[-1]["reason"], f"rc={rc}")
 rc, r = _smoke([f"http://127.0.0.1:1/never json"], "--dry-run", "--timeout", "20")
 check("smoke.py: a failing URL is a recorded result, not a crash (exit 0, failed=1)", rc == 0 and r[-1]["failed"] == 1, f"rc={rc} {r[-1:]}")
+
+rc, r = _smoke(["http://[::1/ json"], "--dry-run")
+check("smoke.py: a malformed URL is the INVALID path (exit 2, summary emitted), not a traceback", rc == 2 and r and r[-1]["verdict"] == "INVALID" and "malformed" in r[-1]["reason"], f"rc={rc} {r[-1:]}")
+with tempfile.TemporaryDirectory() as td:
+    _lp = os.path.join(td, "l.txt"); _op = os.path.join(td, "o.jsonl"); open(_lp, "w").write("http://[::1/ json\n")
+    _p = subprocess.run([sys.executable, os.path.join(HERE, "smoke.py"), "--binary", STANDIN, "--list", _lp, "--dry-run", "--out", _op], capture_output=True, text=True)
+    check("smoke.py: --out is written on the INVALID path", _p.returncode == 2 and os.path.exists(_op) and "INVALID" in open(_op).read(), f"rc={_p.returncode}")
+_ips = ["https://127.0.0.1/a tls", "https://10.0.0.5/b redirect", "https://[::1]/c json", "https://169.254.169.254/d text"] + [f"https://192.168.0.{i}/x" for i in range(1, 7)]
+rc, r = _smoke(_ips)
+check("smoke.py: a real 10-URL list of IP literals is refused (exit 2)", rc == 2 and "IP-literal" in r[-1]["reason"], f"rc={rc} {r[-1:]}")
+rc, r = _smoke([f"{_base}/x#frag json"], "--dry-run")
+check("smoke.py: '#' inside a URL is a fragment, not a comment", rc == 0 and r[-1]["list_count"] == 1 and r[-1]["failed_urls"] in ([], [f"{_base}/x#frag"]), f"rc={rc} {r[-1:]}")
+rc, r = _smoke([f"{_base}/p.txt text"], "--dry-run", "--child-env", "NOEQUALS")
+check("smoke.py: --child-env without '=' is a clean INVALID, exit 2", rc == 2 and "K=V" in r[-1]["reason"], f"rc={rc}")
 
 def _report(**files):
     with tempfile.TemporaryDirectory() as td:
@@ -392,7 +406,7 @@ def _report(**files):
         return p.returncode, p.stdout
 def _gate(verdict, gating=True): return json.dumps({"kind": "summary", "gating": gating, "verdict": verdict, "missed": ["x"] if verdict == "FAIL" else []}) + "\n"
 _ov = lambda ms: f"CONVERT_1MIB bytes=1048576 median_ms=50.0 p95_ms={ms} max_ms=90.0 arch=aarch64\n"
-def _sm(dry=False, n=10): return json.dumps({"kind": "smoke-summary", "verdict": "DONE", "dry_run": dry, "list_count": n, "ok": n, "failed": 0, "failed_urls": [], "redirected": 1, "by_category": {"tls": [1, 1]}}) + "\n"
+def _sm(dry=False, n=10): return json.dumps({"kind": "smoke-summary", "verdict": "DONE", "dry_run": dry, "list_count": n, "ok": n, "failed": 0, "failed_urls": [], "redirected": 1, "by_category": {"tls": [3, 3], "redirect": [3, 3], "json": [2, 2], "text": [2, 2]}}) + "\n"
 rc, out = _report()
 check("e5_report: no inputs -> 'not decided', exit 2, lists what is missing (never a default pass)", rc == 2 and "**Decision: not decided**" in out and "no results file" in out, f"rc={rc}")
 rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm(dry=True))
@@ -403,6 +417,22 @@ rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), sm
 check("e5_report: everything met and a real 10-URL smoke -> 'release' with the config change and the D-1 caveat, exit 0", rc == 0 and "**Decision: release**" in out and "claude mcp add" in out and "D-1" in out, f"rc={rc}")
 rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(700.0), smoke=_sm())
 check("e5_report: a missed target -> 'do not release' with the gap, exit 1", rc == 1 and "**Decision: do not release**" in out and "Gap and follow-up" in out, f"rc={rc}")
+def _sm2(ok_by_cat, redirected=1, ok=10): return json.dumps({"kind": "smoke-summary", "verdict": "DONE", "dry_run": False, "list_count": 10, "ok": ok, "failed": 10 - ok, "failed_urls": [], "redirected": redirected, "by_category": {c: [n, 3] for c, n in ok_by_cat.items()}}) + "\n"
+_good = {"tls": 3, "redirect": 3, "json": 2, "text": 2}
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm2({c: 0 for c in _good}, redirected=0, ok=0))
+check("e5_report: a 0/10 smoke never releases -> 'not decided', exit 2", rc == 2 and "no successful fetch" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm2({**_good, "json": 0}))
+check("e5_report: a required category with no success -> exit 2", rc == 2 and "json" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm2(_good, redirected=0))
+check("e5_report: no redirect followed -> exit 2", rc == 2 and "redirect" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=json.dumps({"kind": "smoke-summary", "verdict": "DONE", "dry_run": False, "list_count": 10}) + "\n")
+check("e5_report: a truncated DONE summary is exit 2, not a crash", rc == 2 and "malformed" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead="CONVERT_1MIB bytes=1024 median_ms=1.0 p95_ms=1.0 max_ms=1.0 arch=aarch64\n", smoke=_sm())
+check("e5_report: an overhead line for the wrong page size is not evidence -> exit 2", rc == 2 and "no measurement line" in out, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0).replace("aarch64", "riscv64"), smoke=_sm())
+check("e5_report: a non-native arch overhead line is not evidence -> exit 2", rc == 2, f"rc={rc}")
+rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0) + "running under qemu-user\n", smoke=_sm())
+check("e5_report: a qemu overhead run is not evidence -> exit 2", rc == 2, f"rc={rc}")
 rc, out = _report(idle=_gate("PASS"), peak=_gate("PASS"), overhead=_ov(60.0), smoke=_sm(n=9))
 check("e5_report: a smoke over 9 URLs is not the 10-URL smoke -> 'not decided'", rc == 2 and "not 10" in out, f"rc={rc}")
 _srv.shutdown()

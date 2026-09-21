@@ -3,7 +3,7 @@
 
   smoke.py --binary BIN --list FILE [--out FILE] [--timeout SEC] [--child-env K=V ...] [--dry-run]
 
-LIST FILE: one URL per line, `#` starts a comment, blank lines ignored. Optional second field (space or tab) is the category:
+LIST FILE: one URL per line, blank lines ignored. `#` starts a comment only as the first character of a line (a `#` in a URL is a fragment). Optional second field (space or tab) is the category:
 tls, redirect, json, text, html (E-5: "network, TLS, redirects, JSON and plain text"). Example line:  https://example.org/data.json  json
 
 The list is the OWNER's (E-7, still unsupplied); this tool never invents one. A real run (no --dry-run) is refused unless the list has
@@ -14,7 +14,7 @@ and e5_report.py will never accept them as the smoke result.
 Output: one JSONL record per URL (kind "smoke") then one summary (kind "smoke-summary"). Exit 0 when the run completed (a URL that failed is
 a recorded result, not a gate: the smoke is non-gating), 2 when the list is invalid or the harness failed. Same pinned child environment as measure.py.
 """
-import argparse, json, sys, time, urllib.parse
+import argparse, ipaddress, json, sys, time, urllib.parse
 import measure
 
 CATEGORIES = ("tls", "redirect", "json", "text", "html")
@@ -27,8 +27,8 @@ def parse_list(path):
     entries, problems = [], []
     with open(path, encoding="utf-8") as f:
         for n, raw in enumerate(f, 1):
-            line = raw.split("#", 1)[0].strip()
-            if not line: continue
+            line = raw.strip()
+            if not line or line.startswith("#"): continue   # whole-line comments only: '#' inside a URL is a fragment, never a comment
             parts = line.split()
             if len(parts) > 2: problems.append(f"line {n}: expected 'URL [category]', got {len(parts)} fields"); continue
             cat = parts[1].lower() if len(parts) == 2 else None
@@ -43,8 +43,12 @@ def validate(entries, dry_run):
     if not entries: return ["the list has no URLs"]
     seen = set()
     for e in entries:
-        u = urllib.parse.urlparse(e["url"])
+        try: u = urllib.parse.urlparse(e["url"]); host = u.hostname; u.port
+        except ValueError: bad.append(f"line {e['line']}: malformed URL"); continue
         if u.scheme not in ("http", "https") or not u.hostname: bad.append(f"line {e['line']}: not an absolute http(s) URL"); continue
+        if not dry_run:   # dry runs use local fixtures on 127.0.0.1
+            try: ipaddress.ip_address(host); bad.append(f"line {e['line']}: IP-literal host (the smoke needs public names, and the SSRF policy refuses private literals)"); continue
+            except ValueError: pass
         if u.username or u.password: bad.append(f"line {e['line']}: URL has userinfo (credentials and authenticated pages are excluded)")
         if e["url"] in seen: bad.append(f"line {e['line']}: duplicate URL")
         seen.add(e["url"])
@@ -100,6 +104,8 @@ def main(argv=None):
     problems += validate(entries, a.dry_run) if not problems else []
     if problems:
         emit({"kind": "smoke-summary", "verdict": "INVALID", "dry_run": a.dry_run, "reason": "; ".join(problems)}); _write(a.out, lines); return 2
+    if any("=" not in kv for kv in a.child_env):
+        emit({"kind": "smoke-summary", "verdict": "INVALID", "dry_run": a.dry_run, "reason": "--child-env needs K=V"}); _write(a.out, lines); return 2
     env = dict(kv.split("=", 1) for kv in a.child_env)
     recs = [fetch_one(a.binary, env, e, a.timeout) for e in entries]
     for r in recs: emit(r)

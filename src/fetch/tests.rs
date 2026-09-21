@@ -534,9 +534,9 @@ async fn b3_redirect_to_every_encoded_blocked_form_is_refused_without_a_second_c
     }
 }
 
-/// B-2 at the redirect hop with the default policy: loopback in every encoded and IPv6 spelling is refused.
+/// B-2 at `revalidate_hop` (the function the redirect loop calls; the loop itself is covered by the b3_ redirect test above) with the default policy: loopback in every encoded and IPv6 spelling is refused.
 #[tokio::test]
-async fn b2_redirect_hop_refuses_every_loopback_spelling() {
+async fn b2_revalidate_hop_refuses_every_loopback_spelling() {
     let r = FakeResolver::new();
     for t in [
         "http://2130706433/",
@@ -581,10 +581,7 @@ async fn b2_encoded_and_ipv6_forms_are_refused_as_the_request_url() {
     ] {
         let (res, text, _) = get(&c, &format!("http://{host}:{}/", srv.port)).await;
         let e = res.expect_err(host);
-        assert!(
-            matches!(e.code(), "blocked_target" | "invalid_argument"),
-            "{host}: {e:?}"
-        );
+        assert_eq!(e.code(), "blocked_target", "{host}: {e:?}");
         assert!(text.is_empty(), "{host}");
     }
     assert_eq!(r.count(), 0, "encoded literals never reach the resolver");

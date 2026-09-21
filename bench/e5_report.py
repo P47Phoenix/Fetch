@@ -48,7 +48,10 @@ def overhead(path):
     try: text = open(path, encoding="utf-8").read()
     except OSError: return None
     m = re.search(r"CONVERT_1MIB bytes=(\d+) median_ms=([\d.]+) p95_ms=([\d.]+) max_ms=([\d.]+) arch=(\w+)", text)
-    return {"bytes": int(m[1]), "median_ms": float(m[2]), "p95_ms": float(m[3]), "max_ms": float(m[4]), "arch": m[5]} if m else None
+    if not m or re.search(r"qemu", text, re.I): return None   # no line, or an emulated run: never evidence
+    o = {"bytes": int(m[1]), "median_ms": float(m[2]), "p95_ms": float(m[3]), "max_ms": float(m[4]), "arch": m[5]}
+    # Goal 5 is defined on the 1 MiB page on a native host (BENCHMARK.md section 9); anything else is not the figure.
+    return o if o["bytes"] == 1048576 and o["arch"] in ("aarch64", "x86_64") else None
 
 
 def smoke_result(recs):
@@ -57,6 +60,12 @@ def smoke_result(recs):
     if summ.get("verdict") != "DONE": return "missing", f"10-URL live smoke: run INVALID ({summ.get('reason', '')})", summ
     if summ.get("dry_run"): return "missing", "10-URL live smoke: only a dry run against local fixtures exists; it is not the smoke result", summ
     if summ.get("list_count") != 10: return "missing", f"10-URL live smoke: list has {summ.get('list_count')} URLs, not 10", summ
+    bc = summ.get("by_category")
+    if not isinstance(bc, dict) or not isinstance(summ.get("ok"), int) or not isinstance(summ.get("redirected"), int) or not isinstance(summ.get("failed_urls"), list):
+        return "missing", "10-URL live smoke: summary is truncated or malformed", summ
+    dead = [c for c in ("tls", "redirect", "json", "text") if not (isinstance(bc.get(c), list) and len(bc[c]) == 2 and bc[c][0] >= 1)]
+    if dead: return "missing", f"10-URL live smoke: no successful fetch in category {', '.join(dead)} (a failed smoke is not evidence)", summ
+    if summ["redirected"] < 1: return "missing", "10-URL live smoke: no fetch followed a redirect", summ
     return "done", f"10-URL live smoke: {summ['ok']} of 10 fetched (non-gating)", summ
 
 
