@@ -69,3 +69,8 @@ Recorded from the run logs (advisory reading, not a G4a pass): 1 MiB conversion 
 6. Charset: input is the UTF-8 stream (non-UTF-8 charsets are A-8). Content-type rejection and full sniffing are A-6; non-HTML types (text/*, JSON, and also binary types) are passed through as text for now.
 7. html-escape includes `unsafe` internally; lol_html 2.9.0 is one major behind 3.0.1.
 8. Measurements are x86_64 only and not from the pinned zigbuild pipeline; no aarch64 number for anything in this report. E-4 (G4a) is not started in this commit.
+
+## Correction (Sprint 4 fix-pass 1)
+- The 1 MiB overhead on aarch64 WAS measured, in CI on the gnu cells: 59.9 ms p95 on arm64 and 56.7 ms on amd64 (target 500 ms). Section 4 and honest gap 2 above ("not measured") are superseded; only musl remains unmeasured.
+- Section numbering above runs 5, 7, 6 (CI is 7, honest gaps is 6); read them by title.
+- Additional honest gap: `<base href>` is ignored (relative links are not resolved against it).
