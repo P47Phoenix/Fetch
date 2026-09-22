@@ -2,4 +2,8 @@
 channel = "1.94.1"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
-targets = ["aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "aarch64-apple-darwin"]
+# aarch64-unknown-linux-gnu is dropped: it's the implicit host target on the arm64 hosted runners
+# (ubuntu-24.04-arm) and D-2's release.yml builds natively per platform, no cross-compile. Only the
+# musl target is still cross-compiled explicitly, by arm-bench.yml. aarch64-apple-darwin is dropped:
+# macOS is out of scope per ADR-007 (multi-arch release pipeline, hosted-runner-only).
+targets = ["aarch64-unknown-linux-musl"]

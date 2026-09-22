@@ -1,0 +1,10 @@
+# Allowlist style: exclude everything, then re-include only what the Dockerfile COPYs.
+# This keeps the build context small/reproducible and matches the Dockerfile's comment (D-2,
+# PR #13 review NB-3) that .git, target/, spikes/, .delivery/ and .claude/ never reach the builder.
+*
+
+!src
+!build.rs
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
