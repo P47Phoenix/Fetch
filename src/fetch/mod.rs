@@ -11,12 +11,13 @@
 //! `a3b_merge_gate` (in `tests.rs`) is a required CI check.
 
 pub mod body;
+pub mod charset;
 pub mod dns;
 
 #[cfg(test)]
 mod tests;
 
-use crate::config::Config;
+use crate::config::{Config, RobotsMode};
 use crate::convert::{self, ConvertError, Mode};
 use crate::error::FetchError;
 use crate::policy::Policy;
@@ -39,6 +40,28 @@ pub const MAX_HEADER_COUNT: usize = 64;
 /// (hyper default, about 400 KiB, not configurable through reqwest 0.13) bounds what is read before this check.
 pub const MAX_HEADER_BYTES: usize = 32 * 1024;
 const USER_AGENT_VALUE: &str = concat!("fetch-mcp/", env!("CARGO_PKG_VERSION"));
+/// B-4: robots.txt is capped well below a normal page (the AC: "small, at most 512 KB").
+const ROBOTS_MAX_BYTES: usize = 512 * 1024;
+/// Finding #6 (round-2 review): the robots.txt sub-fetch's own deadline is at most the configured timeout
+/// divided by this, so a hanging robots.txt server cannot consume the whole outer deadline.
+const ROBOTS_SUB_DEADLINE_FRACTION: u32 = 4;
+/// A-8: the standard HTML5 `<meta charset>` sniffing window, in decoded bytes.
+const SNIFF_WINDOW: usize = 1024;
+/// A-8: wire bytes [`FetchClient::sniff_prefix`] will read chasing [`SNIFF_WINDOW`] decoded bytes, before giving
+/// up and sniffing whatever it has (clamped to the response's own cap). Generous headroom over `SNIFF_WINDOW`
+/// for gzip-compressed responses; small next to a real body, so early-abort stays effectively intact.
+const SNIFF_WIRE_BUDGET: u64 = 16 * 1024;
+
+/// The result of [`FetchClient::sniff_prefix`].
+struct Sniff {
+    /// Decoded bytes gathered for the meta-charset scan (empty when `stopped_early` is set).
+    decoded: Vec<u8>,
+    /// The raw wire bytes read during the peek, to be replayed into whichever pipeline decodes the rest.
+    wire_prefix: Vec<u8>,
+    /// `Some(wire_bytes)` when `stop()` fired during the peek: the caller returns it unchanged (early-stop
+    /// contract), and `decoded`/`wire_prefix` are not meaningful.
+    stopped_early: Option<u64>,
+}
 
 /// Compiled-in limits (C-1 adds environment parsing for them; `Config` already carries the defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +103,13 @@ pub struct FetchClient<R: Resolver> {
     limits: Limits,
     slots: Semaphore,
     tls: OnceLock<Result<Arc<rustls::ClientConfig>, String>>,
+    /// B-4: [`RobotsMode::Ignore`] (the default, and every construction that does not call
+    /// [`FetchClient::with_robots_mode`]) is a no-op -- robots.txt is never fetched or checked. Set to
+    /// [`RobotsMode::Enforce`], it is a real, working mechanism: [`FetchClient::check_robots`] fetches the
+    /// target origin's robots.txt on the initial hop (through this same guarded client) and refuses a
+    /// disallowed path. Kept out of [`FetchClient::new`]'s signature deliberately: that signature is pinned by
+    /// the A-3b merge gate (`a3b_merge_gate`), so adding the mechanism could not change it.
+    robots: RobotsMode,
 }
 
 impl<R: Resolver> FetchClient<R> {
@@ -91,11 +121,25 @@ impl<R: Resolver> FetchClient<R> {
             slots: Semaphore::new(limits.concurrency),
             limits,
             tls: OnceLock::new(),
+            robots: RobotsMode::Ignore,
         }
     }
 
+    /// Sets the robots.txt enforcement mode (B-4; `Config.robots_txt`, `FETCH_ROBOTS_TXT`). Builder-style so
+    /// [`FetchClient::new`]'s signature -- pinned by the merge gate -- does not change; every caller that does
+    /// not use this stays exactly as before ([`RobotsMode::Ignore`], the default).
+    #[must_use]
+    pub fn with_robots_mode(mut self, mode: RobotsMode) -> Self {
+        self.robots = mode;
+        self
+    }
+
     /// Fetch `url`, streaming the body as UTF-8 text slices into `sink` (each at most 64 KiB). Memory does not
-    /// depend on the body size: nothing is accumulated here.
+    /// depend on the body size for the common case (streamed UTF-8, whatever the charset source). One path is
+    /// an exception (A-8): an HTML response that is both gzip-compressed and has no explicit `charset=` on
+    /// either the `Content-Type` header or a `<meta>` tag buffers the whole (still capped) body plus a decoded
+    /// copy before it can be sniffed and converted -- up to roughly `4 * max_bytes` for that one case. See
+    /// `README.md` / `docs/BENCHMARK.md` for the concrete bound.
     ///
     /// # Errors
     /// A [`FetchError`] for a refused target, resolution, transport, timeout, size, encoding or status failure.
@@ -109,7 +153,8 @@ impl<R: Resolver> FetchClient<R> {
 
     /// [`fetch`](Self::fetch) with a conversion mode: [`Mode::Markdown`] converts an HTML body to markdown
     /// (A-4) as it streams; other text, and [`Mode::Raw`], is passed through as text. Memory still does not
-    /// depend on the body size.
+    /// depend on the body size for the common case; see the caveat on [`fetch`](Self::fetch) for the one
+    /// exception (gzip HTML with no charset markers).
     ///
     /// # Errors
     /// As [`fetch`](Self::fetch), plus `converter_limit` when the converter's memory or output limit is hit and
@@ -148,13 +193,16 @@ impl<R: Resolver> FetchClient<R> {
             }
         };
         let deadline = Instant::now() + self.limits.timeout;
-        match timeout_at(deadline, self.run(url, mode, sink, stop, deadline)).await {
+        match timeout_at(deadline, self.run(url, mode, sink, stop, deadline, true)).await {
             Ok(r) => r,
             // Dropping the future closes any open connection.
             Err(_) => Err(FetchError::Timeout("the request timed out".into())),
         }
     }
 
+    /// `check_robots` is false only for the recursive call [`FetchClient::check_robots`] itself makes to fetch
+    /// robots.txt: that fetch must not trigger ANOTHER robots.txt check on robots.txt (infinite recursion).
+    /// Every other caller passes `true`.
     async fn run(
         &self,
         url: &str,
@@ -162,6 +210,7 @@ impl<R: Resolver> FetchClient<R> {
         sink: &mut (dyn FnMut(&str) + Send),
         stop: &(dyn Fn() -> bool + Send + Sync),
         deadline: Instant,
+        check_robots: bool,
     ) -> Result<Fetched, FetchError> {
         let mut current = url.to_string();
         let mut origin = Origin::Initial;
@@ -170,6 +219,16 @@ impl<R: Resolver> FetchClient<R> {
             let v = validate_target(&*self.resolver, &self.policy, &current, origin).await?;
             // 2. The URL the client will use must mean what the core validated.
             let parsed = cross_check(&current, &v.url)?;
+            // B-4: robots.txt, checked once for the original target only (never a redirect hop), and only when
+            // enforcement is switched on (RobotsMode::Enforce; the default, Ignore, skips this whole step --
+            // zero behaviour change from before B-4).
+            if check_robots
+                && hop == 0
+                && origin == Origin::Initial
+                && self.robots == RobotsMode::Enforce
+            {
+                self.check_robots(&v.url, &parsed, deadline).await?;
+            }
             // 3. A client whose only dial route is the validated set.
             let client = self.hop_client(&v.url, v.addrs, deadline)?;
             let resp = client
@@ -212,6 +271,66 @@ impl<R: Resolver> FetchClient<R> {
         Err(FetchError::TooManyRedirects)
     }
 
+    /// B-4: robots.txt for `checked`'s origin, fetched through [`FetchClient::run`] directly -- the same SSRF
+    /// checks and redirect handling as the fetch it is gating, capped at [`ROBOTS_MAX_BYTES`], and inside the
+    /// concurrency slot already held for that fetch (no separate slot is acquired, so this cannot deadlock a
+    /// `FETCH_MAX_CONCURRENCY=1` server against itself). Bounded by a sub-deadline (finding #6, round-2 review):
+    /// `min(outer deadline, ROBOTS_SUB_DEADLINE_FRACTION of the configured timeout)`, so a hanging robots.txt
+    /// server cannot consume the whole outer deadline and turn "fail open quickly" into "time out slowly" --
+    /// the gated fetch itself still gets the rest of the outer deadline either way. Per the AC, any failure
+    /// fetching or reading it -- missing, a non-2xx status, refused by SSRF, timed out, truncated at the cap,
+    /// whatever -- is treated as "no restrictions": only a rule that actually parses out of what was read can
+    /// refuse the fetch.
+    ///
+    /// # Errors
+    /// [`FetchError::RobotsDisallowed`] when robots.txt disallows `parsed`'s path for our user agent.
+    async fn check_robots(
+        &self,
+        checked: &CheckedUrl,
+        parsed: &Url,
+        deadline: Instant,
+    ) -> Result<(), FetchError> {
+        let robots_url = format!(
+            "{}://{}/robots.txt",
+            if checked.https { "https" } else { "http" },
+            robots_authority(checked)
+        );
+        let mut text = String::new();
+        let len = std::sync::atomic::AtomicUsize::new(0);
+        let mut sink = |s: &str| {
+            if text.len() < ROBOTS_MAX_BYTES {
+                text.push_str(s);
+            }
+            len.store(text.len(), std::sync::atomic::Ordering::Relaxed);
+        };
+        let stop = || len.load(std::sync::atomic::Ordering::Relaxed) >= ROBOTS_MAX_BYTES;
+        let sub_deadline =
+            deadline.min(Instant::now() + self.limits.timeout / ROBOTS_SUB_DEADLINE_FRACTION);
+        // `run` recurses into itself here (fetching robots.txt is just another guarded fetch), so the call is
+        // boxed to give the compiler a finitely-sized future. A timeout on the sub-deadline is just another
+        // fetch failure here: fail-open discards it exactly like any other `run` error.
+        let _ = timeout_at(
+            sub_deadline,
+            Box::pin(self.run(
+                &robots_url,
+                Mode::Raw,
+                &mut sink,
+                &stop,
+                sub_deadline,
+                false,
+            )),
+        )
+        .await;
+        if crate::robots::is_allowed(&text, USER_AGENT_VALUE, parsed.path()) {
+            Ok(())
+        } else {
+            Err(FetchError::RobotsDisallowed(format!(
+                "robots.txt disallows fetching {}",
+                parsed.path()
+            )))
+        }
+    }
+
     async fn read_body(
         &self,
         mut resp: reqwest::Response,
@@ -243,6 +362,117 @@ impl<R: Resolver> FetchClient<R> {
                 }
             }
         };
+
+        // A-8: charset detection, priority (a) header, (b) HTML <meta> sniff, (c) UTF-8. A header charset that
+        // `encoding_rs` recognizes as non-UTF-8 is known up front, so the (rare) full-body decode path starts
+        // immediately. Otherwise (no header charset, or it names UTF-8/is unrecognized) an HTML response gets a
+        // short lookahead (`sniff_prefix`) to check for a <meta charset> tag; every other case -- including the
+        // large majority of real HTML, which is UTF-8 with no charset markers at all -- keeps the original
+        // streaming, early-abort path untouched.
+        let header_charset = content_type.as_deref().and_then(charset::from_content_type);
+        if let Some(enc) = header_charset.filter(|e| !std::ptr::eq(*e, charset::utf8())) {
+            let wire = self
+                .decode_whole_body(
+                    &mut resp,
+                    gzip,
+                    cap,
+                    enc,
+                    Vec::new(),
+                    &mut convert_step,
+                    &failure,
+                    stop,
+                )
+                .await?;
+            take_failure(&failure)?;
+            if stop() {
+                return Ok(wire);
+            }
+            conv.finish(&mut *sink).map_err(map_convert)?;
+            return Ok(wire);
+        }
+        if header_charset.is_none() && charset::is_html(content_type.as_deref()) && gzip {
+            // A-8 tradeoff: unlike the identity case below, a gzip body cannot be sniffed a few KiB at a time --
+            // flate2's write-style gzip decoder does not reliably flush a small amount of pending output before
+            // it is finished, so `RawPipeline::buffered` cannot be trusted as a partial peek here. A gzip HTML
+            // response with no header charset therefore buffers the whole (still capped) body, exactly the
+            // documented tradeoff for the rare non-UTF-8 case, just taken slightly more often (any gzip HTML
+            // page with no explicit charset, whatever its actual encoding turns out to be).
+            let mut raw = body::RawPipeline::new(true, cap);
+            let mut wire = 0u64;
+            while let Some(chunk) = resp.chunk().await.map_err(map_transport)? {
+                wire = wire.saturating_add(chunk.len() as u64);
+                if wire > cap {
+                    return Err(too_large());
+                }
+                raw.feed(&chunk).map_err(map_body)?;
+                if stop() {
+                    // Early stop: the gzip stream is truncated here, so `raw.finish()` would fail
+                    // (`BodyError::Corrupt`) on the incomplete stream -- return before calling it,
+                    // exactly like the other early-stop sites in this function.
+                    return Ok(wire);
+                }
+            }
+            let bytes = raw.finish().map_err(map_body)?;
+            let window = &bytes[..bytes.len().min(SNIFF_WINDOW)];
+            let enc = charset::sniff_meta(window).unwrap_or_else(charset::utf8);
+            let text = charset::decode(enc, &bytes);
+            push_chunked(&text, &mut convert_step, &|| has_failure(&failure));
+            take_failure(&failure)?;
+            conv.finish(&mut *sink).map_err(map_convert)?;
+            return Ok(wire);
+        }
+        if header_charset.is_none() && charset::is_html(content_type.as_deref()) {
+            let sniff = self.sniff_prefix(&mut resp, gzip, cap, stop).await?;
+            if let Some(hit) = sniff.stopped_early {
+                return Ok(hit);
+            }
+            let window = &sniff.decoded[..sniff.decoded.len().min(SNIFF_WINDOW)];
+            if let Some(enc) =
+                charset::sniff_meta(window).filter(|e| !std::ptr::eq(*e, charset::utf8()))
+            {
+                let wire = self
+                    .decode_whole_body(
+                        &mut resp,
+                        gzip,
+                        cap,
+                        enc,
+                        sniff.wire_prefix,
+                        &mut convert_step,
+                        &failure,
+                        stop,
+                    )
+                    .await?;
+                take_failure(&failure)?;
+                if stop() {
+                    return Ok(wire);
+                }
+                conv.finish(&mut *sink).map_err(map_convert)?;
+                return Ok(wire);
+            }
+            // UTF-8 (default or explicitly sniffed): replay the buffered prefix through a fresh, normal
+            // streaming pipeline, then continue streaming the rest of the body exactly as the fast path below.
+            let mut pipe = body::Pipeline::new(gzip, cap, &mut convert_step);
+            pipe.feed(&sniff.wire_prefix).map_err(map_body)?;
+            take_failure(&failure)?;
+            let mut wire = sniff.wire_prefix.len() as u64;
+            while let Some(chunk) = resp.chunk().await.map_err(map_transport)? {
+                wire = wire.saturating_add(chunk.len() as u64);
+                if wire > cap {
+                    return Err(too_large());
+                }
+                pipe.feed(&chunk).map_err(map_body)?;
+                take_failure(&failure)?;
+                if stop() {
+                    return Ok(wire);
+                }
+            }
+            pipe.finish().map_err(map_body)?;
+            take_failure(&failure)?;
+            conv.finish(&mut *sink).map_err(map_convert)?;
+            return Ok(wire);
+        }
+
+        // Fast path: charset is UTF-8 (by header, or default for a non-HTML type), unchanged from before A-8.
         let mut pipe = body::Pipeline::new(gzip, cap, &mut convert_step);
         let mut wire = 0u64;
         while let Some(chunk) = resp.chunk().await.map_err(map_transport)? {
@@ -259,6 +489,90 @@ impl<R: Resolver> FetchClient<R> {
         pipe.finish().map_err(map_body)?;
         take_failure(&failure)?;
         conv.finish(&mut *sink).map_err(map_convert)?;
+        Ok(wire)
+    }
+
+    /// A-8 charset sniffing: reads wire chunks into `wire_prefix` (and, decompressed, into a [`body::RawPipeline`])
+    /// until [`SNIFF_WINDOW`] decoded bytes have been gathered, the wire budget ([`SNIFF_WIRE_BUDGET`], clamped to
+    /// `cap`) is spent, or the body ends -- never more than a few KiB, so a large body's early-abort behaviour is
+    /// unaffected by this lookahead. `stopped_early` is `Some(wire_bytes)` when `stop()` fired during the peek
+    /// (the caller returns that count as-is, matching the early-stop contract).
+    ///
+    /// Identity bodies only (finding #8, round-2 review): its one call site is reached only when `read_body`'s
+    /// own gzip-HTML branch (which handles the gzip case separately, see its docs) was not taken, so `gzip` is
+    /// always `false` here. [`body::RawPipeline::new`] still takes a `gzip` flag generally, so this passes it
+    /// through rather than hard-coding `false`, keeping the method honest about what it decompresses instead of
+    /// silently assuming identity.
+    async fn sniff_prefix(
+        &self,
+        resp: &mut reqwest::Response,
+        gzip: bool,
+        cap: u64,
+        stop: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Sniff, FetchError> {
+        let wire_budget = SNIFF_WIRE_BUDGET.min(cap);
+        let mut raw = body::RawPipeline::new(gzip, cap);
+        let mut wire_prefix = Vec::new();
+        while (wire_prefix.len() as u64) < wire_budget && raw.buffered().len() < SNIFF_WINDOW {
+            let Some(chunk) = resp.chunk().await.map_err(map_transport)? else {
+                break;
+            };
+            if (wire_prefix.len() as u64).saturating_add(chunk.len() as u64) > cap {
+                return Err(too_large());
+            }
+            wire_prefix.extend_from_slice(&chunk);
+            raw.feed(&chunk).map_err(map_body)?;
+            if stop() {
+                return Ok(Sniff {
+                    decoded: Vec::new(),
+                    wire_prefix: Vec::new(),
+                    stopped_early: Some(wire_prefix.len() as u64),
+                });
+            }
+        }
+        Ok(Sniff {
+            decoded: raw.buffered().to_vec(),
+            wire_prefix,
+            stopped_early: None,
+        })
+    }
+
+    /// A-8 non-UTF-8 path: decodes the body with `encoding_rs`, streaming (via [`body::Pipeline::with_encoding`])
+    /// exactly like the UTF-8 fast path rather than buffering it whole -- so `stop()` (max_length / A-5 window)
+    /// ends the read as soon as it fires, the same early-stop contract as every other site in `read_body`.
+    /// `wire_prefix` is any bytes [`FetchClient::sniff_prefix`] already read off the wire (fed first); the rest
+    /// of `resp` is then read to completion or until `stop()`.
+    #[allow(clippy::too_many_arguments)]
+    async fn decode_whole_body(
+        &self,
+        resp: &mut reqwest::Response,
+        gzip: bool,
+        cap: u64,
+        encoding: &'static charset::Encoding,
+        wire_prefix: Vec<u8>,
+        convert_step: &mut (dyn FnMut(&str) + Send),
+        failure: &Mutex<Option<ConvertError>>,
+        stop: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<u64, FetchError> {
+        let mut pipe = body::Pipeline::with_encoding(gzip, cap, encoding, convert_step);
+        let mut wire = wire_prefix.len() as u64;
+        if !wire_prefix.is_empty() {
+            pipe.feed(&wire_prefix).map_err(map_body)?;
+            take_failure(failure)?;
+        }
+        while let Some(chunk) = resp.chunk().await.map_err(map_transport)? {
+            wire = wire.saturating_add(chunk.len() as u64);
+            if wire > cap {
+                return Err(too_large());
+            }
+            pipe.feed(&chunk).map_err(map_body)?;
+            take_failure(failure)?;
+            if stop() {
+                return Ok(wire); // early stop: dropping `resp` closes the connection
+            }
+        }
+        pipe.finish().map_err(map_body)?;
+        take_failure(failure)?;
         Ok(wire)
     }
 
@@ -330,6 +644,48 @@ fn unsupported_text(media_type: &str) -> String {
     )
 }
 
+/// A-8: push `text` to `convert_step` in pieces at (or below) [`body::STEP`], each ending on a char boundary so
+/// it is valid UTF-8 on its own -- used by the whole-body decode paths, which have all of `text` at once rather
+/// than getting it in wire-sized pieces the way the streaming pipeline does. `failed` is checked between pieces
+/// so a converter failure recorded mid-decode (`convert_step` cannot itself return an error) aborts the rest of
+/// the push instead of continuing to decode a body whose conversion has already failed.
+fn push_chunked(
+    text: &str,
+    convert_step: &mut (dyn FnMut(&str) + Send),
+    failed: &dyn Fn() -> bool,
+) {
+    let mut rest = text;
+    while !rest.is_empty() {
+        if failed() {
+            return;
+        }
+        let mut end = rest.len().min(body::STEP);
+        while end > 0 && !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            end = rest.chars().next().map_or(rest.len(), char::len_utf8);
+        }
+        convert_step(&rest[..end]);
+        rest = &rest[end..];
+    }
+}
+
+/// B-4: `host[:port]` for a robots.txt request URL, port included only when it is not the scheme's default.
+fn robots_authority(u: &CheckedUrl) -> String {
+    let host = match &u.host {
+        Host::Name(n) => n.clone(),
+        Host::Ip(std::net::IpAddr::V4(v4)) => v4.to_string(),
+        Host::Ip(std::net::IpAddr::V6(v6)) => format!("[{v6}]"),
+    };
+    let default_port = if u.https { 443 } else { 80 };
+    if u.port == default_port {
+        host
+    } else {
+        format!("{host}:{}", u.port)
+    }
+}
+
 fn too_large() -> FetchError {
     FetchError::TooLarge("the response is larger than the size limit".into())
 }
@@ -348,6 +704,10 @@ fn map_convert(e: ConvertError) -> FetchError {
             "the HTML could not be converted; retry with raw=true".into(),
         ),
     }
+}
+
+fn has_failure(f: &Mutex<Option<ConvertError>>) -> bool {
+    f.lock().unwrap_or_else(PoisonError::into_inner).is_some()
 }
 
 fn take_failure(f: &Mutex<Option<ConvertError>>) -> Result<(), FetchError> {

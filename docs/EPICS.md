@@ -271,7 +271,7 @@ As an LLM agent, I want distinct error messages so that I can choose the right r
 
 - **A-7 status (Sprint 6).** Implemented: every failure is an `isError` result `error[<code>]: <message>`; argument failures (missing, wrong type, out of range) are uniformly `error[invalid_argument]: <field>: <why>` (the rmcp `failed to deserialize parameters:` prefix is gone for JSON-object arguments; the advertised schema is unchanged and pinned by `initialize_lists_exactly_one_fetch_tool_with_schema`; validation moved from serde `deserialize_with` into `FetchParams::parse`, the fields are now `serde_json::Value`; non-object `arguments` still get rmcp's `-32601`, pinned in tests/stdio.rs); HTTP 4xx and 5xx messages name the class and reason (408, 425 and 429 say it may work after a delay); an `internal` error shows a generic message and logs its detail to stderr. Tests assert flag and text for each cause (`src/server.rs`, `src/fetch/tests.rs` `a7_each_cause_is_flagged_and_names_itself`, `tests/stdio.rs`). Deviation: the third AC ("unexpected internal error ... keeps running") holds for `Err` paths only; a panic aborts the process because of `panic = "abort"` (memory budget, D-7), so it cannot return a result. The `internal` path is unit-tested only (no input triggers it, so the stderr detail line and the empty stdout are not tested end to end). Needs owner acknowledgement.
 
-### A-8: Charset decoding and User-Agent (2 pts)
+### A-8: Charset decoding and User-Agent (2 pts) [DONE Sprint 11]
 Maps to: FR-09.
 As a developer, I want correct text decoding so that non-UTF-8 pages read properly.
 - Given an ISO-8859-1 page declaring its charset in the header or a meta tag, when `fetch` is called, then output renders correctly.
@@ -334,11 +334,11 @@ As a home-lab operator, I want each redirect hop validated so that a public URL 
 - Note (A-3b fix-pass 1): DNS resolution uses `tokio::net::lookup_host`, which runs on the blocking thread pool; B-3/B-5 must check that the blocking-pool cap and the per-hop lookups (up to 6 per fetch, 3 concurrent fetches) cannot exhaust it, and that a hung resolver is bounded by the fetch deadline.
 - Given a redirect to a non-http(s) scheme, when `fetch` is called, then it is refused.
 
-### B-4: robots.txt enforcement (3 pts)
+### B-4: robots.txt enforcement (3 pts) [Mechanism DONE Sprint 11, inert by default -- OQ-3 still open]
 Maps to: FR-11, OQ-3.
 As a site-respecting developer, I want disallowed URLs refused so that the agent follows crawl rules.
 - Given a robots.txt that disallows `/private`, when `fetch` targets `/private`, then it is refused with an explanatory error.
-- Given `FETCH_IGNORE_ROBOTS=1`, when the same URL is fetched, then it is allowed.
+- Given `FETCH_ROBOTS_TXT=ignore` (the default), when the same URL is fetched, then it is allowed.
 - Given robots.txt is missing or returns 404, when `fetch` runs, then it proceeds.
 - Given the robots.txt fetch itself, when made, then it passes the same SSRF checks and size cap (small, at most 512 KB).
 - Blocked by OQ-3: default on or off is confirmed before this story starts.

@@ -46,8 +46,18 @@ jobs:
             cargo clippy --locked --all-targets --features "$f" -- -D warnings
           done
 
+  # D-3: unit and integration tests run on both hosted x86_64 and native hosted arm64 (ADR-007; no QEMU
+  # substitute for a required check). Either leg failing fails the pipeline (matrix legs are independent
+  # required checks by job+matrix name).
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-latest }
+          - { arch: arm64, os: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

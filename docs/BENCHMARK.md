@@ -617,3 +617,34 @@ Both well inside target (idle <= 10 MiB, peak <= 40 MiB), consistent with the G4
 **No OpenSSL / native-tls linkage.** `ldd` on a local `cargo build --release --locked` (x86_64, dev machine, not a gate figure) shows only `linux-vdso.so.1`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6` and the dynamic linker — no `libssl`, `libcrypto` or native-tls library, consistent with reqwest's `rustls-no-provider` feature (ADR-001). CI job `release-ldd-guard` (`.github/workflows/ci.yml`) makes this a required, machine-checked assertion (greps `ldd` output for `ssl|crypto|native-tls` and fails the build if any match) rather than a one-off manual check.
 
 **B-5 (SSRF suite and coverage gate).** The table-driven suite already in place from A-3a, A-3b, B-1, B-2 and B-3 covers IPv4 (`src/ssrf/ranges.rs`), IPv6 including embedded-IPv4/NAT64/6to4 forms (`ranges.rs`, `mod.rs`), encoded and mixed-case forms (`differential.rs`, `b1_`/`b2_` cases in `fetch/tests.rs`), DNS resolving to a private address (`resolver.rs`, `b1_every_blocked_class_by_name...`), rebinding simulation (`resolver.rs::rebinding_shape_only_the_first_lookup_is_used_and_no_second_happens`, a resolver that returns a different answer on a second lookup, asserting the second lookup never happens) and redirect chains/refusals (`b3_` cases in `fetch/tests.rs`); adding a new blocked-range row to the `ranges.rs` tables is picked up by the existing table-driven "every blocked whole range" test with no harness change. New CI job `coverage` (`.github/workflows/ci.yml`) runs `cargo llvm-cov` and `scripts/coverage_gate.py` against `src/ssrf/mod.rs`, `ranges.rs`, `resolver.rs`, `src/fetch/mod.rs` (redirect loop) and `src/convert/window.rs` (pagination), failing the build below 90% combined line coverage. **`src/ssrf/differential.rs` is deliberately excluded** from the gated list: every item in that file is a `#[test]` or a test-only helper (nothing in it is called from production code), so including it would pad the "90% combined" figure with guaranteed-100% test code rather than measuring production coverage — an earlier version of this gate included it, which a code-review pass caught and this PR fixes before merge. Local measurement (x86_64 dev machine, `cargo llvm-cov --locked`, production files only, informational — CI is authoritative): 1417/1456 lines = **97.3%** combined; per-file 89.2% (`fetch/mod.rs`) to 100% (`resolver.rs`, `convert/window.rs`). The AC text ("line coverage of SSRF, redirect and pagination modules is at least 90%") is read as the combined figure across those modules, not a per-file floor; `scripts/coverage_gate.py` prints the per-file breakdown so a regression is still visible. `src/fetch/mod.rs` at 89.2% is the one file below a per-file 90% mark; see `docs/EPICS.md` B-5 for the explicit disclosure.
+
+## 19. A-8 charset decoding: memory note (Sprint 11, round-2 review finding #5)
+
+**What changed.** A-8 (charset detection and decoding: header `charset=`, `<meta>` sniffing, `encoding_rs`
+decode) is implemented on top of the existing bounded body pipeline. Most of it streams exactly like the
+pre-A-8 UTF-8-only path did (memory bounded by `FETCH_MAX_BYTES`, not the response's declared size), including
+the confirmed-non-UTF-8 header-charset path, which now decodes with `encoding_rs`'s incremental `Decoder`
+(`body::Pipeline::with_encoding`) chunk by chunk, the same way the UTF-8 fast path always has, so it is fully
+streaming and early-abort (`max_length`/A-5 window) still ends the read as soon as the window is satisfied.
+
+**The one path that regresses.** A response that is **both** gzip-compressed **and** HTML with **no** explicit
+`charset=` on either the `Content-Type` header or a `<meta>` tag cannot be sniffed a few KiB at a time: gzip's
+write-style decoder does not reliably flush a small amount of pending output before it is finished, so a
+partial peek cannot be trusted for the `<meta charset>` scan. This one case buffers the whole (still capped)
+decompressed body, then a decoded `String` copy of it, before conversion can start. Concretely, for a response
+right at the `FETCH_MAX_BYTES` cap: the decompressed byte buffer (up to `max_bytes`) plus the decoded UTF-8
+`String` (in the worst case, non-ASCII input can expand somewhat under `encoding_rs`, and English/ASCII text
+round-trips close to 1:1) -- bounded at roughly **`2x` to `4x` `max_bytes`** for this one case, against the
+default 5 MiB `FETCH_MAX_BYTES` that is at most about 10-20 MiB, well under the 40 MiB peak gate measured in
+sections 16-18, but a real, bounded (not O(1)) regression versus every other path in this file. `max_length`
+early-abort does not help here either: nothing reaches the sink (and so the A-5 `Window`) until the whole body
+has been downloaded, decompressed and decoded.
+
+**Not (yet) fixed at the code level**, per round-2 review triage: still capped (not an unbounded-memory or DoS
+finding), affects only gzip HTML with no charset markers at all (a minority of real traffic, most HTML either
+declares UTF-8 explicitly or is served uncompressed to a client that does not send `Accept-Encoding: gzip`... in
+practice this server always does, so it is reached whenever such a page happens to lack charset markers), and a
+genuine fix (an incremental `<meta>` sniff that tolerates gzip's flush behaviour, or a first pass that only
+decompresses without decoding) is a larger, separately-reviewable change. Documented here and in `README.md`
+("Notes on the converter") and in the doc comments on `FetchClient::fetch`/`fetch_as` (`src/fetch/mod.rs`)
+rather than attempted opportunistically in this PR.

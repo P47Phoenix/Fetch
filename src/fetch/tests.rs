@@ -1812,3 +1812,407 @@ async fn hostile_bodies_never_panic_and_come_back_as_replacement_text() {
         }
     }
 }
+
+// ---- A-8: charset decoding -------------------------------------------------------------------------------
+
+/// "café" in ISO-8859-1 / windows-1252 (`é` = 0xE9), the byte encoding a naive UTF-8 decode would mangle.
+const CAFE_LATIN1: &[u8] = b"caf\xe9";
+
+#[tokio::test]
+async fn iso_8859_1_header_charset_decodes_correctly() {
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/plain; charset=iso-8859-1"],
+        CAFE_LATIN1.to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "café");
+}
+
+#[tokio::test]
+async fn iso_8859_1_meta_charset_with_no_header_charset_decodes_correctly() {
+    let mut body =
+        b"<html><head><meta charset=\"ISO-8859-1\"></head><body>caf\xe9</body></html>".to_vec();
+    // pad well past a trivial case and keep the meta tag inside the sniff window
+    body.extend_from_slice(&[b' '; 10]);
+    let srv = spawn_server(fixed("200 OK", &["Content-Type: text/html"], body)).await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert!(text.contains("café"), "{text:?}");
+}
+
+#[tokio::test]
+async fn iso_8859_1_meta_charset_survives_gzip() {
+    let page =
+        b"<html><head><meta charset=\"ISO-8859-1\"></head><body>caf\xe9</body></html>".to_vec();
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html", "Content-Encoding: gzip"],
+        gz(&page),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert!(text.contains("café"), "{text:?}");
+}
+
+#[tokio::test]
+async fn no_charset_anywhere_defaults_to_utf8_with_replacement() {
+    // No Content-Type charset and no <meta charset>: invalid UTF-8 is replaced, not fatal (existing behaviour).
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html"],
+        b"<html><body>bad: \xff end</body></html>".to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert!(text.contains("bad: \u{FFFD} end"), "{text:?}");
+
+    // Same for a plain-text response with no Content-Type at all.
+    let srv2 = spawn_server(fixed("200 OK", &[], b"na\xffve".to_vec())).await;
+    let (res2, text2, _) = get(&c, &format!("http://public.test:{}/", srv2.port)).await;
+    res2.unwrap();
+    assert_eq!(text2, "na\u{FFFD}ve");
+}
+
+#[tokio::test]
+async fn unrecognized_header_charset_falls_back_to_utf8_instead_of_failing_the_fetch() {
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/plain; charset=totally-bogus-charset"],
+        "hello".as_bytes().to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "hello");
+}
+
+/// A very large HTML page with no charset markers stays streamed and early-abort still works: the A-8 sniff
+/// lookahead only ever delays the first few KiB, never the whole (potentially large) body.
+#[tokio::test]
+async fn plain_utf8_html_with_no_charset_markers_still_streams_and_aborts_early_on_converter_failure(
+) {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let total: usize = 32 << 20;
+    let s2 = sent.clone();
+    let h = handler(move |mut s, _| {
+        let sent = s2.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: {total}\r\n\r\n"
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let bomb = format!("<div {}>", "a ".repeat(4000)).into_bytes();
+            let mut written = bomb.len();
+            if s.write_all(&bomb).await.is_err() {
+                return;
+            }
+            sent.fetch_add(bomb.len(), Ordering::SeqCst);
+            let filler = vec![b'x'; 16 * 1024];
+            while written < total {
+                let n = filler.len().min(total - written);
+                match s.write_all(&filler[..n]).await {
+                    Ok(()) => {
+                        written += n;
+                        sent.fetch_add(n, Ordering::SeqCst);
+                    }
+                    Err(_) => return,
+                }
+            }
+            let _ = s.shutdown().await;
+        }
+    });
+    let srv = spawn_server(h).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let (res, _) = get_as(
+        &c,
+        &format!("http://public.test:{}/", srv.port),
+        crate::convert::Mode::Markdown,
+    )
+    .await;
+    assert_eq!(res.unwrap_err().code(), "converter_limit");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = sent.load(Ordering::SeqCst);
+    assert!(
+        sent < total / 2,
+        "the A-8 sniff lookahead defeated early-abort streaming: {sent} of {total} bytes were sent"
+    );
+}
+
+/// Finding #1 (round-2 review): `max_length` must still stop a header-charset (non-gzip, whole-body-decode) fetch
+/// early -- before this fix `decode_whole_body` never checked `stop()` inside its read loop, so the early-stop
+/// window was silently defeated on this path and the full body was always read regardless of `max_length`.
+#[tokio::test]
+async fn header_charset_decode_stops_early_when_the_window_is_satisfied() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let total: usize = 32 << 20;
+    let s2 = sent.clone();
+    let h = handler(move |mut s, _| {
+        let sent = s2.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: {total}\r\n\r\n"
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let block = vec![b'x'; 16 * 1024];
+            let mut written = 0;
+            while written < total {
+                let n = block.len().min(total - written);
+                match s.write_all(&block[..n]).await {
+                    Ok(()) => {
+                        written += n;
+                        sent.fetch_add(n, Ordering::SeqCst);
+                    }
+                    Err(_) => return,
+                }
+            }
+            let _ = s.shutdown().await;
+        }
+    });
+    let srv = spawn_server(h).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 0, 100).await;
+    let fetched = res.unwrap();
+    assert!(w.more);
+    assert!(
+        fetched.wire_bytes < (1 << 20),
+        "read {} of {total} bytes; max_length did not stop the header-charset decode early",
+        fetched.wire_bytes
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        sent.load(Ordering::SeqCst) < total / 4,
+        "the server kept sending after the window should have stopped the read"
+    );
+}
+
+/// Finding #2 (round-2 review): once #1 is fixed, an early stop mid-gzip-stream must not call
+/// `RawPipeline::finish()` on the truncated stream (which errors as `BodyError::Corrupt`/`bad_response`) --
+/// it must return `Ok` with the wire bytes read so far, like every other early-stop site.
+#[tokio::test]
+async fn gzip_html_early_stop_mid_stream_succeeds_instead_of_bad_response() {
+    let mut page = String::from("<html><body>");
+    page.push_str(&"hello world ".repeat(200_000)); // several chunks once gzipped and chunk-fed
+    page.push_str("</body></html>");
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html", "Content-Encoding: gzip"],
+        gz(page.as_bytes()),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 16 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 0, 50).await;
+    res.unwrap_or_else(|e| panic!("expected success on early stop, got {}: {e}", e.code()));
+    assert!(w.more);
+}
+
+/// Finding #11 (round-2 review): a header charset must win over a conflicting `<meta charset>` in the body --
+/// previously only "no header charset" cases were tested against the meta tag.
+#[tokio::test]
+async fn header_charset_wins_over_conflicting_meta_charset() {
+    // Header says UTF-8 (so the fast streaming path is used); body's <meta> falsely claims ISO-8859-1 but the
+    // body bytes are themselves valid UTF-8 -- if meta ever won here, decoding as Latin-1 would mangle "café".
+    let body = "<html><head><meta charset=\"ISO-8859-1\"></head><body>café</body></html>";
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html; charset=utf-8"],
+        body.as_bytes().to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert!(text.contains("café"), "{text:?}");
+}
+
+// ---- B-4: robots.txt enforcement mechanism (inert unless RobotsMode::Enforce; OQ-3 still open) ------------
+
+/// Serves `robots_status`/`robots_body` for `GET /robots.txt`, `200 OK`/`target_body` for anything else.
+fn robots_server(
+    robots_status: &'static str,
+    robots_body: Vec<u8>,
+    target_body: Vec<u8>,
+) -> Handler {
+    let robots_body = Arc::new(robots_body);
+    let target_body = Arc::new(target_body);
+    handler(move |mut s, head| {
+        let (robots_body, target_body) = (robots_body.clone(), target_body.clone());
+        async move {
+            let is_robots = head.starts_with("GET /robots.txt ");
+            let (status, body): (&str, &[u8]) = if is_robots {
+                (robots_status, &robots_body)
+            } else {
+                ("200 OK", &target_body)
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = s.write_all(body).await;
+            let _ = s.shutdown().await;
+        }
+    })
+}
+
+fn enforcing(r: &Arc<FakeResolver>, l: Limits) -> FetchClient<FakeResolver> {
+    FetchClient::new(loopback(), r.clone(), l).with_robots_mode(crate::config::RobotsMode::Enforce)
+}
+
+#[tokio::test]
+async fn disallowed_path_is_refused_with_an_explanatory_error_when_enforced() {
+    let srv = spawn_server(robots_server(
+        "200 OK",
+        b"User-agent: *\nDisallow: /private\n".to_vec(),
+        b"secret".to_vec(),
+    ))
+    .await;
+    let c = enforcing(&public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/private", srv.port)).await;
+    let e = res.unwrap_err();
+    assert_eq!(e.code(), "robots_disallowed");
+    assert!(e.to_string().contains("/private"), "{e}");
+    assert!(text.is_empty());
+}
+
+#[tokio::test]
+async fn a_path_not_covered_by_disallow_proceeds_when_enforced() {
+    let srv = spawn_server(robots_server(
+        "200 OK",
+        b"User-agent: *\nDisallow: /private\n".to_vec(),
+        b"hello".to_vec(),
+    ))
+    .await;
+    let c = enforcing(&public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/public", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[tokio::test]
+async fn missing_or_404_robots_txt_lets_the_fetch_proceed() {
+    let srv = spawn_server(robots_server(
+        "404 Not Found",
+        b"nope".to_vec(),
+        b"hello".to_vec(),
+    ))
+    .await;
+    let c = enforcing(&public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/private", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[tokio::test]
+async fn ignore_mode_the_default_never_enforces_robots_txt() {
+    let srv = spawn_server(robots_server(
+        "200 OK",
+        b"User-agent: *\nDisallow: /private\n".to_vec(),
+        b"secret".to_vec(),
+    ))
+    .await;
+    // No `with_robots_mode` call: RobotsMode::Ignore, the default, is a no-op (unchanged from before B-4).
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/private", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "secret");
+}
+
+#[tokio::test]
+async fn robots_txt_fetch_is_size_capped_at_512kb() {
+    // The only Disallow rule sits well past the 512 KB cap: truncation means it is never read or applied.
+    let mut body = vec![b'#'; 600 * 1024];
+    body.push(b'\n');
+    body.extend_from_slice(b"User-agent: *\nDisallow: /private\n");
+    let srv = spawn_server(robots_server("200 OK", body, b"hello".to_vec())).await;
+    let c = enforcing(&public_resolver(), limits(20_000, 8 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/private", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[tokio::test]
+async fn robots_txt_fetch_goes_through_the_same_ssrf_checks_and_a_blocked_redirect_still_lets_the_fetch_proceed(
+) {
+    // robots.txt redirects to a private address; the redirect is refused by the same SSRF core as any other
+    // fetch, so the robots fetch fails -- which (per the AC) means "no restrictions", not a blocked target fetch.
+    let h = handler(move |mut s, head| async move {
+        let is_robots = head.starts_with("GET /robots.txt ");
+        if is_robots {
+            let resp = "HTTP/1.1 302 Found\r\nConnection: close\r\nLocation: http://10.0.0.1/robots.txt\r\nContent-Length: 0\r\n\r\n";
+            let _ = s.write_all(resp.as_bytes()).await;
+        } else {
+            let body = b"hello";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            if s.write_all(resp.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = s.write_all(body).await;
+        }
+        let _ = s.shutdown().await;
+    });
+    let srv = spawn_server(h).await;
+    let c = enforcing(&public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/x", srv.port)).await;
+    res.unwrap();
+    assert_eq!(text, "hello");
+}
+
+#[tokio::test]
+async fn robots_check_does_not_run_on_a_redirect_hop() {
+    // The original target's robots.txt allows everything; the redirect target's own (different host, but same
+    // fixture server here) robots.txt would disallow /private -- but B-4 only checks the ORIGINAL target's
+    // robots.txt, so the redirect is followed and the fetch succeeds.
+    let target = spawn_server(robots_server(
+        "200 OK",
+        b"User-agent: *\nDisallow: /private\n".to_vec(),
+        b"redirected-body".to_vec(),
+    ))
+    .await;
+    let h = handler(move |mut s, head| {
+        let target_port = target.port;
+        async move {
+            let is_robots = head.starts_with("GET /robots.txt ");
+            if is_robots {
+                let body = b"User-agent: *\n"; // allow everything at the origin
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+                let _ = s.write_all(body).await;
+            } else {
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nConnection: close\r\nLocation: http://public.test:{target_port}/private\r\nContent-Length: 0\r\n\r\n"
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            }
+            let _ = s.shutdown().await;
+        }
+    });
+    let origin = spawn_server(h).await;
+    let c = enforcing(&public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/x", origin.port)).await;
+    res.unwrap();
+    assert_eq!(text, "redirected-body");
+}

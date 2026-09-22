@@ -1,6 +1,7 @@
 //! Bounded body pipeline (ADR-004): wire chunk -> (gzip) -> decompressed byte cap -> UTF-8 stream decoder ->
 //! text sink. Everything is processed one bounded step at a time; nothing accumulates the body. Pure logic, no I/O.
 
+use encoding_rs::Encoding;
 use flate2::write::GzDecoder;
 use std::io::{self, Write};
 
@@ -86,10 +87,47 @@ impl Utf8Stream {
     }
 }
 
+/// The text decoder a [`Pipeline`] applies to decompressed bytes: the fast, allocation-free UTF-8 path used for
+/// the large majority of responses, or an `encoding_rs` streaming decoder for a confirmed non-UTF-8 charset
+/// (A-8). Both carry any split multi-byte sequence across chunks internally, so neither needs the caller to
+/// buffer anything.
+enum Decode {
+    Utf8(Utf8Stream),
+    Other(encoding_rs::Decoder),
+}
+
+impl Decode {
+    fn push(&mut self, data: &[u8], emit: &mut dyn FnMut(&str)) {
+        match self {
+            Decode::Utf8(u) => u.push(data, emit),
+            Decode::Other(d) => {
+                let mut buf = String::with_capacity(data.len() + 8);
+                let (_, _, _) = d.decode_to_string(data, &mut buf, false);
+                if !buf.is_empty() {
+                    emit(&buf);
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self, emit: &mut dyn FnMut(&str)) {
+        match self {
+            Decode::Utf8(u) => u.finish(emit),
+            Decode::Other(d) => {
+                let mut buf = String::new();
+                let (_, _, _) = d.decode_to_string(&[], &mut buf, true);
+                if !buf.is_empty() {
+                    emit(&buf);
+                }
+            }
+        }
+    }
+}
+
 /// Final stage: counts bytes against the cap, then decodes to text for the sink.
 struct Out<'a> {
     sink: &'a mut (dyn FnMut(&str) + Send),
-    utf8: Utf8Stream,
+    decode: Decode,
     decoded: u64,
     cap: u64,
     overflow: bool,
@@ -103,7 +141,7 @@ impl Write for Out<'_> {
             return Err(io::Error::other("decompressed size cap exceeded"));
         }
         self.decoded += n;
-        self.utf8.push(b, &mut *self.sink);
+        self.decode.push(b, &mut *self.sink);
         Ok(b.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -130,9 +168,30 @@ pub struct Pipeline<'a> {
 impl<'a> Pipeline<'a> {
     /// `gzip` selects a single-member gzip decode; `cap` bounds the decompressed byte count.
     pub fn new(gzip: bool, cap: u64, sink: &'a mut (dyn FnMut(&str) + Send)) -> Self {
+        Self::with_decode(gzip, cap, Decode::Utf8(Utf8Stream::default()), sink)
+    }
+
+    /// As [`Pipeline::new`], but decoding decompressed bytes with `encoding` (A-8: a confirmed non-UTF-8
+    /// charset) instead of assuming UTF-8. Streams the same way `new` does: text reaches `sink` piece by piece
+    /// as wire chunks arrive, so a caller can act on it (or stop early) without waiting for the whole body.
+    pub fn with_encoding(
+        gzip: bool,
+        cap: u64,
+        encoding: &'static Encoding,
+        sink: &'a mut (dyn FnMut(&str) + Send),
+    ) -> Self {
+        Self::with_decode(gzip, cap, Decode::Other(encoding.new_decoder()), sink)
+    }
+
+    fn with_decode(
+        gzip: bool,
+        cap: u64,
+        decode: Decode,
+        sink: &'a mut (dyn FnMut(&str) + Send),
+    ) -> Self {
         let out = Out {
             sink,
-            utf8: Utf8Stream::default(),
+            decode,
             decoded: 0,
             cap,
             overflow: false,
@@ -179,7 +238,7 @@ impl<'a> Pipeline<'a> {
     /// [`BodyError::Corrupt`] when a gzip body ended before the gzip stream did.
     pub fn finish(mut self) -> Result<(), BodyError> {
         match &mut self.stage {
-            Stage::Identity(out) => out.utf8.finish(&mut *out.sink),
+            Stage::Identity(out) => out.decode.finish(&mut *out.sink),
             Stage::Gzip { dec, finished } => {
                 if !*finished && self.fed > 0 {
                     if dec.header().is_none() {
@@ -188,16 +247,130 @@ impl<'a> Pipeline<'a> {
                     dec.try_finish().map_err(|_| BodyError::Corrupt)?;
                 }
                 let out = dec.get_mut();
-                out.utf8.finish(&mut *out.sink);
+                out.decode.finish(&mut *out.sink);
             }
         }
         Ok(())
     }
 }
 
+/// Byte-accumulating counterpart to [`Pipeline`] (A-8): decompresses and cap-enforces exactly as [`Pipeline`]
+/// does, but accumulates the raw decoded bytes instead of decoding them as UTF-8. Used only while the response
+/// charset is not yet known to be UTF-8: a short lookahead sniffs a `<meta charset>` tag from [`RawPipeline::buffered`]
+/// without ending the stream, and the rare non-UTF-8 case decodes the full (still capped) body with `encoding_rs`
+/// once [`RawPipeline::finish`] returns it. Deliberately a separate, small state machine rather than a generic
+/// [`Pipeline`] (duplicates the identity/gzip dispatch) to keep the common streaming UTF-8 path untouched.
+pub struct RawPipeline {
+    stage: RawStage,
+    fed: u64,
+}
+
+enum RawStage {
+    Identity(RawOut),
+    Gzip {
+        dec: Box<GzDecoder<RawOut>>,
+        finished: bool,
+    },
+}
+
+struct RawOut {
+    buf: Vec<u8>,
+    cap: u64,
+    overflow: bool,
+}
+
+impl Write for RawOut {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let n = b.len() as u64;
+        if (self.buf.len() as u64).saturating_add(n) > self.cap {
+            self.overflow = true;
+            return Err(io::Error::other("decompressed size cap exceeded"));
+        }
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl RawPipeline {
+    /// `gzip` selects a single-member gzip decode; `cap` bounds the accumulated byte count.
+    #[must_use]
+    pub fn new(gzip: bool, cap: u64) -> Self {
+        let out = RawOut {
+            buf: Vec::new(),
+            cap,
+            overflow: false,
+        };
+        let stage = if gzip {
+            RawStage::Gzip {
+                dec: Box::new(GzDecoder::new(out)),
+                finished: false,
+            }
+        } else {
+            RawStage::Identity(out)
+        };
+        Self { stage, fed: 0 }
+    }
+
+    /// Feed one wire chunk (any size; it is re-sliced to [`STEP`]).
+    ///
+    /// # Errors
+    /// [`BodyError::TooLarge`] when the cap is hit, [`BodyError::Corrupt`] on a bad gzip stream.
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), BodyError> {
+        for piece in chunk.chunks(STEP) {
+            self.fed += piece.len() as u64;
+            match &mut self.stage {
+                RawStage::Identity(out) => out.write_all(piece).map_err(|_| BodyError::TooLarge)?,
+                RawStage::Gzip { dec, finished } => {
+                    let mut rest = piece;
+                    while !*finished && !rest.is_empty() {
+                        match dec.write(rest) {
+                            Ok(0) => *finished = true,
+                            Ok(n) => rest = &rest[n..],
+                            Err(_) if dec.get_ref().overflow => return Err(BodyError::TooLarge),
+                            Err(_) => return Err(BodyError::Corrupt),
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The decoded bytes accumulated so far, without ending the stream (A-8 charset sniffing peek).
+    #[must_use]
+    pub fn buffered(&self) -> &[u8] {
+        match &self.stage {
+            RawStage::Identity(out) => &out.buf,
+            RawStage::Gzip { dec, .. } => &dec.get_ref().buf,
+        }
+    }
+
+    /// End of body: returns the accumulated decoded bytes.
+    ///
+    /// # Errors
+    /// [`BodyError::Corrupt`] when a gzip body ended before the gzip stream did.
+    pub fn finish(mut self) -> Result<Vec<u8>, BodyError> {
+        match &mut self.stage {
+            RawStage::Identity(out) => Ok(std::mem::take(&mut out.buf)),
+            RawStage::Gzip { dec, finished } => {
+                if !*finished && self.fed > 0 {
+                    if dec.header().is_none() {
+                        return Err(BodyError::Corrupt); // the gzip header never completed
+                    }
+                    dec.try_finish().map_err(|_| BodyError::Corrupt)?;
+                }
+                Ok(std::mem::take(&mut dec.get_mut().buf))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BodyError, Pipeline, Utf8Stream, STEP};
+    use super::{BodyError, Pipeline, RawPipeline, Utf8Stream, STEP};
     use flate2::{write::GzEncoder, Compression};
     use std::io::Write;
 
@@ -327,5 +500,48 @@ mod tests {
         let (r, text, biggest) = run(false, 1 << 30, &[&data]);
         assert_eq!((r, text.len()), (Ok(()), data.len()));
         assert!(biggest <= STEP);
+    }
+
+    // ---- RawPipeline (A-8) ---------------------------------------------------------------------------
+
+    #[test]
+    fn raw_pipeline_identity_roundtrips_and_caps() {
+        let mut p = RawPipeline::new(false, 5);
+        p.feed(b"hel").unwrap();
+        assert_eq!(p.buffered(), b"hel");
+        p.feed(b"lo").unwrap();
+        assert_eq!(p.finish().unwrap(), b"hello");
+
+        let mut p = RawPipeline::new(false, 4);
+        assert_eq!(p.feed(b"hello"), Err(BodyError::TooLarge));
+    }
+
+    #[test]
+    fn raw_pipeline_gzip_roundtrips_and_buffered_peek_works_mid_stream() {
+        let z = gz(b"hello world");
+        let mut p = RawPipeline::new(true, 100);
+        for piece in z.chunks(3) {
+            p.feed(piece).unwrap();
+        }
+        assert_eq!(p.finish().unwrap(), b"hello world");
+
+        let z = gz(b"peekable prefix here");
+        let mut p = RawPipeline::new(true, 100);
+        p.feed(&z[..z.len() / 2]).unwrap();
+        // whatever the decoder produced so far is a valid prefix of the final text
+        let peek = p.buffered().to_vec();
+        p.feed(&z[z.len() / 2..]).unwrap();
+        let whole = p.finish().unwrap();
+        assert!(whole.starts_with(&peek));
+        assert_eq!(whole, b"peekable prefix here");
+    }
+
+    #[test]
+    fn raw_pipeline_corrupt_gzip_fails() {
+        let mut p = RawPipeline::new(true, 100);
+        assert_eq!(
+            p.feed(b"this is not gzip data at all"),
+            Err(BodyError::Corrupt)
+        );
     }
 }
