@@ -1,0 +1,330 @@
+name: release
+
+# D-2 (Sprint 9): multi-arch container image build, native per-platform test, and (BLOCKED) publish.
+#
+# CRITICAL: OQ-7 (image distribution / licence decision) is still OPEN as of this workflow's authoring.
+# Per the D-2 acceptance criteria, until OQ-7 is answered only PRIVATE, UNTAGGED candidates may exist in
+# GHCR; no version tag or `latest` is ever added and the package is never made public from this workflow.
+# The `publish` job below implements that step but is gated so it cannot run (see that job). Do not
+# remove the gate without an owner decision recorded in the sprint plan.
+#
+# Trigger: a `v*` tag push (the real release path, still blocked pre-OQ-7 by the `publish` job's own
+# gate) and `workflow_dispatch` (so the build/test path can be exercised for CI evidence without a real
+# tag; manual runs must NOT supply `confirm_publish=true`).
+#
+# Conventions carried over from ci.yml / bench.yml / D-7: hosted runners only (ubuntu-24.04 amd64,
+# ubuntu-24.04-arm arm64; ADR-007), SHA-pinned actions, `--locked` builds, least-privilege token by
+# default, no `pull_request_target`, fork code never runs here (there is no `pull_request` trigger at
+# all in this workflow).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      confirm_publish:
+        description: "Add the version tag / latest and make the package public. MUST stay false until OQ-7 is decided; the publish job also has its own independent gate."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # Per-platform build: native build on the platform's own hosted runner (no QEMU, no cross-compile
+  # - D-2 as rewritten builds natively per platform, so cargo-zigbuild/ziglang are NOT needed here;
+  # see the Sprint 9 dev report deviation note). Pushes the `shipped` image by digest, UNTAGGED, to a
+  # private GHCR package (push-by-digest: no tag reference is created for this push at all).
+  # ---------------------------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest-amd64: ${{ steps.digest.outputs.amd64 }}
+      digest-arm64: ${{ steps.digest.outputs.arm64 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-24.04, platform: linux/amd64 }
+          - { arch: arm64, os: ubuntu-24.04-arm, platform: linux/arm64 }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: "Log in to GHCR (least-privilege: packages:write only in this job)"
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push the shipped candidate by digest (untagged, private)
+        id: build
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --file Dockerfile \
+            --platform "${{ matrix.platform }}" \
+            --target shipped \
+            --build-arg BUILD_KIND=shipped \
+            --build-arg FETCH_MCP_COMMIT="${{ github.sha }}" \
+            --provenance=false \
+            --output "type=image,name=$IMAGE,push=true,push-by-digest=true,name-canonical=true" \
+            --metadata-file metadata.json \
+            .
+          cat metadata.json
+          digest=$(python3 -c "import json;print(json.load(open('metadata.json'))['containerimage.digest'])")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "### build (${{ matrix.arch }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: \`$digest\` (private, untagged; \`docker pull $IMAGE@$digest\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      - id: digest
+        run: echo "${{ matrix.arch }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # Merge job: creates the manifest list from the two per-platform digests. Still private and never
+  # gets the version tag or `latest`. A manifest LIST push needs some registry reference (`imagetools
+  # create` cannot target a bare digest); this uses a `candidate-<sha>` reference, which is neither a
+  # version tag nor `latest` and is never treated as a release artifact - see the D-2 deviation note
+  # in the Sprint 9 dev report. The candidate manifest's own resolved digest (asserted below) is what
+  # every downstream job pulls, never the candidate tag.
+  # ---------------------------------------------------------------------------------------------
+  merge:
+    name: merge manifest list
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+      candidate-ref: candidate-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+      - name: Create the manifest list from the two per-platform digests
+        id: merge
+        run: |
+          set -euo pipefail
+          amd64="${{ needs.build.outputs.digest-amd64 }}"
+          arm64="${{ needs.build.outputs.digest-arm64 }}"
+          [ -n "$amd64" ] && [ -n "$arm64" ] || { echo "::error::missing a per-platform digest (amd64=$amd64 arm64=$arm64)"; exit 1; }
+          ref="$IMAGE:candidate-${{ github.sha }}"
+          docker buildx imagetools create -t "$ref" "$IMAGE@$amd64" "$IMAGE@$arm64"
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | python3 -c "import json,sys;print(json.load(sys.stdin)['digest'])")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### merged manifest list"
+            echo "amd64: \`$amd64\`  arm64: \`$arm64\`"
+            echo "manifest list digest: \`$digest\` (private; \`docker pull $IMAGE@$digest\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------------------------
+  # Per-platform test: pulls the candidate BY DIGEST ONLY, never the candidate tag, on the platform's
+  # own native runner.
+  # ---------------------------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.arch }})
+    needs: merge
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-24.04, triple: x86_64 }
+          - { arch: arm64, os: ubuntu-24.04-arm, triple: aarch64 }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      - name: Pull the shipped candidate by digest and assert the resolved digest matches
+        run: |
+          set -euo pipefail
+          ref="$IMAGE@${{ needs.merge.outputs.digest }}"
+          docker pull "$ref"
+          resolved=$(docker inspect "$ref" --format '{{index .RepoDigests 0}}' | cut -d@ -f2)
+          [ "$resolved" = "${{ needs.merge.outputs.digest }}" ] || { echo "::error::resolved digest $resolved != ${{ needs.merge.outputs.digest }}"; exit 1; }
+          echo "resolved digest ok: $resolved"
+
+      - name: Non-root user check
+        run: |
+          set -euo pipefail
+          ref="$IMAGE@${{ needs.merge.outputs.digest }}"
+          user=$(docker inspect "$ref" --format '{{.Config.User}}')
+          [ "$user" = "nonroot:nonroot" ] || { echo "::error::image User is '$user', expected nonroot:nonroot"; exit 1; }
+
+      - name: MCP handshake and tools/list in a clean container
+        run: |
+          set -euo pipefail
+          ref="$IMAGE@${{ needs.merge.outputs.digest }}"
+          python3 - "$ref" <<'PY'
+          import json, subprocess, sys, time
+          ref = sys.argv[1]
+          p = subprocess.Popen(["docker", "run", "-i", "--rm", ref],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+          def send(method, params=None, id=None, notify=False):
+              msg = {"jsonrpc": "2.0", "method": method}
+              if params is not None: msg["params"] = params
+              if not notify: msg["id"] = id
+              p.stdin.write(json.dumps(msg) + "\n"); p.stdin.flush()
+          def recv():
+              line = p.stdout.readline()
+              if not line: raise RuntimeError("no response (container exited?)")
+              return json.loads(line)
+          send("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "release-test", "version": "0"}}, id=1)
+          init = recv()
+          assert "result" in init, f"initialize failed: {init}"
+          send("notifications/initialized", notify=True)
+          send("tools/list", id=2)
+          tools = recv()
+          names = [t["name"] for t in tools.get("result", {}).get("tools", [])]
+          assert names == ["fetch"], f"expected exactly ['fetch'], got {names}"
+          p.stdin.close(); p.terminate()
+          try: p.wait(timeout=5)
+          except subprocess.TimeoutExpired: p.kill()
+          print("handshake ok, tools:", names)
+          PY
+
+      - name: --version output (crate version, commit, Cargo.lock hash)
+        run: |
+          set -euo pipefail
+          ref="$IMAGE@${{ needs.merge.outputs.digest }}"
+          out=$(docker run --rm "$ref" --version)
+          echo "$out"
+          echo "$out" | grep -Eq '^fetch-mcp [0-9]+\.[0-9]+\.[0-9]+ commit=[0-9a-f]{40} cargo-lock=[0-9a-f]{64}$' \
+            || { echo "::error::unexpected --version output: $out"; exit 1; }
+          echo "$out" | grep -q "commit=${{ github.sha }}" \
+            || { echo "::error::--version commit does not match the checked-out commit ${{ github.sha }}"; exit 1; }
+
+      - name: Extract the shipped binary from the image (for the D-7 guard, ldd and the bench harness)
+        run: |
+          set -eu
+          ref="$IMAGE@${{ needs.merge.outputs.digest }}"
+          cid=$(docker create "$ref")
+          mkdir -p "$RUNNER_TEMP/img"
+          docker cp "$cid:/usr/local/bin/fetch-mcp" "$RUNNER_TEMP/img/fetch-mcp-shipped"
+          docker rm "$cid" >/dev/null
+          chmod +x "$RUNNER_TEMP/img/fetch-mcp-shipped"
+
+      - name: D-7 release-feature guard (cargo tree + marker grep) on the extracted binary
+        run: scripts/check-release-features.sh --binary "$RUNNER_TEMP/img/fetch-mcp-shipped"
+
+      - name: No OpenSSL / native-tls linkage (reuses the D-1 release-ldd-guard pattern; distroless has no shell, so ldd runs on the runner against the extracted binary)
+        run: |
+          set -euo pipefail
+          out=$(ldd "$RUNNER_TEMP/img/fetch-mcp-shipped" 2>&1) || { echo "$out"; echo "ldd could not list dynamic deps" >&2; exit 1; }
+          echo "$out"
+          echo "$out" | grep -Ei 'ssl|crypto|native-tls' && { echo "::error::image binary links a disallowed TLS library"; exit 1; } || true
+
+      - name: Build the never-pushed bench-loopback image for this platform (same commit, same base digest)
+        run: |
+          set -eu
+          arch="${{ matrix.arch }}"; [ "$arch" = amd64 ] && plat=linux/amd64 || plat=linux/arm64
+          docker buildx build --file Dockerfile --platform "$plat" --target bench \
+            --build-arg BUILD_KIND=bench --build-arg FETCH_MCP_COMMIT="${{ github.sha }}" \
+            --load -t fetch-mcp-bench:local .
+          cid=$(docker create fetch-mcp-bench:local)
+          docker cp "$cid:/usr/local/bin/fetch-mcp" "$RUNNER_TEMP/img/fetch-mcp-bench"
+          docker rm "$cid" >/dev/null
+          chmod +x "$RUNNER_TEMP/img/fetch-mcp-bench"
+          "$RUNNER_TEMP/img/fetch-mcp-bench" --version
+
+      - name: Generate fixtures and self-test the harness (reuses bench/ from E-2/E-4)
+        run: |
+          set -eu
+          python3 bench/fixtures.py generate
+          python3 bench/selftest.py
+
+      - name: "Idle RSS gate on the SHIPPED image's extracted binary (E-3 target: median of 10, <= 10 MiB strict)"
+        run: |
+          set -u
+          python3 bench/measure.py --gate --binary "$RUNNER_TEMP/img/fetch-mcp-shipped" \
+            --binary-kind shipped --scenario idle --peer-binary "$RUNNER_TEMP/img/fetch-mcp-bench" \
+            --out "$RUNNER_TEMP/img/idle.jsonl"
+          rc=$?
+          cat "$RUNNER_TEMP/img/idle.jsonl" || true
+          exit $rc
+
+      - name: "Peak RSS gate on the BENCH image's extracted binary (G4a+G4b target: median of 10, <= 40 MiB)"
+        run: |
+          set -u
+          python3 bench/measure.py --gate --binary "$RUNNER_TEMP/img/fetch-mcp-bench" \
+            --binary-kind bench --scenario g4a --scenario g4b \
+            --peer-binary "$RUNNER_TEMP/img/fetch-mcp-shipped" --out "$RUNNER_TEMP/img/peak.jsonl"
+          rc=$?
+          cat "$RUNNER_TEMP/img/peak.jsonl" || true
+          exit $rc
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: release-test-${{ matrix.arch }}
+          path: ${{ runner.temp }}/img/*.jsonl
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------------------------
+  # Publish job: BLOCKED on OQ-7 (image distribution / licence decision). This job is written to
+  # satisfy the D-2 acceptance criteria (it exists, has the right shape and the right permissions)
+  # but its `if:` condition is unconditionally false, so it can never run this sprint no matter how
+  # this workflow is triggered - including a real `v*` tag push. Do not edit the condition, and do
+  # not supply `confirm_publish: true` on a manual dispatch; both are required to be true and the
+  # first will remain false until the project owner records an OQ-7 decision in the sprint plan and a
+  # human edits this line in its own reviewed PR.
+  #
+  # When OQ-7 is eventually decided and this gate is intentionally opened, the job:
+  #   - adds the version tag (from the pushed `v*` tag) and, only if OQ-7 says so, `latest`, to the
+  #     SAME manifest-list digest `needs.test.result == success` already proved, without rebuilding;
+  #   - attaches provenance and SBOM attestations via buildx's native `--provenance`/`--sbom` (no
+  #     extra third-party action pinned for this, best-effort, non-blocking for MVP per the AC);
+  #   - writes the manifest digest and both per-platform digests into the run summary / release notes.
+  # ---------------------------------------------------------------------------------------------
+  publish:
+    name: publish (BLOCKED on OQ-7 - do not enable)
+    needs: [build, merge, test]
+    runs-on: ubuntu-24.04
+    # BLOCKED on OQ-7 (image distribution/licence) — do not enable until decided.
+    # `false &&` makes the rest of this condition unreachable by construction; it stays even after
+    # OQ-7 is decided, until a human deliberately removes it in a reviewed PR.
+    if: false && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && (github.event.inputs.confirm_publish == 'true' || github.event_name == 'push')
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+      - name: Tag the passing manifest digest with the version (and latest, per OQ-7) — no rebuild
+        run: |
+          set -euo pipefail
+          digest="${{ needs.merge.outputs.digest }}"
+          version="${GITHUB_REF#refs/tags/}"
+          docker buildx imagetools create -t "$IMAGE:$version" "$IMAGE@$digest"
+          # `latest` is added here only once OQ-7 says the package may be public and this job is
+          # actually enabled; left out until then.
+      - name: Provenance / SBOM attestation (best-effort, non-blocking for MVP)
+        continue-on-error: true
+        run: |
+          set -eu
+          echo "attestation step placeholder — wire actions/attest-build-provenance and an SBOM generator here once OQ-7 unblocks this job"
