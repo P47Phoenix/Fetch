@@ -137,6 +137,48 @@ fn initialize_lists_exactly_one_fetch_tool_with_schema() {
     s.finish_and_assert_pure();
 }
 
+/// D-5: the tool description is at most 150 words (NFR-09) and names every parameter plus the
+/// `start_index` continuation pattern, read from the real `tools/list` response (not a copy of the literal).
+#[test]
+fn d5_tool_description_is_concise_and_names_every_parameter() {
+    let mut s = Session::start();
+    s.handshake();
+    let r = s.call("tools/list", json!({}));
+    let desc = r["result"]["tools"][0]["description"]
+        .as_str()
+        .expect("description string")
+        .to_owned();
+    let props = r["result"]["tools"][0]["inputSchema"]["properties"]
+        .as_object()
+        .expect("properties");
+    let words = desc.split_whitespace().count();
+    assert!(
+        words <= 150,
+        "description is {words} words, over the 150-word cap: {desc}"
+    );
+    // Whole-word match on the schema's own parameter names (not a hardcoded list, so a new
+    // parameter is caught automatically) against a lowercased word set, so e.g. "raw" doesn't
+    // spuriously match a substring like "draw".
+    let desc_words: std::collections::HashSet<String> = desc
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for name in props.keys() {
+        assert!(
+            desc_words.contains(name),
+            "description missing parameter {name}: {desc}"
+        );
+    }
+    assert!(
+        desc.to_lowercase().contains("start_index to continue")
+            || desc.to_lowercase().contains("continue from"),
+        "description must describe the start_index continuation pattern: {desc}"
+    );
+    s.finish_and_assert_pure();
+}
+
 #[test]
 fn bad_input_is_rejected_with_the_field_named() {
     let mut s = Session::start();
