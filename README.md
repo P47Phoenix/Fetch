@@ -89,6 +89,110 @@ One shape differs from that convention, because it is produced by the MCP librar
 
 Unknown extra arguments are accepted and ignored. `max_length` and `start_index` pick a character window of the returned text, with the footers described under "What works today": for example `{"url": "...", "max_length": 5000, "start_index": 5000}` asks for the second page. `max_length` 0 returns `error[invalid_argument]: max_length: must be at least 1`. `max_length` is measured on the text after conversion (markdown for HTML), and an early-stopped page does not know the total length.
 
+## Registering in Claude Code
+
+**Do not register `fetch-mcp` in a real MCP client yet** (see "Status" above): the project is pre-M3, and
+whether/how a container image is published at all is still open (OQ-7, image distribution). This section
+documents the intended shape of registration once a build is published, so the wiring is ready when that
+decision lands -- it is not an invitation to run this in a normal setup today. The only planned check with
+Claude Code before M3 is a manual one on the owner's machine, with a throwaway config.
+
+Once an image exists (`linux/amd64` + `linux/arm64` manifest, ADR-007; other platforms are not published),
+registration is expected to look like a `docker run` (or Podman equivalent) stdio server, for example in
+`claude_desktop_config.json` or an MCP client's server list:
+
+```json
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "ghcr.io/<owner>/<repo>@sha256:<digest>"]
+    }
+  }
+}
+```
+
+A container runtime (Docker or Podman) is required: Linux amd64 or arm64 natively, macOS via Docker Desktop,
+Windows via WSL2. Prefer pinning by digest (`@sha256:...`) over a mutable version tag, since the image is not
+yet published and no tag exists to pin against today. This snippet is illustrative only until OQ-7 is decided
+and a first image is published.
+
+### Limitations
+
+- **No JavaScript rendering.** `fetch-mcp` downloads the raw HTTP response only; it does not run a browser or
+  execute JavaScript, so client-rendered pages (content that appears only after JS runs) are not seen.
+- **Fetched content is untrusted and unlabelled (OQ-5, decided "no label").** The page text returned to the
+  model is passed through as-is, with nothing escaped or marked as coming from the web. Treat it like any other
+  web page: it can contain instructions, fake markdown, or attempts to manipulate a model reading it
+  (prompt injection). Callers (and any agent consuming the output) should not treat fetched text as trusted
+  instructions.
+
+## Configuration (environment variables)
+
+All variables are optional; an unset variable uses its default. Every variable is read once at startup
+(`Config::from_env`, `src/config.rs`); an invalid value is a startup error naming the variable, printed to
+stderr, and the process exits non-zero before any MCP traffic (nothing partially starts).
+
+| Variable | Meaning | Default | Invalid value |
+|---|---|---|---|
+| `FETCH_LOG` | Log verbosity: `error`, `warn`, `info` or `debug`. Matched case-sensitively (exact lower case only; `Debug` or `DEBUG` is invalid) -- unlike `FETCH_ROBOTS_TXT` below, which lower-cases its value before matching. | `warn` | Exits non-zero naming `FETCH_LOG`. |
+| `FETCH_TIMEOUT_MS` | Overall per-fetch deadline in milliseconds (connect through last byte). | `15000` | Exits non-zero naming `FETCH_TIMEOUT_MS`; must be a positive integer. |
+| `FETCH_MAX_BYTES` | Decompressed body byte cap; a response over this stops with `too_large`. | `5242880` (5 MiB) | Exits non-zero naming `FETCH_MAX_BYTES`; must be a positive integer. |
+| `FETCH_MAX_LENGTH_CAP` | Hard ceiling (characters) on the `max_length` tool argument; a per-call `max_length` above this is clamped to the cap, and a footer line says so only when the caller explicitly asked for more than the cap (a caller who omits `max_length` or asks for less never sees this footer). | `100000` | Exits non-zero naming `FETCH_MAX_LENGTH_CAP`; must be a positive integer. |
+| `FETCH_MAX_CONCURRENCY` | Number of fetches that may run at once; further calls queue. | `3` | Exits non-zero naming `FETCH_MAX_CONCURRENCY`; must be a positive integer. |
+| `FETCH_ROBOTS_TXT` | **Placeholder only (see below).** Accepted values: `ignore`, `enforce`. | `ignore` | Exits non-zero naming `FETCH_ROBOTS_TXT`. |
+| `FETCH_ALLOW_PRIVATE_HOSTS` | **Inert by default (see below).** Comma-separated exact hostnames (not IP literals) for which the private-IP-range check is relaxed. | *(empty)* | Exits non-zero naming `FETCH_ALLOW_PRIVATE_HOSTS` on an IP-literal entry or an empty entry (e.g. a stray comma). |
+
+### Two variables are mechanisms, not finished product policy (OQ-3, OQ-4 still open)
+
+The product owner has **not yet decided** the default policy for either of these; both exist today only as
+validated, inert plumbing so the wiring is ready once a decision lands. Neither changes today's behavior when
+left unset.
+
+- **`FETCH_ROBOTS_TXT` (OQ-3, robots.txt default policy -- open).** The server does **not** fetch or enforce
+  `robots.txt` at all today, regardless of this variable's value. The variable is parsed and validated (so the
+  name and accepted syntax are stable), but both `ignore` and `enforce` currently behave identically: neither
+  fetches `robots.txt`. Real enforcement is out of scope for this sprint and lands with story B-4 (planned
+  Sprint 11), once OQ-3 is answered.
+- **`FETCH_ALLOW_PRIVATE_HOSTS` (OQ-4, private-host allowlist policy -- open).** This wires the
+  `ssrf::Policy` allowlist mechanism through to the running server, but ships with an **empty default**, which
+  is exactly today's fail-closed behavior for every deployment that does not set it. If set, the semantics are
+  narrow and deliberately conservative:
+  - Allowlisting applies **only to the exact hostname of the original request** -- not a substring, not a
+    subdomain, not a redirect target.
+  - A redirect hop to any other private host is **still blocked**, even if the original request's host was
+    allowlisted.
+  - **IP-literal hosts can never be allowlisted** (`http://10.0.0.1/` is refused even if `10.0.0.1` were listed
+    -- the variable only accepts hostnames, and the checker validates IP literals before any hostname is
+    known).
+  - The allowlist relaxes **only the RFC 1918 / private-use range check**. It never relaxes scheme, port, or
+    the metadata-address rules: `169.254.169.254`, `168.63.129.16` and the other cloud metadata addresses stay
+    blocked for every allowlisted hostname.
+
+  Whether this mechanism should ever be enabled in a real deployment -- and if so, under what governance -- is
+  OQ-4, and is **not yet decided**. Treat `FETCH_ALLOW_PRIVATE_HOSTS` as available-but-unendorsed plumbing
+  until the product owner rules on OQ-4.
+  - **IPv4-private only.** The allowlist relaxes only the RFC 1918 / private-use ("private") category, which is
+    an IPv4-only classification (see [SSRF range table](docs/SSRF.md)). It does not relax IPv6 unique-local
+    addresses (`fc00::/7`, RFC 4193), which is a separate category and is never relaxable: a dual-stack
+    allowlisted host whose AAAA record is in `fd00::/8` is still refused on that address.
+
+### Other operational notes
+
+- **Config errors fail before the handshake.** Every `FETCH_*` variable is read once at startup
+  (`Config::from_env`); an invalid value prints `error naming the variable` to stderr and the process exits
+  non-zero before any MCP traffic -- nothing partially starts.
+- **Proxies are unsupported.** The HTTP client is fixed no-proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and
+  similar environment variables are not read or honored.
+- **NAT64 / local gateways.** Hosts reached through a local NAT64 gateway should note that only the well-known
+  NAT64 prefix (`64:ff9b::/96`, RFC 6052) and `64:ff9b:1::/48` are recognised; a network-specific NAT64 prefix
+  is not. Addresses in a recognised NAT64 or 6to4 form with a public embedded IPv4 address are allowed (judged
+  by the embedded IPv4 address, [SSRF range table](docs/SSRF.md)).
+- **musl and `.local` names.** The release image's musl static build may not resolve `.local` (mDNS) or
+  split-DNS names that a glibc (gnu) build resolves on the same network, because musl's resolver does not do
+  mDNS and depends on `/etc/resolv.conf` / NSS configuration differently from glibc. This is a platform
+  limitation of musl's resolver, not a `fetch-mcp` policy.
+
 ## Conversion limits (what the HTML to markdown step does and does not do)
 
 The converter is a first version (story A-4, tier 1 of ADR-002); its quality has not been measured (see above). What to expect:

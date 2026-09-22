@@ -66,13 +66,21 @@ mod tests {
     use crate::error::FetchError;
     use crate::policy::Policy;
     use crate::ssrf::resolver::{resolve_validated, Resolver};
+    use crate::ssrf::Origin;
 
     #[tokio::test]
     async fn system_resolver_resolves_localhost_and_the_core_refuses_it() {
         let name = "localhost";
         let answers = SystemResolver.resolve(name).await.unwrap();
         assert!(!answers.is_empty() && answers.iter().all(|a| a.is_loopback()));
-        let refused = resolve_validated(&SystemResolver, &Policy::default(), "localhost", 80).await;
+        let refused = resolve_validated(
+            &SystemResolver,
+            &Policy::default(),
+            "localhost",
+            80,
+            Origin::Initial,
+        )
+        .await;
         assert!(
             matches!(refused, Err(FetchError::BlockedTarget(_))),
             "{refused:?}"
@@ -82,6 +90,7 @@ mod tests {
             &Policy::permit_loopback_for_tests(),
             "localhost",
             80,
+            Origin::Initial,
         )
         .await;
         assert!(ok.is_ok_and(|v| !v.is_empty()));

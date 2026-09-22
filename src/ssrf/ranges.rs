@@ -5,11 +5,18 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// Why an address is blocked. Only `Loopback` can be relaxed (by the test/bench-only policy); everything else,
-/// metadata addresses included, is blocked for every policy.
+/// Why an address is blocked. `Loopback` can be relaxed by the test/bench-only policy (never in a release
+/// build). The "private" category (`Other` kind) can additionally be relaxed, but only for an exact hostname
+/// configured in `Policy`'s allowlist via [`crate::policy::Policy::check_ip_for_host`] (C-2, OQ-4 still open).
+/// Everything else, metadata addresses included, is blocked for every policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Loopback,
+    /// RFC 1918 / IPv4 private-use ranges: the only category (besides `Loopback`) a `Policy` allowlist can
+    /// relax, and only for an exact allowlisted hostname (C-2). Compile-time exhaustive: a future range added
+    /// with this `Kind` is relaxable automatically, and one added with `Other` never is, with no string to keep
+    /// in sync.
+    Private,
     Other,
 }
 
@@ -24,21 +31,21 @@ const fn v4(a: u8, b: u8, c: u8, d: u8) -> u32 {
     u32::from_be_bytes([a, b, c, d])
 }
 
-use Kind::{Loopback, Other};
+use Kind::{Loopback, Other, Private};
 
 /// IPv4 blocked ranges: (network, prefix length, kind, category).
 pub const V4_BLOCKED: &[(u32, u8, Kind, &str)] = &[
     (v4(0, 0, 0, 0), 8, Other, "unspecified"),
-    (v4(10, 0, 0, 0), 8, Other, "private"),
+    (v4(10, 0, 0, 0), 8, Private, "private"),
     (v4(100, 64, 0, 0), 10, Other, "shared address space (CGNAT)"),
     (v4(127, 0, 0, 0), 8, Loopback, "loopback"),
     (v4(169, 254, 169, 254), 32, Other, "cloud metadata"),
     (v4(169, 254, 0, 0), 16, Other, "link-local"),
-    (v4(172, 16, 0, 0), 12, Other, "private"),
+    (v4(172, 16, 0, 0), 12, Private, "private"),
     (v4(192, 0, 0, 0), 24, Other, "reserved"),
     (v4(192, 0, 2, 0), 24, Other, "documentation"),
     (v4(192, 88, 99, 0), 24, Other, "reserved"),
-    (v4(192, 168, 0, 0), 16, Other, "private"),
+    (v4(192, 168, 0, 0), 16, Private, "private"),
     (v4(198, 18, 0, 0), 15, Other, "benchmarking"),
     (v4(198, 51, 100, 0), 24, Other, "documentation"),
     (v4(203, 0, 113, 0), 24, Other, "documentation"),
@@ -295,14 +302,10 @@ mod tests {
         ] {
             assert_eq!(classify(ip(a)).unwrap().kind, Kind::Loopback, "{a}");
         }
-        for a in [
-            "10.0.0.1",
-            "0.0.0.0",
-            "::",
-            "fe80::1",
-            "169.254.169.254",
-            "::ffff:10.0.0.1",
-        ] {
+        for a in ["10.0.0.1", "::ffff:10.0.0.1"] {
+            assert_eq!(classify(ip(a)).unwrap().kind, Kind::Private, "{a}");
+        }
+        for a in ["0.0.0.0", "::", "fe80::1", "169.254.169.254"] {
             assert_eq!(classify(ip(a)).unwrap().kind, Kind::Other, "{a}");
         }
     }

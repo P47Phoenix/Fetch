@@ -9,6 +9,10 @@ use std::net::IpAddr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
     allow_loopback: bool,
+    /// Exact hostnames (canonical, lower-case, no trailing dot -- see `ssrf::canonical_name`) for which the
+    /// private-range check is relaxed. Empty by default (C-2, OQ-4 still open): an empty list is inert and
+    /// behaves exactly like [`Policy::default`].
+    allow_private_hosts: Vec<String>,
 }
 
 impl Default for Policy {
@@ -16,6 +20,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             allow_loopback: false,
+            allow_private_hosts: Vec::new(),
         }
     }
 }
@@ -27,9 +32,29 @@ impl Policy {
         self.allow_loopback
     }
 
-    /// `Err` with the block classification when `ip` may not be dialled. Loopback is the only relaxable class
-    /// (and only when [`Policy::allows_loopback`]); private, link-local, CGNAT, ULA, multicast, reserved and the
-    /// cloud metadata addresses are blocked for every policy. Addresses embedding an IPv4 address are judged by it.
+    /// Build a policy with a private-host allowlist (C-2). `hosts` should already be canonical (see
+    /// [`crate::ssrf::canonical_name`]); an empty list is identical to [`Policy::default`]. This is a mechanism
+    /// only -- OQ-4 (whether/how product policy should use it) is still open, so nothing calls this with a
+    /// non-empty list except a caller that explicitly opted in via `FETCH_ALLOW_PRIVATE_HOSTS`.
+    #[must_use]
+    pub fn with_allow_private_hosts(hosts: Vec<String>) -> Self {
+        Self {
+            allow_loopback: false,
+            allow_private_hosts: hosts,
+        }
+    }
+
+    /// The configured allowlist, for tests and diagnostics.
+    #[must_use]
+    pub fn allow_private_hosts(&self) -> &[String] {
+        &self.allow_private_hosts
+    }
+
+    /// `Err` with the block classification when `ip` may not be dialled. Loopback is relaxable only when
+    /// [`Policy::allows_loopback`]; the IPv4 "private" (RFC 1918) category is relaxable only through
+    /// [`Policy::check_ip_for_host`], for an exact allowlisted hostname -- this method alone never relaxes it.
+    /// link-local, CGNAT, IPv6 unique-local (ULA), multicast, reserved and the cloud metadata addresses are
+    /// blocked for every policy. Addresses embedding an IPv4 address are judged by it.
     ///
     /// # Errors
     /// The [`Blocked`] classification (category word only, never the address).
@@ -41,18 +66,44 @@ impl Policy {
         }
     }
 
+    /// [`Policy::check_ip`], additionally relaxing the private-range check when `hostname` is an exact match in
+    /// the configured allowlist (C-2). `hostname` should already be canonical. Only the `"private"` category
+    /// (RFC 1918 / private-use) is relaxable this way -- metadata addresses, link-local, CGNAT and every other
+    /// category stay blocked even for an allowlisted hostname, and an empty allowlist behaves exactly like
+    /// [`Policy::check_ip`]. Callers must pass this only for the ORIGINAL request's hostname, never for a
+    /// redirect hop (architecture OQ-4 answer): a redirect always uses [`Policy::check_ip`] instead.
+    ///
+    /// # Errors
+    /// As [`Policy::check_ip`].
+    pub fn check_ip_for_host(&self, ip: IpAddr, hostname: &str) -> Result<(), Blocked> {
+        match self.check_ip(ip) {
+            Ok(()) => Ok(()),
+            Err(b) if b.kind == Kind::Private => {
+                if self.allow_private_hosts.iter().any(|h| h == hostname) {
+                    Ok(())
+                } else {
+                    Err(b)
+                }
+            }
+            Err(b) => Err(b),
+        }
+    }
+
     /// The policy the binary serves with. Fail-closed ([`Policy::default`]) in every build except one compiled
     /// with the compile-time-only `bench-loopback` feature (E-8), which additionally permits loopback. There is
-    /// no runtime switch: no env var or flag can change the result.
+    /// no runtime switch for loopback: no env var or flag can change that result. `allow_private_hosts` (from
+    /// `FETCH_ALLOW_PRIVATE_HOSTS`, C-2) is threaded through independently and defaults to empty (inert).
     #[must_use]
-    pub fn for_build() -> Self {
+    pub fn for_build(allow_private_hosts: Vec<String>) -> Self {
         #[cfg(feature = "bench-loopback")]
         {
-            Self::permit_loopback_for_tests()
+            let mut p = Self::permit_loopback_for_tests();
+            p.allow_private_hosts = allow_private_hosts;
+            p
         }
         #[cfg(not(feature = "bench-loopback"))]
         {
-            Self::default()
+            Self::with_allow_private_hosts(allow_private_hosts)
         }
     }
 
@@ -62,6 +113,7 @@ impl Policy {
     pub fn permit_loopback_for_tests() -> Self {
         Self {
             allow_loopback: true,
+            allow_private_hosts: Vec::new(),
         }
     }
 }
@@ -120,7 +172,7 @@ mod tests {
     #[cfg(not(feature = "bench-loopback"))]
     #[test]
     fn for_build_is_fail_closed_without_bench_feature() {
-        let p = Policy::for_build();
+        let p = Policy::for_build(Vec::new());
         assert_eq!(p, Policy::default());
         assert!(!p.allows_loopback());
         for a in ["127.0.0.1", "127.9.9.9", "::1"] {
@@ -131,7 +183,7 @@ mod tests {
     #[cfg(feature = "bench-loopback")]
     #[test]
     fn for_build_permits_only_loopback_with_bench_feature() {
-        let p = Policy::for_build();
+        let p = Policy::for_build(Vec::new());
         assert!(p.allows_loopback());
         for a in ["127.0.0.1", "127.9.9.9", "::1"] {
             assert!(p.check_ip(a.parse().unwrap()).is_ok(), "{a}");
@@ -156,5 +208,87 @@ mod tests {
     #[test]
     fn test_constructor_permits_loopback() {
         assert!(Policy::permit_loopback_for_tests().allows_loopback());
+    }
+
+    #[cfg(not(feature = "bench-loopback"))]
+    #[test]
+    fn for_build_preserves_the_allowlist_without_bench_feature() {
+        let p = Policy::for_build(vec!["printer.lan".to_string()]);
+        assert_eq!(p.allow_private_hosts(), &["printer.lan".to_string()]);
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "printer.lan")
+            .is_ok());
+    }
+
+    #[cfg(feature = "bench-loopback")]
+    #[test]
+    fn for_build_preserves_the_allowlist_with_bench_feature() {
+        let p = Policy::for_build(vec!["printer.lan".to_string()]);
+        assert_eq!(p.allow_private_hosts(), &["printer.lan".to_string()]);
+        assert!(p.allows_loopback());
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "printer.lan")
+            .is_ok());
+    }
+
+    // --- C-2: allowlist mechanism (OQ-4 still open; empty by default) ---
+
+    #[test]
+    fn empty_allowlist_is_inert_and_matches_default() {
+        let p = Policy::with_allow_private_hosts(Vec::new());
+        assert_eq!(p, Policy::default());
+        assert!(p
+            .check_ip_for_host("10.0.0.1".parse().unwrap(), "internal.example")
+            .is_err());
+    }
+
+    #[test]
+    fn allowlisted_hostname_relaxes_private_range_only_for_exact_match() {
+        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "printer.lan")
+            .is_ok());
+        assert!(p
+            .check_ip_for_host("10.0.0.1".parse().unwrap(), "printer.lan")
+            .is_ok());
+        assert!(p
+            .check_ip_for_host("172.16.0.1".parse().unwrap(), "printer.lan")
+            .is_ok());
+        // a different hostname is not allowlisted, even resolving to the same private address
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "other.example")
+            .is_err());
+        // case/substring is not a match
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "notprinter.lan")
+            .is_err());
+    }
+
+    #[test]
+    fn allowlist_never_relaxes_metadata_link_local_or_cgnat() {
+        let p = Policy::with_allow_private_hosts(vec!["metadata.example".to_string()]);
+        for a in [
+            "169.254.169.254", // AWS/GCP metadata
+            "168.63.129.16",   // Azure wire server
+            "169.254.1.1",     // link-local
+            "100.64.0.1",      // CGNAT
+            "127.0.0.1",       // loopback
+            "0.0.0.0",         // unspecified
+            "224.0.0.1",       // multicast
+        ] {
+            assert!(
+                p.check_ip_for_host(a.parse().unwrap(), "metadata.example")
+                    .is_err(),
+                "{a}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowlist_does_not_touch_public_addresses() {
+        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        assert!(p
+            .check_ip_for_host("8.8.8.8".parse().unwrap(), "printer.lan")
+            .is_ok());
     }
 }
