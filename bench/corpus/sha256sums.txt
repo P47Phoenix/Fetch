@@ -1,0 +1,3 @@
+749807e3da8ee8177a4c82185d0e84b172d3564286ea2f1c1d1f53ee1d30511c  example-01-article.html
+366224564c84b1edf71eb64f7c84b31bf7e16c47f69e5afba21732ba518f14e3  example-02-table-heavy.html
+1cca5d6851bdef786d2173f994e4a70d7d07126e4ff0dbe32965882bb242c63f  example-03-inline-script.html

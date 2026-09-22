@@ -467,3 +467,74 @@ OQ-4 (private-host allowlist governance), OQ-7 (image distribution/licence — b
 deviations (never formally acknowledged), the `panic = "abort"` release-profile deviation (never formally
 acknowledged), and `coverage`/`release-ldd-guard` never added to required checks. None of these are decided
 here; all are the project owner's calls per the standing instruction never to decide OQ-3/OQ-4/OQ-7 unilaterally.
+
+## Revision 24 (2026-09-22): Sprint 13 (OQ-3/OQ-4/OQ-7 resolution, E-5/E-7 rework, sign-offs) — all seven carried owner items decided
+
+**The project owner made all seven remaining decisions on 2026-09-22.** Sprint 13 (branch
+`sprint-13/oq-resolution-finalization`, off `main` at `56f5a79`, the Sprint 12 merge) implements every one.
+This closes out the last open items from Revisions 22/23 above except the `v1.0` tag itself, which stays a
+coordinator action per every sprint's standing instruction.
+
+1. **OQ-7 (image distribution/licence): RESOLVED — open source, `MIT OR Apache-2.0`.** `LICENSE-APACHE` (the
+   file that lived at `LICENSE` since the initial commit) plus a new `LICENSE-MIT`; `Cargo.toml`'s `license`
+   field set. `release.yml`'s `publish` job had its `false &&` short-circuit removed — the job is now
+   reachable in principle — but the `inputs.confirm_publish == 'true'` manual-dispatch requirement is
+   UNCHANGED and remains the actual safety net: a bare `v*` tag push still cannot publish anything by itself.
+   `docs/ci-branch-protection.md`, `docs/EPICS.md` (D-2/D-6), README all updated from "still open" to
+   resolved. No `v1.0` tag created or pushed by this sprint (reserved for the coordinator, per instruction).
+2. **OQ-4 (private-host allowlist governance): RESOLVED — mechanism ships, gated behind a new master
+   switch.** `FETCH_ALLOW_PRIVATE_HOSTS_ENABLED` (default `false`), a config var parsed the same way as
+   `FETCH_ROBOTS_TXT` (case-insensitive, error-on-invalid). Even a populated `FETCH_ALLOW_PRIVATE_HOSTS` list
+   has no effect unless this switch is explicitly `true` — an independent gate from list contents, defense in
+   depth. `Policy::with_allow_private_hosts_gated` / `Policy::for_build` thread it through; `check_ip_for_host`
+   checks it before consulting the list. Table-driven regression matrix added
+   (`src/policy.rs::master_switch_regression_matrix`): switch off + list populated -> fail closed; switch on +
+   list populated -> relaxes only listed hostnames; switch on + empty list -> nothing to relax; every row also
+   reasserts IP-literal rejection, metadata/loopback/CGNAT blocking are untouched. Docker/README exposure: a
+   plain `-e FETCH_ALLOW_PRIVATE_HOSTS_ENABLED=true`, no new plumbing. README/SSRF.md updated.
+3. **OQ-3 (robots.txt default): RESOLVED — stays `ignore`, no code change.** Owner rationale: network-level
+   ACLs elsewhere in the operator's infrastructure are the intended control point, not this server.
+   `FETCH_ROBOTS_TXT=enforce` remains available for operators who want it. `README.md`, `docs/ci-branch-protection.md`,
+   `docs/SSRF.md`, `src/config.rs` doc comments and `docs/EPICS.md` (B-4/C-1) updated from "still open" to
+   resolved-as-`ignore`-by-design.
+4. **E-5/E-7 (owner test-data lists): REWORKED — local-fixture harness replaces the live-URL dependency.**
+   No E-7 harness code existed before this sprint (verified: nothing in `bench/` referenced a 50-URL list or
+   manifest format). New `bench/corpus_check.py`: reads `.html` files from `bench/corpus/`, serves
+   them over a loopback HTTP server, runs each through the real `fetch-mcp` `fetch` tool (via the existing
+   `measure.py` stdio driver), and checks the same A-4 criteria (>= 95% success, >= 50% median token
+   reduction, no `<script` leak) plus regenerates a plain `sha256sums.txt` manifest. Three clearly-marked
+   placeholder fixtures (`example-01-article.html`, `example-02-table-heavy.html`,
+   `example-03-inline-script.html`) prove the tooling works end to end; they are NOT a real corpus and do not
+   pass the reduction target on their own (too few, too small — expected and documented). `bench/smoke.py` and
+   `bench/e5_report.py` (E-5's live-URL harness, built Sprint 7) are left unmodified and still usable if a real
+   live smoke is ever wanted later; they are simply no longer what A-4/E-5/E-7 are blocked on. New
+   `docs/TEST-FIXTURES.md` documents exactly what to generate (count, suggested content diversity: prose
+   article, nav/boilerplate-heavy, table-heavy, code-documentation-heavy, inline-script/style, edge cases),
+   naming convention, drop location, and the exact commands to regenerate the manifest and report. **A-4/E-5/E-7
+   remain NOT DONE** — this is expected: they are no longer blocked on a URL list that never arrived, only on
+   the owner dropping real fixture files into `bench/corpus/`, a materially lower-friction ask.
+5. **Branch protection: RESOLVED — deliberately not configured.** Owner decision: solo-developer repo, not
+   worth the GitHub-settings friction. This is an accepted decision, not a gap, dated 2026-09-22.
+   `docs/ci-branch-protection.md` rewritten (new "Branch protection: RESOLVED" section; the old "Owner
+   quickstart" content kept only as clearly-marked historical reference, not an action item). No GitHub
+   settings touched (no agent here has that access regardless, unchanged fact).
+6. **Sprint 5 deviations and `panic = "abort"`: RESOLVED — both formally accepted as-is.** The project owner
+   formally acknowledges, as of 2026-09-22: (a) the Sprint 5 deviations recorded in
+   `.delivery/artifacts/06-dev/sprint-5/stage-summary.md` (re-homed E-2 AC items, the container-image
+   measurement gap, the macOS reader gap, the `ziglang`/`cargo-zigbuild` pin gap) — accepted as-is, no code
+   change; (b) the `panic = "abort"` release-profile choice (`Cargo.toml`, decided D-7/Sprint 0) — accepted
+   as-is, no code change. Both were carried as "pending owner acknowledgement" since their respective sprints;
+   both are now closed items.
+7. **`coverage`/`release-ldd-guard`: RESOLVED — treated as already-effectively-required.** These CI jobs
+   (from D-1/B-5, Sprint 8) run on every PR today. Per item 5 above, GitHub-native branch protection will not
+   be configured, so they will never appear in a native "required checks" list — but the delivery process
+   itself (this coordinator's own merge checklist) already requires all CI checks green, these two included,
+   before any merge. Documented in `docs/ci-branch-protection.md`'s new "De facto required checks" subsection.
+   No code change needed.
+
+**Test evidence and full detail:** `.delivery/artifacts/06-dev/sprint-13/dev-report.md`.
+
+**Owner decisions still needed going forward: none of the seven carried items above remain open.** The only
+remaining action before v1.0 is the coordinator's own tag-creation step after reviewing and merging this
+sprint's PR, and the owner generating real fixture files per `docs/TEST-FIXTURES.md` to actually close
+A-4/E-5/E-7 (not required for v1.0 tagging, which was never coupled to those stories' completion).

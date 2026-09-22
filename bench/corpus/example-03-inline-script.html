@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Example placeholder: inline script and style stripping</title>
+  <style>
+    body { margin: 0; padding: 0; }
+    .hidden { display: none; }
+  </style>
+  <script>
+    // This inline script must never survive conversion as literal executable text.
+    var trackingId = "example-only";
+    function track() { console.log(trackingId); }
+  </script>
+</head>
+<body>
+  <nav><a href="/">Home</a></nav>
+  <main>
+    <h1>Example Page With Inline Script/Style</h1>
+    <p>Placeholder fixture (Sprint 13 tooling proof only) that exercises the no-script-survives A-4 check.</p>
+    <script>document.write("this must be dropped too");</script>
+  </main>
+</body>
+</html>
