@@ -19,9 +19,9 @@
     "updated_utc": "2026-09-22T08:21:00.000Z"
   },
   "arm64-musl": {
-    "idle_kB": 2520.0,
-    "peak_kB": 4412.0,
-    "updated_from_run": "35707434550",
-    "updated_utc": "2026-09-22T09:14:39.080Z"
+    "idle_kB": 2524.0,
+    "peak_kB": 4540.0,
+    "updated_from_run": "35764584848",
+    "updated_utc": "2026-09-22T18:22:33.997Z"
   }
 }
