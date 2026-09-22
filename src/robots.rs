@@ -15,6 +15,14 @@
 //! group, and an empty or entirely unparseable file all allow everything (fail-open, per the AC: a missing or
 //! broken robots.txt must not block the fetch). Pure logic, no I/O: `crate::fetch::mod` fetches the robots.txt
 //! body through the existing guarded client (SSRF checks, redirects, size cap) and hands the text here.
+//!
+//! Simplification (finding #7, round-2 review): rule paths are matched as plain, literal prefixes -- there is
+//! no support for the `*` (wildcard) or `$` (end-of-path anchor) path-matching operators from RFC 9309 section
+//! 2.2.3, and matching is against `path` only (no query string). A rule using either operator, or one intended
+//! to apply only with a particular query string, is therefore matched more broadly than a fully RFC-9309-compliant
+//! parser would: it still participates in the longest-literal-prefix comparison above, verbatim, wildcard
+//! characters included. This fails open (matches nothing it should not have generally *disallowed*, but also
+//! nothing more specific than a broader rule requires), consistent with the module's overall fail-open stance.
 
 /// One `User-agent:` record: the (lower-cased) product tokens it applies to, and its `Allow`/`Disallow` rules
 /// in file order, each a path prefix and whether it allows (`true`) or disallows (`false`) that prefix.
@@ -229,5 +237,37 @@ mod tests {
     fn an_empty_path_is_treated_as_root() {
         let txt = "User-agent: *\nDisallow: /\n";
         assert!(!is_allowed(txt, UA, ""));
+    }
+
+    /// Finding #7 (round-2 review): no `*`/`$` wildcard support (RFC 9309 2.2.3) and no query-string matching --
+    /// documented as fail-open in the module docs. This pins the current (simplified) behaviour: a `*` in a
+    /// rule is matched literally, so it disallows only paths starting with that literal text, not the intended
+    /// wildcard pattern, and a rule is compared against the path alone, ignoring any query string.
+    #[test]
+    fn wildcard_and_query_string_rules_fail_open_rather_than_pattern_matching() {
+        let txt = "User-agent: *\nDisallow: /private/*.pdf$\n";
+        // Intended (RFC 9309 wildcard semantics) to disallow this; the literal-prefix simplification does not.
+        assert!(is_allowed(txt, UA, "/private/report.pdf"));
+        // The literal rule text itself, taken as a plain prefix, still disallows.
+        assert!(!is_allowed(txt, UA, "/private/*.pdf$/x"));
+
+        let txt = "User-agent: *\nDisallow: /search?blocked=1\n";
+        // A query string on the request path is not considered: the same path prefix without the query is
+        // already covered by the literal rule text, so this is disallowed regardless of the query given.
+        assert!(!is_allowed(txt, UA, "/search?blocked=1"));
+        assert!(is_allowed(txt, UA, "/search?other=1")); // different literal prefix: allowed
+    }
+
+    /// Finding #12 (round-2 review): `Crawl-delay:` is a recognized field (RFC 9309 is silent on it; it is a
+    /// de facto extension) but this module has no rate-limiting concept, so it must be parsed-and-ignored, not
+    /// mistaken for an `Allow`/`Disallow` rule (which would corrupt matching) or for a group-closing line.
+    #[test]
+    fn crawl_delay_lines_are_parsed_and_ignored_not_mistaken_for_a_rule() {
+        let txt = "User-agent: *\nCrawl-delay: 10\nDisallow: /private\n";
+        assert!(!is_allowed(txt, UA, "/private"));
+        assert!(is_allowed(txt, UA, "/public"));
+        // Between two User-agent lines, Crawl-delay does not itself start (or close) a rules-bearing record.
+        let txt = "User-agent: *\nUser-agent: fetch-mcp\nCrawl-delay: 10\nDisallow: /x\n";
+        assert!(!is_allowed(txt, UA, "/x"));
     }
 }

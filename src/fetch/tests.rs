@@ -1950,6 +1950,96 @@ async fn plain_utf8_html_with_no_charset_markers_still_streams_and_aborts_early_
     );
 }
 
+/// Finding #1 (round-2 review): `max_length` must still stop a header-charset (non-gzip, whole-body-decode) fetch
+/// early -- before this fix `decode_whole_body` never checked `stop()` inside its read loop, so the early-stop
+/// window was silently defeated on this path and the full body was always read regardless of `max_length`.
+#[tokio::test]
+async fn header_charset_decode_stops_early_when_the_window_is_satisfied() {
+    let sent = Arc::new(AtomicUsize::new(0));
+    let total: usize = 32 << 20;
+    let s2 = sent.clone();
+    let h = handler(move |mut s, _| {
+        let sent = s2.clone();
+        async move {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: {total}\r\n\r\n"
+            );
+            if s.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let block = vec![b'x'; 16 * 1024];
+            let mut written = 0;
+            while written < total {
+                let n = block.len().min(total - written);
+                match s.write_all(&block[..n]).await {
+                    Ok(()) => {
+                        written += n;
+                        sent.fetch_add(n, Ordering::SeqCst);
+                    }
+                    Err(_) => return,
+                }
+            }
+            let _ = s.shutdown().await;
+        }
+    });
+    let srv = spawn_server(h).await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 64 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 0, 100).await;
+    let fetched = res.unwrap();
+    assert!(w.more);
+    assert!(
+        fetched.wire_bytes < (1 << 20),
+        "read {} of {total} bytes; max_length did not stop the header-charset decode early",
+        fetched.wire_bytes
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        sent.load(Ordering::SeqCst) < total / 4,
+        "the server kept sending after the window should have stopped the read"
+    );
+}
+
+/// Finding #2 (round-2 review): once #1 is fixed, an early stop mid-gzip-stream must not call
+/// `RawPipeline::finish()` on the truncated stream (which errors as `BodyError::Corrupt`/`bad_response`) --
+/// it must return `Ok` with the wire bytes read so far, like every other early-stop site.
+#[tokio::test]
+async fn gzip_html_early_stop_mid_stream_succeeds_instead_of_bad_response() {
+    let mut page = String::from("<html><body>");
+    page.push_str(&"hello world ".repeat(200_000)); // several chunks once gzipped and chunk-fed
+    page.push_str("</body></html>");
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html", "Content-Encoding: gzip"],
+        gz(page.as_bytes()),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(60_000, 16 << 20, 3));
+    let url = format!("http://public.test:{}/", srv.port);
+    let (res, w) = windowed(&c, &url, crate::convert::Mode::Markdown, 0, 50).await;
+    res.unwrap_or_else(|e| panic!("expected success on early stop, got {}: {e}", e.code()));
+    assert!(w.more);
+}
+
+/// Finding #11 (round-2 review): a header charset must win over a conflicting `<meta charset>` in the body --
+/// previously only "no header charset" cases were tested against the meta tag.
+#[tokio::test]
+async fn header_charset_wins_over_conflicting_meta_charset() {
+    // Header says UTF-8 (so the fast streaming path is used); body's <meta> falsely claims ISO-8859-1 but the
+    // body bytes are themselves valid UTF-8 -- if meta ever won here, decoding as Latin-1 would mangle "café".
+    let body = "<html><head><meta charset=\"ISO-8859-1\"></head><body>café</body></html>";
+    let srv = spawn_server(fixed(
+        "200 OK",
+        &["Content-Type: text/html; charset=utf-8"],
+        body.as_bytes().to_vec(),
+    ))
+    .await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+    res.unwrap();
+    assert!(text.contains("café"), "{text:?}");
+}
+
 // ---- B-4: robots.txt enforcement mechanism (inert unless RobotsMode::Enforce; OQ-3 still open) ------------
 
 /// Serves `robots_status`/`robots_body` for `GET /robots.txt`, `200 OK`/`target_body` for anything else.

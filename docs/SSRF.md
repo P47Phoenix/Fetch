@@ -81,6 +81,17 @@ Accepted residual risks (decision: do not over-block; fail-closed everywhere the
 - **ISATAP.** An address such as `2606:4700::5efe:a00:1` (public prefix, interface id `::5efe:` plus a private IPv4) passes, because ISATAP has no fixed prefix and is only meaningful if the host has an ISATAP interface, which is not normal in a container. Blocking every `::5efe:` interface id was considered and not done, to avoid over-blocking; revisit if a deployment ever has an ISATAP interface.
 - **Non-well-known NAT64 prefixes.** Only `64:ff9b::/96` (RFC 6052) and `64:ff9b:1::/48` are recognised. A network-specific NAT64 prefix that embeds a private IPv4 cannot be detected from the address alone.
 
+## robots.txt sub-fetch (B-4)
+
+When `FETCH_ROBOTS_TXT=enforce`, the `robots.txt` fetch that gates a request goes through the same guarded
+`FetchClient` as the request itself: the same SSRF checks (this page's rules apply to it exactly the same way,
+including redirect-hop checks), no separate connection-security carve-out, capped at 512 KB, and bounded by its
+own sub-deadline (at most a quarter of the configured timeout) rather than the whole outer deadline. It is
+origin-only and checked on the initial hop only (a redirect target's own `robots.txt` is not separately
+fetched). Any failure -- SSRF refusal, timeout, non-2xx, truncation, malformed content -- fails open (treated
+as "no restrictions"); see [README: Configuration](../README.md#configuration-environment-variables) for the
+full semantics.
+
 ## Changing the table
 
 The tables are data in `ranges.rs`; adding a range needs no other code change. Add a test with the first, a middle and the last address of the new range and its neighbours, cite the source in the same row of this page, and run `cargo test --locked`.

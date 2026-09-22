@@ -3,17 +3,23 @@
 //! and `FETCH_ALLOW_PRIVATE_HOSTS` variables; the remaining variable (user agent, allowed ports) arrives with
 //! the story that uses it.
 //!
-//! `FETCH_ROBOTS_TXT` is parsed and validated but is a placeholder only (C-1): OQ-3 (whether fetches should
-//! respect robots.txt by default) is still open, so today's behaviour -- robots.txt is never fetched or
-//! enforced -- is unchanged regardless of the value set here. `FETCH_ALLOW_PRIVATE_HOSTS` wires a mechanism
+//! `FETCH_ROBOTS_TXT=enforce` (B-4) genuinely fetches and enforces the target origin's `robots.txt`: on the
+//! initial hop only (a redirect is not re-checked), through the same guarded `FetchClient` used for the fetch
+//! itself (SSRF-checked, size-capped at 512 KB), failing OPEN (proceeding as if nothing were disallowed) on any
+//! error fetching, reading or parsing it -- missing, non-2xx, refused by SSRF, timed out, truncated at the cap,
+//! malformed, whatever. A disallowed path is refused with `error[robots_disallowed]`. The default
+//! ([`RobotsMode::Ignore`]) is unchanged: robots.txt is never fetched or enforced unless an operator opts in.
+//! OQ-3 (whether fetches should respect robots.txt BY DEFAULT) is still an open product-owner decision; this
+//! only answers "how enforcement works", not "should it be on". `FETCH_ALLOW_PRIVATE_HOSTS` wires a mechanism
 //! (C-2) whose default is an empty, inert allowlist; OQ-4 (whether/how to use it) is still open.
 
 use crate::obs::Level;
 
-/// Placeholder toggle for future robots.txt handling (B-4, Sprint 11). Parsed and validated now so the env var
-/// name and syntax are stable, but neither variant changes behaviour today: robots.txt is not fetched or
-/// enforced by either setting until B-4 implements it. The default ([`RobotsMode::Ignore`]) preserves today's
-/// behaviour and does NOT represent a decision on OQ-3.
+/// robots.txt handling (B-4, Sprint 11). [`RobotsMode::Enforce`] genuinely fetches and enforces the target
+/// origin's robots.txt (initial hop only, fail-open on any fetch/parse error, SSRF-checked and 512 KB capped
+/// like a normal fetch -- see the module docs); [`RobotsMode::Ignore`], the default, never fetches it. The
+/// default preserves the pre-B-4 behaviour and does NOT represent a decision on OQ-3 (whether to enforce it by
+/// default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RobotsMode {
     Ignore,
@@ -37,7 +43,8 @@ pub struct Config {
     pub max_bytes: u64,
     pub max_length_cap: u64,
     pub max_concurrency: u64,
-    /// Placeholder only; see the module docs and [`RobotsMode`]. Not yet enforced (B-4).
+    /// See the module docs and [`RobotsMode`]. Enforced (B-4) only when set to [`RobotsMode::Enforce`]; the
+    /// default is [`RobotsMode::Ignore`].
     pub robots_txt: RobotsMode,
     /// Hostnames (exact, canonical lowercase) for which the private-IP-range check is relaxed (C-2). Empty by
     /// default, which is inert and identical to today's fail-closed behaviour for everyone who does not set
@@ -187,8 +194,10 @@ mod tests {
         }
     }
 
+    /// The default is still `Ignore` (no decision on OQ-3), but -- unlike before B-4 -- `Enforce` is now a real,
+    /// working mechanism, not a no-op placeholder.
     #[test]
-    fn robots_txt_default_is_ignore_and_is_a_placeholder_only() {
+    fn robots_txt_default_is_ignore_but_enforce_is_a_real_mechanism() {
         let c = Config::from_lookup(with(&[])).unwrap();
         assert_eq!(c.robots_txt, super::RobotsMode::Ignore);
     }

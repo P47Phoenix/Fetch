@@ -1,6 +1,7 @@
 //! Bounded body pipeline (ADR-004): wire chunk -> (gzip) -> decompressed byte cap -> UTF-8 stream decoder ->
 //! text sink. Everything is processed one bounded step at a time; nothing accumulates the body. Pure logic, no I/O.
 
+use encoding_rs::Encoding;
 use flate2::write::GzDecoder;
 use std::io::{self, Write};
 
@@ -86,10 +87,47 @@ impl Utf8Stream {
     }
 }
 
+/// The text decoder a [`Pipeline`] applies to decompressed bytes: the fast, allocation-free UTF-8 path used for
+/// the large majority of responses, or an `encoding_rs` streaming decoder for a confirmed non-UTF-8 charset
+/// (A-8). Both carry any split multi-byte sequence across chunks internally, so neither needs the caller to
+/// buffer anything.
+enum Decode {
+    Utf8(Utf8Stream),
+    Other(encoding_rs::Decoder),
+}
+
+impl Decode {
+    fn push(&mut self, data: &[u8], emit: &mut dyn FnMut(&str)) {
+        match self {
+            Decode::Utf8(u) => u.push(data, emit),
+            Decode::Other(d) => {
+                let mut buf = String::with_capacity(data.len() + 8);
+                let (_, _, _) = d.decode_to_string(data, &mut buf, false);
+                if !buf.is_empty() {
+                    emit(&buf);
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self, emit: &mut dyn FnMut(&str)) {
+        match self {
+            Decode::Utf8(u) => u.finish(emit),
+            Decode::Other(d) => {
+                let mut buf = String::new();
+                let (_, _, _) = d.decode_to_string(&[], &mut buf, true);
+                if !buf.is_empty() {
+                    emit(&buf);
+                }
+            }
+        }
+    }
+}
+
 /// Final stage: counts bytes against the cap, then decodes to text for the sink.
 struct Out<'a> {
     sink: &'a mut (dyn FnMut(&str) + Send),
-    utf8: Utf8Stream,
+    decode: Decode,
     decoded: u64,
     cap: u64,
     overflow: bool,
@@ -103,7 +141,7 @@ impl Write for Out<'_> {
             return Err(io::Error::other("decompressed size cap exceeded"));
         }
         self.decoded += n;
-        self.utf8.push(b, &mut *self.sink);
+        self.decode.push(b, &mut *self.sink);
         Ok(b.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -130,9 +168,30 @@ pub struct Pipeline<'a> {
 impl<'a> Pipeline<'a> {
     /// `gzip` selects a single-member gzip decode; `cap` bounds the decompressed byte count.
     pub fn new(gzip: bool, cap: u64, sink: &'a mut (dyn FnMut(&str) + Send)) -> Self {
+        Self::with_decode(gzip, cap, Decode::Utf8(Utf8Stream::default()), sink)
+    }
+
+    /// As [`Pipeline::new`], but decoding decompressed bytes with `encoding` (A-8: a confirmed non-UTF-8
+    /// charset) instead of assuming UTF-8. Streams the same way `new` does: text reaches `sink` piece by piece
+    /// as wire chunks arrive, so a caller can act on it (or stop early) without waiting for the whole body.
+    pub fn with_encoding(
+        gzip: bool,
+        cap: u64,
+        encoding: &'static Encoding,
+        sink: &'a mut (dyn FnMut(&str) + Send),
+    ) -> Self {
+        Self::with_decode(gzip, cap, Decode::Other(encoding.new_decoder()), sink)
+    }
+
+    fn with_decode(
+        gzip: bool,
+        cap: u64,
+        decode: Decode,
+        sink: &'a mut (dyn FnMut(&str) + Send),
+    ) -> Self {
         let out = Out {
             sink,
-            utf8: Utf8Stream::default(),
+            decode,
             decoded: 0,
             cap,
             overflow: false,
@@ -179,7 +238,7 @@ impl<'a> Pipeline<'a> {
     /// [`BodyError::Corrupt`] when a gzip body ended before the gzip stream did.
     pub fn finish(mut self) -> Result<(), BodyError> {
         match &mut self.stage {
-            Stage::Identity(out) => out.utf8.finish(&mut *out.sink),
+            Stage::Identity(out) => out.decode.finish(&mut *out.sink),
             Stage::Gzip { dec, finished } => {
                 if !*finished && self.fed > 0 {
                     if dec.header().is_none() {
@@ -188,7 +247,7 @@ impl<'a> Pipeline<'a> {
                     dec.try_finish().map_err(|_| BodyError::Corrupt)?;
                 }
                 let out = dec.get_mut();
-                out.utf8.finish(&mut *out.sink);
+                out.decode.finish(&mut *out.sink);
             }
         }
         Ok(())

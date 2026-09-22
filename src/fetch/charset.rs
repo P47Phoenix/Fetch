@@ -19,7 +19,12 @@ pub fn from_content_type(content_type: &str) -> Option<&'static Encoding> {
     for param in params.split(';') {
         let param = param.trim();
         let lower = param.to_ascii_lowercase();
-        let Some(rest) = lower.strip_prefix("charset=") else {
+        // Tolerate whitespace around '=' (e.g. "charset = utf-8"), not just "charset=".
+        let Some(rest) = lower.strip_prefix("charset") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
             continue;
         };
         let value = param[param.len() - rest.len()..]
@@ -74,22 +79,65 @@ pub fn sniff_meta(window: &[u8]) -> Option<&'static Encoding> {
     None
 }
 
-/// The value of attribute `name="..."` (or `name='...'` or unquoted) in a lower-cased tag body. Naive but
-/// sufficient for the ASCII-only, well-formed `<meta>` tags this sniffing targets.
+/// The value of attribute `name="..."` (or `name='...'` or unquoted) in a lower-cased tag body, scanning actual
+/// attribute-name positions rather than doing a bare substring search for `"name="` -- a bare search would also
+/// match `name=` occurring inside the *quoted value* of some other attribute (e.g. `content="...charset=..."`),
+/// wrongly sniffing a charset out of ordinary prose. This walks the tag's attributes one at a time, skipping
+/// each value's quoted contents wholesale, so a match can only happen at a real attribute name.
 fn attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let pat = format!("{name}=");
-    let pos = tag.find(&pat)?;
-    let rest = tag[pos + pat.len()..].trim_start();
-    if let Some(r) = rest.strip_prefix('"') {
-        Some(&r[..r.find('"')?])
-    } else if let Some(r) = rest.strip_prefix('\'') {
-        Some(&r[..r.find('\'')?])
-    } else {
-        let end = rest
-            .find(|c: char| c.is_whitespace() || c == '>')
-            .unwrap_or(rest.len());
-        Some(&rest[..end])
+    let bytes = tag.as_bytes();
+    let mut i = 0;
+    // Skip the leading tag-name token (e.g. "meta").
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
     }
+    while i < bytes.len() {
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'>') {
+            i += 1;
+        }
+        let name_start = i;
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'='
+            && bytes[i] != b'>'
+        {
+            i += 1;
+        }
+        let attr_name = &tag[name_start..i];
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            // Boolean attribute (no value); move on to the next one.
+            continue;
+        }
+        i += 1; // consume '='
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let value = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+            let quote = bytes[i];
+            let value_start = i + 1;
+            let end = tag[value_start..]
+                .find(quote as char)
+                .map_or_else(|| tag.len(), |rel| value_start + rel);
+            let v = &tag[value_start..end];
+            i = (end + 1).min(bytes.len());
+            v
+        } else {
+            let value_start = i;
+            let end = tag[value_start..]
+                .find(|c: char| c.is_whitespace() || c == '>')
+                .map_or(tag.len(), |rel| value_start + rel);
+            let v = &tag[value_start..end];
+            i = end;
+            v
+        };
+        if !attr_name.is_empty() && attr_name == name {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// `<meta charset="...">`. Rejects a spurious match inside another attribute's value (e.g. the `content=`
@@ -190,6 +238,14 @@ mod tests {
     }
 
     #[test]
+    fn charset_token_inside_an_unrelated_quoted_attribute_value_is_not_sniffed() {
+        // "charset=" appears inside the `content` attribute's own text, not as a real attribute name --
+        // must not be mistaken for `<meta charset="...">` (finding #3).
+        let html = br#"<meta name="description" content="tips on charset=iso-8859-1 handling">"#;
+        assert_eq!(sniff_meta(html), None);
+    }
+
+    #[test]
     fn no_meta_tag_or_unrecognized_charset_is_none() {
         assert_eq!(
             sniff_meta(b"<html><head><title>t</title></head></html>"),
@@ -197,6 +253,14 @@ mod tests {
         );
         assert_eq!(sniff_meta(b"<meta charset=\"totally-bogus\">"), None);
         assert_eq!(sniff_meta(b""), None);
+    }
+
+    #[test]
+    fn header_charset_tolerates_whitespace_around_equals() {
+        assert_eq!(
+            from_content_type("text/html; charset = utf-8"),
+            Some(encoding_rs::UTF_8)
+        );
     }
 
     #[test]

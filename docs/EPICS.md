@@ -338,7 +338,7 @@ As a home-lab operator, I want each redirect hop validated so that a public URL 
 Maps to: FR-11, OQ-3.
 As a site-respecting developer, I want disallowed URLs refused so that the agent follows crawl rules.
 - Given a robots.txt that disallows `/private`, when `fetch` targets `/private`, then it is refused with an explanatory error.
-- Given `FETCH_IGNORE_ROBOTS=1`, when the same URL is fetched, then it is allowed.
+- Given `FETCH_ROBOTS_TXT=ignore` (the default), when the same URL is fetched, then it is allowed.
 - Given robots.txt is missing or returns 404, when `fetch` runs, then it proceeds.
 - Given the robots.txt fetch itself, when made, then it passes the same SSRF checks and size cap (small, at most 512 KB).
 - Blocked by OQ-3: default on or off is confirmed before this story starts.
