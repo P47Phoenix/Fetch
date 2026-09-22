@@ -148,16 +148,27 @@ fn d5_tool_description_is_concise_and_names_every_parameter() {
         .as_str()
         .expect("description string")
         .to_owned();
+    let props = r["result"]["tools"][0]["inputSchema"]["properties"]
+        .as_object()
+        .expect("properties");
     let words = desc.split_whitespace().count();
     assert!(
         words <= 150,
         "description is {words} words, over the 150-word cap: {desc}"
     );
-    let lower = desc.to_lowercase();
-    for term in ["url", "max_length", "start_index", "raw"] {
+    // Whole-word match on the schema's own parameter names (not a hardcoded list, so a new
+    // parameter is caught automatically) against a lowercased word set, so e.g. "raw" doesn't
+    // spuriously match a substring like "draw".
+    let desc_words: std::collections::HashSet<String> = desc
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for name in props.keys() {
         assert!(
-            lower.contains(term),
-            "description missing parameter {term}: {desc}"
+            desc_words.contains(name),
+            "description missing parameter {name}: {desc}"
         );
     }
     assert!(

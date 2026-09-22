@@ -60,6 +60,10 @@ jobs:
         run: python3 bench/selftest.py
 
   # D-1: the release binary links no OpenSSL/native-tls, only libc/libgcc_s/libm (rustls, ADR-001).
+  # Scoped to the default (gnu, dynamically linked) target: `ldd` cannot inspect a statically linked (musl)
+  # binary at all (it prints "not a dynamic executable" and exits non-zero, which is a fact about linkage
+  # mode, not a finding), so it would spuriously fail-closed there. The real backstop against a static TLS
+  # library sneaking in on any target is deny.toml's openssl/native-tls/aws-lc bans, checked by the `deny` job.
   release-ldd-guard:
     runs-on: ubuntu-latest
     steps:
@@ -71,7 +75,12 @@ jobs:
       - name: Assert no OpenSSL / native-tls linkage
         run: |
           set -euo pipefail
-          ldd target/release/fetch-mcp | tee ldd.txt
+          out=$(ldd target/release/fetch-mcp 2>&1) || {
+            echo "$out"
+            echo "ldd could not list dynamic dependencies (e.g. a static binary) - not a linkage finding, see deny.toml instead" >&2
+            exit 1
+          }
+          echo "$out" | tee ldd.txt
           if grep -Ei 'ssl|crypto|native-tls' ldd.txt; then
             echo "release binary links a disallowed TLS library" >&2
             exit 1
@@ -93,9 +102,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo llvm-cov --locked --lcov --output-path lcov.info \
-            --ignore-filename-regex '^(src/main\.rs|src/server\.rs|src/obs\.rs|src/convert/(html|boilerplate)\.rs|spikes/)'
+            --ignore-filename-regex '(^|/)(main\.rs|server\.rs|obs\.rs|convert/(html|boilerplate)\.rs)$|/spikes/'
+          # src/ssrf/differential.rs is excluded: it is a test-only module (every item is a #[test] or a
+          # test helper, nothing is called from production code), so including it would pad the "90%
+          # combined" figure with guaranteed-100% test code rather than measuring production coverage.
           python3 scripts/coverage_gate.py lcov.info \
-            src/ssrf/mod.rs src/ssrf/ranges.rs src/ssrf/resolver.rs src/ssrf/differential.rs \
+            src/ssrf/mod.rs src/ssrf/ranges.rs src/ssrf/resolver.rs \
             src/fetch/mod.rs src/convert/window.rs \
             --min 90
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

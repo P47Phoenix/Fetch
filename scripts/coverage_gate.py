@@ -13,7 +13,8 @@ import sys
 
 
 def parse_lcov(path: str) -> dict[str, tuple[int, int]]:
-    """Return {source_file: (lines_hit, lines_found)}."""
+    """Return {source_file: (lines_hit, lines_found)}, accumulating across repeated SF: records
+    for the same file (llvm-cov can emit more than one record per file)."""
     result: dict[str, tuple[int, int]] = {}
     current: str | None = None
     hit = found = 0
@@ -31,7 +32,8 @@ def parse_lcov(path: str) -> dict[str, tuple[int, int]]:
                     hit += 1
             elif line == "end_of_record":
                 if current is not None:
-                    result[current] = (hit, found)
+                    prev_hit, prev_found = result.get(current, (0, 0))
+                    result[current] = (prev_hit + hit, prev_found + found)
                 current = None
                 hit = found = 0
     return result
@@ -53,6 +55,10 @@ def main(argv: list[str]) -> int:
         else:
             files.append(rest[i])
             i += 1
+
+    if not files:
+        print("no files given: nothing to gate", file=sys.stderr)
+        return 2
 
     coverage = parse_lcov(lcov_path)
 
