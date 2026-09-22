@@ -86,7 +86,7 @@ Exit: A-4 AC (on the E-7 snapshot set, unless the fallback applies: >= 95% conve
 | 9 | Multi-arch image release pipeline (D-4 moved to Sprint 10, ADR-007 re-estimate) | D-2 | 8 | M3 reached; OQ-7 decided (before the first image is published); D-1 re-measure passed; runner availability checked | D-2 per-platform images built, manifest list merged, both platforms tested natively by digest (handshake, FR-15, D-7 guard on the extracted binary, ARM memory gates on that digest) and published to GHCR only if BOTH platform gates pass; D-7 guard run (cargo tree and marker grep for `test-support` and `bench-loopback`); D-4 install guide lands in Sprint 10 and MVP completes in Sprint 10 (76 pts), not here; SUPERSEDED (history, ADR-007 removed the manual fallback): "manual bench run on the D-2 artifact plus E-5 stand in for the CI gate" |
 | 10 | Config and allowlist, plus install docs (MVP complete) | C-1, C-2, C-3, D-4 | 9 (7 if C-2 dropped; one over the 8-pt ceiling, ACCEPTED by the user 2026-09-19; C-3 not deferred) | OQ-3 default decided (C-1 needs it), OQ-4 decided for C-2 (drop = 5 pts) | Env parsing and validation, allowlist (if OQ-4 yes), timeout and size config; D-4 config text re-checked |
 | 11 | robots, charset, ARM tests | B-4, A-8, D-3 | 8 | OQ-3 decided; runner checked | robots enforced per OQ-3; charset decoding; aarch64 test job required check |
-| 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 | OQ-5 decided; hosted arm64 runner available | Labelling per OQ-5; memory-gate CI required; v1.0 tagged by D-6 |
+| 12 | Labelling, CI gate, v1.0 | B-6, E-6, D-6 | 7 | OQ-5 decided; hosted arm64 runner available | Labelling per OQ-5; memory-gate CI required (NOT MET — see Revision 22/23: a CI regression-tripwire job was added but branch protection was not enabled, no repo-settings access); v1.0 tagged by D-6 (NOT MET — see Revision 22/23: tag mechanism exists but was deliberately not triggered, pending OQ-7) |
 
 MVP = 76 pts after ADR-007 (was 73 at end of Sprint 9; now end of Sprint 10 because D-2 is 8 pts and D-4 moves), SUPERSEDED HISTORY, kept for the record only (original text, no longer current): "MVP = 73 pts, end of Sprint 9 (sprints 0-9 sum to 75, less non-MVP A-9 and D-5)". Tagging/distribution only after M3 (Sprint 8), the E-5 release decision and the D-1 shipped-build re-measure (Sprint 8) passing; the MVP release evidence is the release workflow's own ARM gate run on the published digest (the manual bench run fallback is removed, ADR-007); D-3 and E-6 add PR-level required checks in Sprints 11-12; D-6 is the v1.0 tagger.
 
@@ -428,3 +428,42 @@ more checks, `audit` and `dependency-count`, plus the E-6 `bench-gate` regressio
 of things it can eventually require), E-5/E-7 owner URL lists (still not supplied), and whether/when to remove
 the `false &&` guard on `release.yml`'s `publish` job once OQ-7 is decided (its own comment specifies what must
 accompany that edit).**
+
+## Revision 23 (2026-09-22): Sprint 12 merged (56f5a79) — all 12 sprints code-complete
+
+CI on PR #16 was fully green (18/18 checks) at head `900e145`, but the new E-6 `bench-gate (amd64, musl)`
+regression-tripwire leg then FAILED: root cause was a stale `bench/baseline.json` seed (Sprint 5 G4b figures)
+that predated the legitimately disclosed Sprint 11 A-8 charset-decoding memory growth (BENCHMARK.md section
+19) — not a real regression; the absolute 40 MiB memory gate passed cleanly throughout. Fix-pass 1 (commit
+`10c4965`) reseeded `bench/baseline.json` from this PR's own bench-gate run, legitimate because `src/` and
+`Cargo.lock` were byte-identical to `main` at the time. Full CI re-ran green on all 18 checks at the new head.
+
+Two fresh, independent reviewers (code + QA) both returned 0 blocking findings. The code reviewer traced
+`scripts/regression_gate.py`'s threshold math and JSON parsing by hand (not just read it), confirmed the
+`bench/baseline.json` reseed values are plausible against `docs/BENCHMARK.md`, verified `contents: write` is
+correctly scoped to only the `update-baseline` job (gated to pushes on `main`, gated on `bench-gate` succeeding
+via `needs:`), confirmed `dependency_count_gate.py`'s count (11 of <=15) is correct by independently re-running
+it, and confirmed `release.yml`'s `publish` job stays fully unreachable (`if: false && ...` short-circuits)
+so the new D-6 release-notes step cannot run under any trigger. The QA reviewer verified every B-6/E-6/D-6 AC
+bullet against the actual diff (not just the dev-report's claims) and found none of the "dev-report claims
+more completion than the diff delivers" pattern seen in Sprints 10/11, with one minor exception: the Sprints
+6-12 table's row 12 (line 89) still read "memory-gate CI required; v1.0 tagged by D-6" without flagging that
+neither was actually met this sprint (both are disclosed honestly in prose elsewhere in this file and in the
+dev-report, so no reader was misled, but the table cell itself was stale) — fixed directly in that row before
+merge, same edit as this revision.
+
+PR #16 merged to `main` as `56f5a79` (head `10c4965`). Per this sprint's explicit instruction and D-6's own
+AC, **no v1.0 git tag was created** — the mechanism exists (CI jobs for audit/dependency-count, a release-notes
+step) but tagging is coupled to a licence decision under OQ-7, which remains open; cutting the tag now would
+decide image distribution/licence by default, exactly the risk this plan's own risk table warns against.
+
+**This closes all 12 sprints' code delivery (all 34 stories' code either DONE or, for A-4/E-5/E-7, blocked
+purely on the owner's still-unsupplied URL lists — no further coding work is scheduled by this plan).** The
+full set of owner decisions still needed before v1.0 can be tagged and any image published is unchanged from
+Revision 22's list above, plus the historically carried items: E-5/E-7 URL lists, OQ-3 (robots.txt default),
+OQ-4 (private-host allowlist governance), OQ-7 (image distribution/licence — blocks the v1.0 tag and D-2's
+`publish` job), branch protection on `main` never configured (for the Sprint 11 `test`->`test (amd64)`/
+`test (arm64)` rename nor the new Sprint 12 `audit`/`dependency-count`/regression-tripwire checks), Sprint 5's
+deviations (never formally acknowledged), the `panic = "abort"` release-profile deviation (never formally
+acknowledged), and `coverage`/`release-ldd-guard` never added to required checks. None of these are decided
+here; all are the project owner's calls per the standing instruction never to decide OQ-3/OQ-4/OQ-7 unilaterally.
