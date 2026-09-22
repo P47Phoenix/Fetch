@@ -27,9 +27,10 @@ COPY src ./src
 COPY build.rs ./build.rs
 
 ARG BUILD_KIND=shipped
-# The build context has no `.git` (only tracked source files are copied, keeping the context small and
-# reproducible), so build.rs's git lookup would report `commit=unknown`; release.yml passes the real
-# commit SHA it checked out (`git rev-parse HEAD`) through this build-arg, which build.rs's documented
+# `.dockerignore` excludes `.git` (and everything else except the files explicitly COPY'd above) from
+# the build context, so build.rs's git lookup would report `commit=unknown` even though only tracked
+# source files are ever actually copied into the image; release.yml passes the real commit SHA it
+# checked out (`git rev-parse HEAD`) through this build-arg, which build.rs's documented
 # `FETCH_MCP_COMMIT` escape hatch consumes verbatim (E-4/E-8 identity check: shipped and bench images
 # built from the same commit must report the same commit and Cargo.lock hash).
 ARG FETCH_MCP_COMMIT=unknown
@@ -51,6 +52,11 @@ RUN set -eu; \
 # gcr.io/distroless/cc-debian12:nonroot manifest index digest (glibc runtime, no shell/package
 # manager, linux/amd64+arm64, built-in `nonroot` user uid 65532; verified with
 # `skopeo inspect docker://gcr.io/distroless/cc-debian12:nonroot` on 2026-09-21).
+# OQ-7 follow-up (PR #13 review NB-7): no `LABEL org.opencontainers.image.*` is set here yet.
+# `org.opencontainers.image.source` in particular is what GHCR uses to link a package to its
+# repository, which can make the package inherit the repository's (public) visibility - do not add
+# that label until OQ-7 is decided and re-verified, or it could silently defeat the private-package
+# guard in release.yml's `merge` job.
 FROM gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS shipped
 COPY --from=build /out/fetch-mcp /usr/local/bin/fetch-mcp
 USER nonroot:nonroot

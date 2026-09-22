@@ -3,9 +3,16 @@ name: release
 # D-2 (Sprint 9): multi-arch container image build, native per-platform test, and (BLOCKED) publish.
 #
 # CRITICAL: OQ-7 (image distribution / licence decision) is still OPEN as of this workflow's authoring.
-# Per the D-2 acceptance criteria, until OQ-7 is answered only PRIVATE, UNTAGGED candidates may exist in
-# GHCR; no version tag or `latest` is ever added and the package is never made public from this workflow.
-# The `publish` job below implements that step but is gated so it cannot run (see that job). Do not
+# Per the D-2 acceptance criteria, until OQ-7 is answered only PRIVATE candidates may exist in GHCR; no
+# version tag or `latest` is ever added and the package is never made public from this workflow. The
+# `merge` job pushes a `candidate-<sha>` reference only because `imagetools create` requires some
+# registry reference to target (a bare digest cannot be a push target) - this is a technical necessity,
+# not a release artifact, and it is immediately followed by an automated GHCR package-visibility check
+# (`Assert GHCR package is private (OQ-7 guard)`) that FAILS the job if the package is not private, so
+# the "private" half of this invariant is enforced in CI, not just claimed in this comment. The `publish`
+# job below implements the eventual tag-and-publish step but is gated so it cannot run (see that job; the
+# gate requires a manual, non-`push`-triggered `workflow_dispatch` with `confirm_publish=true` AND the
+# `false &&` prefix, so neither a bare tag push nor an unconfirmed dispatch can ever reach it). Do not
 # remove the gate without an owner decision recorded in the sprint plan.
 #
 # Trigger: a `v*` tag push (the real release path, still blocked pre-OQ-7 by the `publish` job's own
@@ -34,13 +41,27 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/${{ github.repository }}
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------------------------------------
+  # Resolve the lowercase image reference once, so every downstream job derives the exact same
+  # value the exact same way. `github.repository` (`P47Phoenix/Fetch`) is mixed-case; OCI/Docker
+  # repository names must be all-lowercase, so every job below recomputes `IMAGE` from this output
+  # with the same `tr` invocation rather than trusting an un-lowercased `env:` value (BLOCKING-1).
+  # ---------------------------------------------------------------------------------------------
+  image-ref:
+    name: resolve lowercase image reference
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - id: image
+        run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
   # ---------------------------------------------------------------------------------------------
   # Per-platform build: native build on the platform's own hosted runner (no QEMU, no cross-compile
   # - D-2 as rewritten builds natively per platform, so cargo-zigbuild/ziglang are NOT needed here;
@@ -49,13 +70,13 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   build:
     name: build (${{ matrix.arch }})
+    needs: image-ref
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest-amd64: ${{ steps.digest.outputs.amd64 }}
-      digest-arm64: ${{ steps.digest.outputs.arm64 }}
+    env:
+      IMAGE: ${{ needs.image-ref.outputs.image }}
     strategy:
       fail-fast: false
       matrix:
@@ -67,8 +88,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # push-by-digest requires the buildx `docker-container` driver, not the default `docker`
+      # driver (BLOCKING-2).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
       - name: "Log in to GHCR (least-privilege: packages:write only in this job)"
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push the shipped candidate by digest (untagged, private)
         id: build
@@ -90,8 +117,22 @@ jobs:
           echo "### build (${{ matrix.arch }})" >> "$GITHUB_STEP_SUMMARY"
           echo "digest: \`$digest\` (private, untagged; \`docker pull $IMAGE@$digest\`)" >> "$GITHUB_STEP_SUMMARY"
 
-      - id: digest
-        run: echo "${{ matrix.arch }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+      # Standard Docker buildx multi-platform digest pattern (BLOCKING-5): each matrix leg writes
+      # its digest to its own file rather than a shared job-output key, so there is no last-writer
+      # collision between the amd64 and arm64 legs.
+      - name: Write digest to file
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
 
   # ---------------------------------------------------------------------------------------------
   # Merge job: creates the manifest list from the two per-platform digests. Still private and never
@@ -103,11 +144,13 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   merge:
     name: merge manifest list
-    needs: build
+    needs: [image-ref, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
+    env:
+      IMAGE: ${{ needs.image-ref.outputs.image }}
     outputs:
       digest: ${{ steps.merge.outputs.digest }}
       candidate-ref: candidate-${{ github.sha }}
@@ -115,23 +158,62 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Download per-platform digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: digests-*
+          path: digests
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
       - name: Create the manifest list from the two per-platform digests
         id: merge
         run: |
           set -euo pipefail
-          amd64="${{ needs.build.outputs.digest-amd64 }}"
-          arm64="${{ needs.build.outputs.digest-arm64 }}"
-          [ -n "$amd64" ] && [ -n "$arm64" ] || { echo "::error::missing a per-platform digest (amd64=$amd64 arm64=$arm64)"; exit 1; }
+          cd digests
+          files=(*)
+          [ "${#files[@]}" -eq 2 ] || { echo "::error::expected exactly 2 digest files, found ${#files[@]}: ${files[*]}"; exit 1; }
+          refs=()
+          for f in "${files[@]}"; do refs+=("$IMAGE@sha256:$f"); done
+          cd ..
+          # `imagetools create` needs a registry reference to target; a bare digest cannot itself be
+          # a push target. `candidate-<sha>` is a technical necessity of this call, not a release
+          # artifact - it is not a version tag, is never treated as a release artifact (see the D-2
+          # deviation note in the Sprint 9 dev report), and the visibility guard below makes sure it
+          # can never land in a public package.
           ref="$IMAGE:candidate-${{ github.sha }}"
-          docker buildx imagetools create -t "$ref" "$IMAGE@$amd64" "$IMAGE@$arm64"
+          docker buildx imagetools create -t "$ref" "${refs[@]}"
           digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | python3 -c "import json,sys;print(json.load(sys.stdin)['digest'])")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           {
             echo "### merged manifest list"
-            echo "amd64: \`$amd64\`  arm64: \`$arm64\`"
+            echo "refs: \`${refs[*]}\`"
             echo "manifest list digest: \`$digest\` (private; \`docker pull $IMAGE@$digest\`)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Assert GHCR package is private (OQ-7 guard)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          package="$(basename "$IMAGE")"
+          owner_type="$(gh api "repos/${{ github.repository }}" --jq .owner.type)"
+          if [ "$owner_type" = "Organization" ]; then
+            endpoint="orgs/${{ github.repository_owner }}/packages/container/$package"
+          else
+            endpoint="users/${{ github.repository_owner }}/packages/container/$package"
+          fi
+          vis=$(gh api "$endpoint" --jq .visibility) \
+            || { echo "::error::cannot read GHCR package visibility at $endpoint - failing closed"; exit 1; }
+          echo "GHCR package '$package' visibility: $vis"
+          [ "$vis" = "private" ] || { echo "::error::GHCR package '$package' visibility is '$vis', not 'private'; OQ-7 forbids any non-private candidate. Failing the run."; exit 1; }
 
   # ---------------------------------------------------------------------------------------------
   # Per-platform test: pulls the candidate BY DIGEST ONLY, never the candidate tag, on the platform's
@@ -139,11 +221,13 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   test:
     name: test (${{ matrix.arch }})
-    needs: merge
+    needs: [image-ref, merge]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: read
+    env:
+      IMAGE: ${{ needs.image-ref.outputs.image }}
     strategy:
       fail-fast: false
       matrix:
@@ -154,7 +238,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Pull the shipped candidate by digest and assert the resolved digest matches
         run: |
@@ -231,7 +318,11 @@ jobs:
       - name: No OpenSSL / native-tls linkage (reuses the D-1 release-ldd-guard pattern; distroless has no shell, so ldd runs on the runner against the extracted binary)
         run: |
           set -euo pipefail
-          out=$(ldd "$RUNNER_TEMP/img/fetch-mcp-shipped" 2>&1) || { echo "$out"; echo "ldd could not list dynamic deps" >&2; exit 1; }
+          out=$(ldd "$RUNNER_TEMP/img/fetch-mcp-shipped" 2>&1) || {
+            echo "$out"
+            echo "ldd could not list dynamic dependencies (e.g. a static binary) - not a linkage finding, see deny.toml instead" >&2
+            exit 1
+          }
           echo "$out"
           echo "$out" | grep -Ei 'ssl|crypto|native-tls' && { echo "::error::image binary links a disallowed TLS library"; exit 1; } || true
 
@@ -285,10 +376,19 @@ jobs:
   # Publish job: BLOCKED on OQ-7 (image distribution / licence decision). This job is written to
   # satisfy the D-2 acceptance criteria (it exists, has the right shape and the right permissions)
   # but its `if:` condition is unconditionally false, so it can never run this sprint no matter how
-  # this workflow is triggered - including a real `v*` tag push. Do not edit the condition, and do
-  # not supply `confirm_publish: true` on a manual dispatch; both are required to be true and the
-  # first will remain false until the project owner records an OQ-7 decision in the sprint plan and a
-  # human edits this line in its own reviewed PR.
+  # this workflow is triggered - including a real `v*` tag push. Do not edit the condition.
+  #
+  # To unblock this job once the project owner has recorded an OQ-7 decision in the sprint plan, a
+  # human must, in its own reviewed PR:
+  #   1. remove the leading `false && ` from the `if:` expression below, AND
+  #   2. leave (or add) `inputs.confirm_publish == 'true'` as a REQUIRED conjunct that is evaluated
+  #      on every trigger type, not only `workflow_dispatch`. A bare `v*` tag push carries no
+  #      `inputs` context at all, so the condition must not fall back to "any push is enough" the
+  #      way an `||` escape would; the intent is that a real release additionally requires either a
+  #      manual `workflow_dispatch` with `confirm_publish=true`, or a repository variable /
+  #      environment-based approval (e.g. `environment: release` with required reviewers) recorded
+  #      at the same time as the OQ-7 decision. There is deliberately no single-token edit that
+  #      unblocks this job — that is the point of the gate.
   #
   # When OQ-7 is eventually decided and this gate is intentionally opened, the job:
   #   - adds the version tag (from the pushed `v*` tag) and, only if OQ-7 says so, `latest`, to the
@@ -299,12 +399,21 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   publish:
     name: publish (BLOCKED on OQ-7 - do not enable)
-    needs: [build, merge, test]
+    needs: [image-ref, build, merge, test]
     runs-on: ubuntu-24.04
+    env:
+      IMAGE: ${{ needs.image-ref.outputs.image }}
     # BLOCKED on OQ-7 (image distribution/licence) — do not enable until decided.
     # `false &&` makes the rest of this condition unreachable by construction; it stays even after
-    # OQ-7 is decided, until a human deliberately removes it in a reviewed PR.
-    if: false && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && (github.event.inputs.confirm_publish == 'true' || github.event_name == 'push')
+    # OQ-7 is decided, until a human deliberately removes it in a reviewed PR (see the block comment
+    # above for what must accompany that edit). `startsWith(github.ref, 'refs/tags/v')` alone is
+    # never sufficient - `inputs.confirm_publish == 'true'` is a mandatory conjunct, not an
+    # either/or with the trigger type, so a bare tag push cannot reach this job on its own.
+    if: false && startsWith(github.ref, 'refs/tags/v') && inputs.confirm_publish == 'true'
+    # These permissions are pre-provisioned for the steps this job will grow into once OQ-7
+    # unblocks it (version-tag push, provenance/SBOM attestation, release-notes write) - see NB-8 in
+    # the PR #13 review. The job's current placeholder steps do not use all of them, and it can
+    # never run in its current `if: false && ...` state regardless.
     permissions:
       contents: write
       packages: write
@@ -314,7 +423,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
       - name: Tag the passing manifest digest with the version (and latest, per OQ-7) — no rebuild
         run: |
           set -euo pipefail
