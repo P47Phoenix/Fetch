@@ -398,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn c2_allowlisted_hostname_resolves_to_a_private_address() {
-        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let p = Policy::with_allow_private_hosts_gated(vec!["printer.lan".to_string()], true);
         let r = FakeResolver::new().on("printer.lan", &["192.168.1.5"]);
         let v = validate_target(&r, &p, "http://printer.lan/", Origin::Initial)
             .await
@@ -408,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn c2_allowlist_does_not_relax_metadata_answers() {
-        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let p = Policy::with_allow_private_hosts_gated(vec!["printer.lan".to_string()], true);
         let r = FakeResolver::new().on("printer.lan", &["169.254.169.254"]);
         assert!(
             validate_target(&r, &p, "http://printer.lan/", Origin::Initial)
@@ -419,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn c2_allowlist_does_not_cover_a_different_hostname() {
-        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let p = Policy::with_allow_private_hosts_gated(vec!["printer.lan".to_string()], true);
         let r = FakeResolver::new().on("other.lan", &["192.168.1.5"]);
         assert!(
             validate_target(&r, &p, "http://other.lan/", Origin::Initial)
@@ -430,7 +430,7 @@ mod tests {
 
     #[tokio::test]
     async fn c2_allowlist_never_applies_to_a_redirect_hop_even_to_the_same_hostname() {
-        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let p = Policy::with_allow_private_hosts_gated(vec!["printer.lan".to_string()], true);
         let r = FakeResolver::new().on("printer.lan", &["192.168.1.5"]);
         let e = revalidate_hop(&r, &p, "http://printer.lan/")
             .await

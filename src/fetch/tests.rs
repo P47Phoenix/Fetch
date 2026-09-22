@@ -2040,7 +2040,7 @@ async fn header_charset_wins_over_conflicting_meta_charset() {
     assert!(text.contains("café"), "{text:?}");
 }
 
-// ---- B-4: robots.txt enforcement mechanism (inert unless RobotsMode::Enforce; OQ-3 still open) ------------
+// ---- B-4: robots.txt enforcement mechanism (inert unless RobotsMode::Enforce; OQ-3 resolved, default stays ignore) ----
 
 /// Serves `robots_status`/`robots_body` for `GET /robots.txt`, `200 OK`/`target_body` for anything else.
 fn robots_server(

@@ -3,7 +3,8 @@
 //! [`crate::config::RobotsMode::Enforce`], which nothing sets by default -- the default stays
 //! [`crate::config::RobotsMode::Ignore`] (`FETCH_ROBOTS_TXT=enforce` to opt in), and this module does not decide
 //! or touch that default. This mirrors C-2's private-host allowlist (`src/config.rs`, `Policy::for_build`): a
-//! fully working, fully tested mechanism, switched off until an operator opts in. OQ-3 -- whether fetches
+//! fully working, fully tested mechanism, switched off until an operator opts in. OQ-3 is RESOLVED (2026-09-22): the
+//! default stays `ignore` by design. OQ-3's original framing -- whether fetches
 //! should respect robots.txt BY DEFAULT -- is a still-open product-owner decision; this work answers only "how
 //! would enforcement work", never "should it be on".
 //!
