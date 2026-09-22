@@ -1,6 +1,6 @@
 # Sprint 13 dev report: OQ-3/OQ-4/OQ-7 resolution, E-5/E-7 rework, branch-protection/deviations sign-off
 
-Branch: `sprint-13/oq-resolution-finalization`, off `main` at `56f5a79` (the Sprint 12 merge). Date: 2026-09-22.
+Branch: `sprint-13/oq-resolution-finalization`, off `main` at `ef1e52f` (4 commits after the `56f5a79` Sprint 12 merge, all automated E-6 bench-baseline-refresh commits). Date: 2026-09-22.
 
 The project owner made seven previously-open decisions. This sprint implements all seven; see
 `.delivery/artifacts/05-plan/po/sprint-plan.md` Revision 24 for the plan-side record.

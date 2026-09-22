@@ -9,8 +9,7 @@
 //! error fetching, reading or parsing it -- missing, non-2xx, refused by SSRF, timed out, truncated at the cap,
 //! malformed, whatever. A disallowed path is refused with `error[robots_disallowed]`. The default
 //! ([`RobotsMode::Ignore`]) is unchanged: robots.txt is never fetched or enforced unless an operator opts in.
-//! OQ-3 (whether fetches should respect robots.txt BY DEFAULT) is still an open product-owner decision; this
-//! only answers "how enforcement works", not "should it be on". OQ-3 is RESOLVED (2026-09-22, owner decision,
+//! OQ-3 is RESOLVED (2026-09-22, owner decision,
 //! Sprint 13): the default stays `ignore` BY DESIGN, not by omission, because network-level ACLs elsewhere in
 //! the operator's infrastructure are the intended control point for this concern; `FETCH_ROBOTS_TXT=enforce`
 //! remains available for operators who want it, but it is not the shipped default and will not become the
