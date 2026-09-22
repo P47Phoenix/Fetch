@@ -341,3 +341,21 @@ private-host allowlist existed, which C-2 had already made false. See the dev-re
 for the full list of review findings addressed (`Kind::Private` replacing a string-matched category check,
 tightened `FETCH_ALLOW_PRIVATE_HOSTS` IP-literal validation, the empty-value startup-failure fix, corrected
 stale security comments, and new regression tests). OQ-3 and OQ-4 remain open and unchanged in substance.
+
+## Revision 21 (2026-09-22): Sprint 10 merged (0d0ff2f), Sprint 11 started
+
+Sprint 10 (PR #14, including fix-pass 1 above) merged to `main` as `0d0ff2f`. Sprint 11 started on branch
+`sprint-11/robots-charset-arm-tests`, scope per the Sprints 6-12 table row 11: **B-4, A-8, D-3 (8 pts)**.
+
+Entry criteria for Sprint 11 as written in the table ("OQ-3 decided; runner checked") were **not fully met**:
+OQ-3 (robots.txt enforce-by-default policy) is still OPEN at Sprint 11 start, exactly as it was at Sprint 10
+start for the same reason. Proceeded anyway, following the same discipline Sprint 10 used for OQ-3/OQ-4: B-4 was
+delivered as a fully implemented and tested robots.txt fetch/parse/matcher mechanism, strictly gated behind the
+existing `FETCH_ROBOTS_TXT` flag (added in Sprint 10's C-1), whose default (`ignore`) is unchanged, so today's
+behavior does not change until the owner decides OQ-3 and someone flips the default. A-8 (charset decoding via
+`Content-Type`/meta-tag sniffing, `encoding_rs`) and D-3 (aarch64 leg added to the PR-level `test` job matrix,
+per ADR-007) were delivered in full with no OQ blocking either. See `.delivery/artifacts/06-dev/sprint-11/dev-report.md`
+for full detail, deviations, and CI results.
+
+**Owner decisions still needed, carried forward unchanged in substance: OQ-3 (robots.txt default policy) and
+OQ-4 (private-host allowlist activation/governance, no new Sprint 11 action).**
