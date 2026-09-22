@@ -3,6 +3,30 @@
 Branch: `sprint-12/labelling-ci-gate-v1`, off `main` at `152e2ac` (Sprint 11 merge).
 Scope per the Sprints 6-12 table row 12 exactly: **B-6, E-6, D-6**. This is the final planned sprint.
 
+## Fix-pass 1 (after the first hosted CI run, PR #16): E-6 baseline reseed
+
+The first hosted CI run (35702663022) caught a real bug in this sprint's own initial baseline seeding, not in
+the tripwire logic itself. `bench-gate (amd64, musl)` **FAILED**: the absolute-target gate PASSED cleanly
+(gating peak 5.58 MiB against the 40 MiB target, idle 2.29 MiB against 10 MiB), but the new E-6 regression
+step failed the job, because the initial `bench/baseline.json` seed (amd64-musl peak 4567 kB) was taken from
+`docs/BENCHMARK.md` section 17's **Sprint 5** G4b figures, and this run measured 5712 kB (+25%, over the 10%
+band). That gap is not CI noise: real, disclosed memory growth landed between Sprint 5 and Sprint 11 (A-8
+charset decoding, `docs/BENCHMARK.md` section 19: "gzip-HTML with no charset header went from streaming to
+~4x-cap buffered", an explicitly accepted trade-off that stays well under the 40 MiB target but was never
+reflected in a baseline seeded from Sprint 5 data). The other three cells (amd64-gnu, arm64-gnu, arm64-musl)
+all passed both the absolute gate and the regression check against the same stale seed, so this was
+specifically an amd64-musl gap, not a general problem with the 10% threshold.
+
+**Fix:** reseeded `bench/baseline.json` from this PR's own bench-gate run (35702663022) rather than from the
+Sprint 5 doc figures. This is legitimate, not a way to dodge the check: this sprint's `src/`, `Cargo.toml` and
+`Cargo.lock` are byte-identical to `main` at `152e2ac` (no Rust source was touched — see "Files touched"
+below), so this run's own measured figures **are** current-main figures, exactly what a properly-bootstrapped
+baseline should start from. New values (kB): amd64-gnu idle 4676/peak 6126, amd64-musl idle 2348/peak 5712,
+arm64-gnu idle 4030/peak 5462, arm64-musl idle 2520/peak 4412. Pushed as a follow-up commit on this branch;
+re-running CI to confirm all four `bench-gate` legs now pass is the next step. From this point on, the
+`update-baseline` job keeps the baseline current automatically on every push to `main`, so a one-sprint-old
+seed cannot recur this way.
+
 ## Summary of what was delivered
 
 | Story | Result |
