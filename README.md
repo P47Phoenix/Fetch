@@ -89,6 +89,52 @@ One shape differs from that convention, because it is produced by the MCP librar
 
 Unknown extra arguments are accepted and ignored. `max_length` and `start_index` pick a character window of the returned text, with the footers described under "What works today": for example `{"url": "...", "max_length": 5000, "start_index": 5000}` asks for the second page. `max_length` 0 returns `error[invalid_argument]: max_length: must be at least 1`. `max_length` is measured on the text after conversion (markdown for HTML), and an early-stopped page does not know the total length.
 
+## Configuration (environment variables)
+
+All variables are optional; an unset variable uses its default. Every variable is read once at startup
+(`Config::from_env`, `src/config.rs`); an invalid value is a startup error naming the variable, printed to
+stderr, and the process exits non-zero before any MCP traffic (nothing partially starts).
+
+| Variable | Meaning | Default | Invalid value |
+|---|---|---|---|
+| `FETCH_LOG` | Log verbosity: `error`, `warn`, `info` or `debug`. | `warn` | Exits non-zero naming `FETCH_LOG`. |
+| `FETCH_TIMEOUT_MS` | Overall per-fetch deadline in milliseconds (connect through last byte). | `15000` | Exits non-zero naming `FETCH_TIMEOUT_MS`; must be a positive integer. |
+| `FETCH_MAX_BYTES` | Decompressed body byte cap; a response over this stops with `too_large`. | `5242880` (5 MiB) | Exits non-zero naming `FETCH_MAX_BYTES`; must be a positive integer. |
+| `FETCH_MAX_LENGTH_CAP` | Hard ceiling (characters) on the `max_length` tool argument; a per-call `max_length` above this is silently clamped and a footer line says so. | `100000` | Exits non-zero naming `FETCH_MAX_LENGTH_CAP`; must be a positive integer. |
+| `FETCH_MAX_CONCURRENCY` | Number of fetches that may run at once; further calls queue. | `3` | Exits non-zero naming `FETCH_MAX_CONCURRENCY`; must be a positive integer. |
+| `FETCH_ROBOTS_TXT` | **Placeholder only (see below).** Accepted values: `ignore`, `enforce`. | `ignore` | Exits non-zero naming `FETCH_ROBOTS_TXT`. |
+| `FETCH_ALLOW_PRIVATE_HOSTS` | **Inert by default (see below).** Comma-separated exact hostnames (not IP literals) for which the private-IP-range check is relaxed. | *(empty)* | Exits non-zero naming `FETCH_ALLOW_PRIVATE_HOSTS` on an IP-literal entry or an empty entry (e.g. a stray comma). |
+
+### Two variables are mechanisms, not finished product policy (OQ-3, OQ-4 still open)
+
+The product owner has **not yet decided** the default policy for either of these; both exist today only as
+validated, inert plumbing so the wiring is ready once a decision lands. Neither changes today's behavior when
+left unset.
+
+- **`FETCH_ROBOTS_TXT` (OQ-3, robots.txt default policy -- open).** The server does **not** fetch or enforce
+  `robots.txt` at all today, regardless of this variable's value. The variable is parsed and validated (so the
+  name and accepted syntax are stable), but both `ignore` and `enforce` currently behave identically: neither
+  fetches `robots.txt`. Real enforcement is out of scope for this sprint and lands with story B-4 (planned
+  Sprint 11), once OQ-3 is answered.
+- **`FETCH_ALLOW_PRIVATE_HOSTS` (OQ-4, private-host allowlist policy -- open).** This wires the
+  `ssrf::Policy` allowlist mechanism through to the running server, but ships with an **empty default**, which
+  is exactly today's fail-closed behavior for every deployment that does not set it. If set, the semantics are
+  narrow and deliberately conservative:
+  - Allowlisting applies **only to the exact hostname of the original request** -- not a substring, not a
+    subdomain, not a redirect target.
+  - A redirect hop to any other private host is **still blocked**, even if the original request's host was
+    allowlisted.
+  - **IP-literal hosts can never be allowlisted** (`http://10.0.0.1/` is refused even if `10.0.0.1` were listed
+    -- the variable only accepts hostnames, and the checker validates IP literals before any hostname is
+    known).
+  - The allowlist relaxes **only the RFC 1918 / private-use range check**. It never relaxes scheme, port, or
+    the metadata-address rules: `169.254.169.254`, `168.63.129.16` and the other cloud metadata addresses stay
+    blocked for every allowlisted hostname.
+
+  Whether this mechanism should ever be enabled in a real deployment -- and if so, under what governance -- is
+  OQ-4, and is **not yet decided**. Treat `FETCH_ALLOW_PRIVATE_HOSTS` as available-but-unendorsed plumbing
+  until the product owner rules on OQ-4.
+
 ## Conversion limits (what the HTML to markdown step does and does not do)
 
 The converter is a first version (story A-4, tier 1 of ADR-002); its quality has not been measured (see above). What to expect:
