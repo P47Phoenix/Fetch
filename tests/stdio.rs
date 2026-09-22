@@ -137,6 +137,37 @@ fn initialize_lists_exactly_one_fetch_tool_with_schema() {
     s.finish_and_assert_pure();
 }
 
+/// D-5: the tool description is at most 150 words (NFR-09) and names every parameter plus the
+/// `start_index` continuation pattern, read from the real `tools/list` response (not a copy of the literal).
+#[test]
+fn d5_tool_description_is_concise_and_names_every_parameter() {
+    let mut s = Session::start();
+    s.handshake();
+    let r = s.call("tools/list", json!({}));
+    let desc = r["result"]["tools"][0]["description"]
+        .as_str()
+        .expect("description string")
+        .to_owned();
+    let words = desc.split_whitespace().count();
+    assert!(
+        words <= 150,
+        "description is {words} words, over the 150-word cap: {desc}"
+    );
+    let lower = desc.to_lowercase();
+    for term in ["url", "max_length", "start_index", "raw"] {
+        assert!(
+            lower.contains(term),
+            "description missing parameter {term}: {desc}"
+        );
+    }
+    assert!(
+        desc.to_lowercase().contains("start_index to continue")
+            || desc.to_lowercase().contains("continue from"),
+        "description must describe the start_index continuation pattern: {desc}"
+    );
+    s.finish_and_assert_pure();
+}
+
 #[test]
 fn bad_input_is_rejected_with_the_field_named() {
     let mut s = Session::start();
