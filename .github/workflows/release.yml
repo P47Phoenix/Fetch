@@ -440,3 +440,25 @@ jobs:
         run: |
           set -eu
           echo "attestation step placeholder — wire actions/attest-build-provenance and an SBOM generator here once OQ-7 unblocks this job"
+      - name: "D-6: create the GitHub release with notes linking the benchmark report and both digests"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF#refs/tags/}"
+          digest="${{ needs.merge.outputs.digest }}"
+          notes="$(mktemp)"
+          {
+            echo "## fetch-mcp $version"
+            echo
+            echo "Memory targets (idle <= 10 MiB, peak <= 40 MiB, both hosted-native aarch64 and amd64, gnu and musl):"
+            echo "see [docs/BENCHMARK.md](https://github.com/${{ github.repository }}/blob/$version/docs/BENCHMARK.md)"
+            echo "(the D-1 shipped-build re-measure, section 18, is the figure that governs this tag)."
+            echo
+            echo "Manifest digest: \`$digest\`"
+            echo "Image: \`$IMAGE:$version\` (linux/amd64 + linux/arm64)"
+            echo
+            echo "D-6 AC (dependency audit): \`cargo audit\` and \`cargo deny check\` reported no high/critical"
+            echo "issues at this commit (see the \`audit\` and \`deny\` CI jobs); direct dependencies: see Cargo.toml."
+          } > "$notes"
+          gh release create "$version" --title "fetch-mcp $version" --notes-file "$notes" --verify-tag

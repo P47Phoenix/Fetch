@@ -359,3 +359,72 @@ for full detail, deviations, and CI results.
 
 **Owner decisions still needed, carried forward unchanged in substance: OQ-3 (robots.txt default policy) and
 OQ-4 (private-host allowlist activation/governance, no new Sprint 11 action).**
+
+## Revision 22 (2026-09-22): Sprint 11 merged (152e2ac), Sprint 12 started
+
+Sprint 11 (PR #15, B-4 3 / A-8 3 / D-3 2 = 8 pts) DONE. Code review round 1 found a real functional
+regression introduced by A-8: `decode_whole_body` and the gzip-HTML branch of `read_body` never checked
+`stop()`, silently defeating the A-5 `max_length` early-stop guarantee and the converter-failure early-abort
+guarantee on every new charset-decoding path — verified live (2 MiB body, `stop` set to fire at 100 chars,
+full 2 MiB still pulled/converted). Also found: a latent gzip `finish()`-on-truncated-stream bug that the
+stop() fix would have activated; a `charset::sniff_meta` false-positive matching `charset=` text inside any
+quoted attribute value, not just a real charset attribute; stale "robots.txt is an inert placeholder"
+language in README/config docs/SSRF.md left over from Sprint 10's C-1 phrasing (QA round 1, 1 blocking,
+flagged as a repeat of the Sprint 10 stale-docs pattern); an undisclosed memory-footprint change (gzip-HTML
+with no charset header went from streaming to ~4x-cap buffered). Fix-pass (commit `da38309`) addressed all
+13 blocking/non-blocking items in one pass: a new incremental `encoding_rs` decoder (`Pipeline::with_encoding`
+in `src/fetch/body.rs`) restores genuine streaming/early-stop on the charset paths; the gzip-HTML branch now
+returns before calling `finish()` on early stop; `charset::attr_value` was rewritten to do real
+attribute-position scanning instead of a substring `find`; README/config/SSRF.md robots.txt language rewritten
+to state the mechanism is real and gated behind `FETCH_ROBOTS_TXT=enforce`; the one remaining non-O(1) case
+(gzip-HTML, no charset header, encoding_rs can't reliably flush partial gzip output for meta-charset peeking)
+is explicitly disclosed in `docs/BENCHMARK.md` section 19 with a measured bound (~2-4x `max_bytes`, well under
+the 40 MiB peak gate). Round-2 validator independently re-verified every item (re-read the rewritten code,
+ran `cargo test --locked` itself — 236 unit + 1 integration + 11 stdio tests, all passed — and re-confirmed
+all 17 CI checks green) and returned DONE, 0 blocking. PR #15 merged to `main` as `152e2ac` (head `da38309`).
+
+D-3's CI matrix split renames the required check from `test` to `test (amd64)`/`test (arm64)` — a **new
+disclosed operational risk**: branch protection on `main` still lists the old `test` name as a required check,
+so this is a repo-owner action item, not something any agent here has permission to fix (needs a GitHub
+settings change to the branch protection rule).
+
+**Sprint 12 (B-6, E-6, D-6 = 7 pts) STARTED** on branch `sprint-12/labelling-ci-gate-v1`, matching the
+Sprints 6-12 table row 12 exactly (final sprint; v1.0 tag). Entry criterion per the table ("OQ-5 decided;
+hosted arm64 runner available") is met: OQ-5 was resolved in Sprint 2 (Revision 10 — "no label"). Runner
+availability assumed per ADR-007 precedent (used without incident in Sprints 3-11).
+
+**Owner decisions still needed at Sprint 12 start, unchanged in substance, to be surfaced again in full at
+final wrap-up: OQ-3 (robots.txt default policy), OQ-4 (private-host allowlist activation/governance), OQ-7
+(image distribution/licence, blocks D-2's `publish` job and any public GHCR image), E-5/E-7 owner URL lists
+(10-URL smoke / 50-URL snapshot set, still not supplied), the new D-3 branch-protection required-check-rename
+follow-up above, plus previously-carried items: Sprint 5 deviations acknowledgement, the panic=abort
+deviation, `coverage`/`release-ldd-guard` not yet in required checks, cargo-audit never run, A-2's
+throwaway-config check.**
+
+## Revision 23 (2026-09-22): Sprint 12 implemented (PR opened), v1.0 tag deliberately NOT cut
+
+Sprint 12 (B-6, E-6, D-6 = 7 pts): **B-6 CLOSED, re-confirmed** (no code change; OQ-5's "no label" decision from
+Sprint 2 already fully implemented and tested since Sprint 5). **E-6 implemented**: `bench.yml`'s existing
+`bench-gate` job gained a 10%-vs-last-main-baseline regression tripwire (`scripts/regression_gate.py`,
+`bench/baseline.json`, self-tested), additive to the pre-existing strict 10 MiB/40 MiB absolute gate; a new
+`update-baseline` job refreshes the baseline on push-to-main only. Two AC items are disclosed as not done: the
+job cannot be added to branch-protection required checks (no agent here has that access — same constraint as
+D-3/D-7), and `release.yml`'s `publish` job was not wired to depend on it because that job is already hard-gated
+`if: false` on OQ-7 and touching its `needs:` now would be speculative ahead of the real unblocking edit.
+**D-6 implemented (mechanism), NOT Done (by its own AC)**: new CI jobs `audit` (installs and runs `cargo-audit`
+0.22.2, closing the long-carried "cargo-audit never run" item, 0 vulnerabilities against 209 crates) and
+`dependency-count` (machine-checks NFR-05, currently 11 of <= 15); a release-notes step was added inside the
+still-blocked `publish` job linking `docs/BENCHMARK.md`. **The `v1.0` git tag was deliberately NOT created**:
+D-6's AC couples tagging to "a licence selected per OQ-7", which remains open, and the sprint plan's own risk
+table already states that publishing before OQ-7 is answered would decide licence/distribution by default;
+tag creation is reserved for the coordinator after full review of this sprint's PR, per this sprint's explicit
+instructions. Full detail, deviations and test evidence:
+`.delivery/artifacts/06-dev/sprint-12/dev-report.md`.
+
+**Owner decisions still needed at Sprint 12 close, unchanged in substance: OQ-3, OQ-4, OQ-7 (now also blocking
+the new D-6 release-notes step, in addition to D-2's `publish` job and the `v1.0` tag itself), branch protection
+on `main` (still not configured — the largest single carried item across the whole engagement, now with two
+more checks, `audit` and `dependency-count`, plus the E-6 `bench-gate` regression condition, added to the list
+of things it can eventually require), E-5/E-7 owner URL lists (still not supplied), and whether/when to remove
+the `false &&` guard on `release.yml`'s `publish` job once OQ-7 is decided (its own comment specifies what must
+accompany that edit).**

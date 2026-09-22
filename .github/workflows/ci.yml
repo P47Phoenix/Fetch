@@ -68,6 +68,8 @@ jobs:
       - run: cargo test --locked --features test-support
       - name: Bench harness self-test (proves the harness can fail)
         run: python3 bench/selftest.py
+      - name: E-6 regression-tripwire self-test (proves it PASSes/FAILs/advises correctly)
+        run: python3 scripts/regression_gate_selftest.py
 
   # D-1: the release binary links no OpenSSL/native-tls, only libc/libgcc_s/libm (rustls, ADR-001).
   # Scoped to the default (gnu, dynamically linked) target: `ldd` cannot inspect a statically linked (musl)
@@ -137,6 +139,33 @@ jobs:
         with:
           command: check
           arguments: --locked
+
+  # D-6 AC: "cargo audit ... reports [no] high or critical issues" (open owner item since Sprint 5/8/11 notes:
+  # "cargo-audit never run"). deny.toml's [advisories] section already runs RustSec's own advisory-db lookup
+  # through cargo-deny, but D-6 names cargo-audit specifically, so this job runs it directly rather than only by
+  # proxy through `deny`. Installed by version pin (RustSec ships no first-party GitHub Action we can SHA-pin the
+  # way every other step here is pinned), same pattern as cargo-zigbuild/cargo-llvm-cov elsewhere in this repo.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - run: cargo install --locked cargo-audit --version 0.22.2
+      - name: "D-6: cargo audit, no high/critical issues (RUSTSEC-... ignores, if ever needed, live in deny.toml)"
+        run: cargo audit --deny warnings
+
+  # D-6 AC: "direct dependencies are at most 15" (NFR-05). Machine-checks the [dependencies] table in Cargo.toml
+  # (not [dev-dependencies], not the transitive graph) against the ledger comment already kept there by hand.
+  dependency-count:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Count [dependencies] entries in Cargo.toml (NFR-05 <= 15, D-6)
+        run: python3 scripts/dependency_count_gate.py Cargo.toml --max 15
 
   release-guard:
     runs-on: ubuntu-latest

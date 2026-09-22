@@ -8,14 +8,26 @@ A third workflow, `.github/workflows/bench.yml` (E-2, E-3, E-4), runs job `bench
 
 A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native arm64 measurements on `ubuntu-24.04-arm`: job `bench` measures the A-1 spike (idle figure only since Sprint 5: the spike has no pagination, so its peak is no longer measured), job `bench-product` (A-3a) builds and measures the real `fetch-mcp` release binary (idle RSS and `ready_ms`, recorded, not gated). Job `bench-product-peak` (A-3b) runs one 5 MiB fetch on the bench-loopback build and records VmHWM (BENCHMARK section 14). All three are advisory: do NOT add any of them to the required checks.
 
+### E-6 memory-regression tripwire (Sprint 12)
+
+`bench-gate`'s existing steps enforce the strict *absolute* targets only (idle <= 10 MiB, peak <= 40 MiB): a run that is, say, 9.9 MiB idle passes even if it was 4 MiB last month. E-6 adds a second, independent condition to the same job (no new job name, so the required-check set above is unaffected once the owner adds it): `scripts/regression_gate.py` compares this run's idle median and gating-peak median against `bench/baseline.json` (the last value recorded from a passing push to `main`) and fails the job if either regressed by more than 10%, *even if the absolute target is still met*. This matches the sprint-plan E-6 AC ("regresses more than 10% against the stored last-main baseline... the job fails") without touching the 10 MiB/40 MiB absolute numbers, which the tripwire can never raise or lower.
+
+- **Baseline storage:** `bench/baseline.json`, one entry per `{arch}-{libc}` cell, committed to the repo (not a GitHub Actions cache, so it survives cache eviction and is visible in `git log`/PR diffs).
+- **Baseline refresh:** a new job, `update-baseline` (same workflow file), runs after `bench-gate` on every same-repo push to `main` (never on a PR — a PR cannot move its own goalposts), and commits the just-measured medians back to `bench/baseline.json` with `[skip ci]` in the message so the commit does not re-trigger the workflow. It elevates to `permissions: contents: write` for that job only; every other job in every workflow here stays `contents: read` (least privilege, matching architecture 9.2's rule for the rest of CI).
+- **First run for a platform:** if `bench/baseline.json` has no entry yet for a cell, the check is advisory (prints the current values, exits 0) rather than failing closed on a placeholder number; the next push to `main` seeds it.
+- **Self-tested:** `scripts/regression_gate_selftest.py` (run by the `test` job in `ci.yml`) proves PASS-within-threshold, FAIL-beyond-threshold (both idle and peak, independently), the missing-baseline advisory path, and that `--update` writes and is then honoured.
+- **Not yet a required check**, same as the rest of `bench-gate` (see the caveat above about fork PRs and skipped jobs reading as green) — an owner decision, unchanged by this addition.
+
 ## Read this first: what has and has not been checked
 
 | Item | Status |
 |---|---|
-| Rule on `main` (required checks) | NOT YET CONFIGURED. The first CI run has now happened, so the owner can set it. |
-| The workflow on hosted GitHub Actions | Has run on several pull requests (first #2, most recently #9), and all six required checks (`fmt`, `clippy`, `test`, `deny`, `release-guard`, `a3b-merge-gate`) have passed each time. That is still not a trend claim, and branch protection is not configured yet (see below). |
-| `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed.  It is still not installed on the dev host. |
-| `cargo-audit` | Never run anywhere. Not installed on the dev host. |
+| Rule on `main` (required checks) | NOT YET CONFIGURED. The first CI run has now happened, so the owner can set it. **Also STALE since Sprint 11 (D-3, unfixed):** D-3's matrix split renamed the `test` job to `test (amd64)` / `test (arm64)`; if a rule naming plain `test` were ever configured from an old snapshot of this doc it would reference a check name that no longer exists. Use the current job ids below, not the historical six-name list. |
+| The workflow on hosted GitHub Actions | Has run on many pull requests (first #2, most recently #15), and every required-check job (`fmt`, `clippy`, `test (amd64)`, `test (arm64)`, `deny`, `release-guard`, `a3b-merge-gate`) has passed each time. That is still not a trend claim, and branch protection is not configured yet (see below). |
+| `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. It is still not installed on the dev host. |
+| `cargo-audit` (the `audit` job, Sprint 12/D-6) | Added this sprint; installs `cargo-audit` 0.22.2 by version pin and runs it against `Cargo.lock`. Ran clean locally (0 vulnerabilities, 209 crates scanned) before this PR opened; hosted-CI evidence is in the Sprint 12 dev report. Not yet in the required-check set (owner action, same as everything else in this table). |
+| `dependency-count` (Sprint 12, D-6) | Added this sprint; machine-checks NFR-05 (<= 15 direct deps) against `Cargo.toml`'s `[dependencies]` table. Currently 11. |
+| `bench-gate` memory-regression tripwire (E-6, Sprint 12) | Added this sprint inside the existing `bench-gate` job/matrix (no new required-check names): a 10%-vs-last-main-baseline check (`scripts/regression_gate.py`) runs alongside the existing absolute 10 MiB/40 MiB gate and fails the job on either kind of miss. A same-repo push to `main` refreshes the stored baseline (`bench/baseline.json`) via a new `update-baseline` job. See "E-6 memory-regression tripwire" below. |
 | Everything else | Checked only by running its commands locally, plus `actionlint` (a tool that checks workflow files for mistakes). |
 
 Do not read "required checks" as "working checks". They have passed on hosted runners in a handful of runs, which shows they can work there, not that they are stable.
@@ -31,24 +43,28 @@ A "required status check" is a CI job that must pass before a change can be merg
 | `test` | `cargo test --locked` (includes the SSRF range-table, `check_url`, resolver-filter and per-hop unit tests), then with `--features bench-loopback`, then with `--features test-support`, then `python3 bench/selftest.py` | The tests pass in three feature setups, and the benchmark self-test passes. |
 | `deny` | `cargo deny --locked check` (`deny.toml`) | Dependencies have no known security problems and follow our rules. |
 | `release-guard` | `scripts/check-release-features.sh` and `--self-test` | The release build (a) enables no feature outside the allowlist (`cargo tree -e features`), (b) has no `FETCH_MCP_MARKER_` string in the built binary, which covers both `test-support` and `bench-loopback` (the markers are compiled in only with those features), (the Sprint 1 no-HTTP-client and no-tokio-`net` checks were removed by A-3b, 2026-09-20, when the client landed; the SSRF gate for the client is the `a3b-merge-gate` job below). The self-test builds each forbidden feature and shows the guard fails, and shows the HTTP-client and tokio-net checks fail on fake input and can see the real tree. |
+| `audit` (Sprint 12, D-6) | `cargo install --locked cargo-audit --version 0.22.2`, then `cargo audit --deny warnings` | RustSec's advisory database has no unresolved report against any dependency (D-6 AC: "neither reports high or critical issues"; `cargo-audit` itself was never installed/run anywhere before this — a long-carried open item, closed here). `deny.toml`'s `[advisories]` section already runs the same advisory-db through `cargo-deny check` (job `deny`), so this job is belt-and-braces against the exact tool D-6 names, not a new signal source. |
+| `dependency-count` (Sprint 12, D-6) | `python3 scripts/dependency_count_gate.py Cargo.toml --max 15` | Machine-checks NFR-05 (direct dependencies <= 15) against the `[dependencies]` table, instead of relying only on the hand-kept running-count comment above that table. Currently 11. |
 
 "Locked" (`--locked`) means the build must use exactly the versions in `Cargo.lock`. A "feature" is an optional switch compiled into the program.
 
 ## Owner quickstart: turn on the rule
 
-Do this now that CI has run (first on pull request #2). The check names only appear in GitHub once they have run.
+**This is the single biggest carried-forward action item in this repository.** It has been open, unfixed, and reflagged by every sprint's agent since Sprint 0 (D-7) because no agent working here has permission to change GitHub repository settings — only the owner can do this. Do it now; the check names below only appear in GitHub's rule picker once each job has run at least once.
 
 1. Open the repository on GitHub. Go to Settings, then Branches.
 2. Add a rule for `main`.
 3. Tick "Require status checks to pass before merging".
-4. Add these six checks: `fmt`, `clippy`, `test`, `deny`, `release-guard`, `a3b-merge-gate`.
+4. Add these checks (current job ids, `ci.yml`, as of Sprint 12; **note the `test` rename below**): `fmt`, `clippy`, `test (amd64)`, `test (arm64)`, `deny`, `release-guard`, `a3b-merge-gate`. Optionally also add `audit` and `dependency-count` (new in Sprint 12, D-6) and `coverage` / `release-ldd-guard` (added Sprint 8, D-1/B-5, still never made required — a separately carried owner item).
 5. Tick "Require branches to be up to date".
 6. Tick "Require a pull request before merging".
-7. Write it down in the sprint PR, using this template: "Configured DD-MM-YYYY: checks fmt, clippy, test, deny, release-guard, a3b-merge-gate; up-to-date and PR required".
+7. Write it down in the sprint PR, using this template: "Configured DD-MM-YYYY: checks <list>; up-to-date and PR required".
 
-Success: a pull request shows the six checks, and the merge button stays locked until they pass.
+Success: a pull request shows the checks, and the merge button stays locked until they pass.
 
-Later stories add more required checks (D-3, E-6, D-2). Add them to the rule when they land.
+**D-3 rename, still live (Sprint 11, unfixed):** the `test` job was split into a two-leg matrix, `test (amd64)` and `test (arm64)`, so a check named plain `test` no longer exists. If branch protection is ever configured from an old note (or from memory) naming `test`, it will silently require nothing (GitHub drops an unrecognised name from the rule rather than blocking on it) — configure the two matrix names explicitly.
+
+Later stories add more required checks (D-2's future platform-gate jobs; `bench-gate` once the owner accepts the fork-PR skip caveat below). Add them to the rule when they land.
 
 ### Planned end state: two platform gate jobs (NOT YET EXISTING)
 
@@ -112,9 +128,9 @@ Options:
 ## Dependencies and advisories
 
 - `deny` runs `cargo deny check`, including RustSec advisories (`deny.toml` `[advisories]`, yanked = deny). RustSec is a public list of known security problems in Rust packages.
-- A scheduled advisory audit (nightly, on the default branch) is D-3. It does not exist yet.
+- A scheduled (nightly, on the default branch) advisory audit is not implemented; both `deny` and `audit` currently run only on PR and push events, matching every other CI job in this repo. Adding a `schedule:` trigger (as `bench.yml` already has) is a small follow-up, not done here since D-6's AC only asks that the tools run and report clean, not that they run nightly.
 - `.github/dependabot.yml` opens weekly update PRs for Cargo and GitHub Actions. Action pins stay full-SHA. Dependabot updates the SHA and the comment.
-- `cargo audit` is not installed here. `cargo deny check advisories` covers the same database.
+- `cargo audit` **is now installed and run** (job `audit`, Sprint 12/D-6, `ci.yml`) in addition to `cargo deny check advisories`, which covers the same RustSec database by a different tool; ran clean locally before this PR (0 vulnerabilities against 209 scanned crates) and D-6's dev-report entry has the hosted-CI evidence.
 
 ## Licence (OQ-7 still open)
 
@@ -125,6 +141,8 @@ What changed with A-4 (facts, from the Sprint 4 architect review; `deny.toml` `[
 - `deny.toml` is **not** independent of OQ-7 any more. Adding the HTML tokenizer `lol_html` (BSD-3-Clause) brought in four crates licensed **MPL-2.0**, allowed by four per-crate exceptions in `deny.toml`: `cssparser` 0.36.0, `cssparser-macros` 0.6.1 (a proc-macro, compile time only, not linked into the binary), `dtoa-short` 0.3.5 and `selectors` 0.37.0. Nothing else in `Cargo.lock` is MPL-2.0 (`cargo deny check` passes with exactly these four), so the exception list is minimal for the current tree. The exceptions name crates without versions, so a future major of one of them would be accepted silently.
 - MPL-2.0 is file-level weak copyleft. (a) Using the crates unmodified from crates.io does not extend MPL-2.0 to this project's own files; an Apache-2.0 licence, or whatever OQ-7 chooses, stays possible (MPL-2.0 section 3.3, "Larger Work"). (b) Modifying any of their files, for example by patching or vendoring a fork, obliges publishing those modifications under MPL-2.0. (c) Distributing the executable form (the statically linked binary, and therefore the GHCR image) requires telling recipients how to obtain the source of the covered crates (section 3.2: exact crate names and versions, for example a pointer to crates.io plus `Cargo.lock`) and preserving their copyright and licence notices (section 3.4). There is no obligation to release this project's source because of them. (d) The MPL-2.0 patent grant and termination terms apply to the contributors of those files.
 - Practical consequence: the container image (D-2) and the dependency audit (D-6) need a third-party notices file with the licence texts (the same file also has to cover `webpki-roots`, CDLA-Permissive-2.0, and the BSD-3-Clause part of `encoding_rs`).
+
+**D-6 (Sprint 12) status: audit and dependency-count mechanisms delivered; the actual `v1.0` tag is deliberately NOT pushed here.** D-6's AC couples the tag to "a licence selected per OQ-7" — OQ-7 (image distribution/licence) is still open (see above and the Sprint 12 dev report), so tagging now would decide it by default, exactly the risk the sprint plan calls out explicitly ("Publishing a public image (GHCR) is a distribution act... Publishing before OQ-7 is answered would decide licence/distribution by default"). What this sprint *does* deliver toward D-6, all mechanism with no decision baked in: the `audit` and `dependency-count` CI jobs above (both green locally and both wired for hosted CI), confirmation that direct dependencies are 11 of the <= 15 limit, and this section's disclosure of the LICENSE file that has existed since the initial commit (Apache-2.0) without that file constituting an OQ-7 answer by itself — a repo-level source licence and an OQ-7 image-distribution/publication decision are two different questions, and this sprint does not conflate them. The `release.yml` `publish` job remains hard-gated `if: false` from Sprint 9 (D-2), unchanged. **Creating the `v1.0` git tag against `main` is the coordinator's decision after full review, not an action taken by this sprint's agent** (per this sprint's explicit instructions).
 - Ways to avoid MPL-2.0 entirely, if the owner wants that: ADR-002 option C (the permissively licensed `html5gum` tokenizer with more own code, not measured, kept as the fallback behind the `Converter` trait), a hand-written tokenizer, or `lol_html` 3.x if its dependency tree drops the selector crates (not checked).
 
 The owner decides OQ-7 (licence and distribution); until then the README and this section only state the facts above.
