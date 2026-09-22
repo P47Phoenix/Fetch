@@ -538,3 +538,47 @@ coordinator action per every sprint's standing instruction.
 remaining action before v1.0 is the coordinator's own tag-creation step after reviewing and merging this
 sprint's PR, and the owner generating real fixture files per `docs/TEST-FIXTURES.md` to actually close
 A-4/E-5/E-7 (not required for v1.0 tagging, which was never coupled to those stories' completion).
+
+## Revision 25 (2026-09-22): Sprint 13 merged (7d65479) — all 12 sprints code-complete AND all 7 owner decisions implemented
+
+**PR #17 (`sprint-13/oq-resolution-finalization`, actual merge-base `ef1e52f`, four automated E-6
+baseline-refresh commits past the `56f5a79` Sprint 12 merge cited in Revision 24) is merged to `main`.**
+
+Review found 3 blocking issues on round 1 (QA reviewer), all self-contradicting stale doc language left over
+from Revision 24's edits — the dev agent had inserted new "RESOLVED" sentences adjacent to, rather than in
+place of, the pre-existing "still open"/"still an open product-owner decision" sentences:
+1. `src/config.rs` module doc comment — stale OQ-3 "still an open product-owner decision" sentence, deleted.
+2. `src/robots.rs` module doc comment — stale "OQ-3's original framing ... never 'should it be on'" sentence,
+   deleted.
+3. `README.md` D-6 status bullet — contradicted the nearby OQ-7-resolved bullet by still claiming OQ-7 "is
+   still open"; rewritten to correctly state OQ-7 RESOLVED while still correctly noting the `v1.0` tag has not
+   been pushed (a separate, still-true fact). Its anchor link, pointing to a heading name that no longer
+   existed after `docs/ci-branch-protection.md`'s OQ-7 heading was renamed, was also fixed
+   (`#licence-oq-7-still-open` -> `#licence-oq-7-resolved`).
+
+Fix-pass 1 (commit `2f3fc7e`) corrected all three, plus one non-blocking factual detail (the branch's cited
+base commit in `dev-report.md`, corrected from `56f5a79` to the actual merge-base `ef1e52f`). Two other stale
+"OPEN" references in `docs/EPICS.md` (narrative/historical text, not present-tense status claims) were
+deliberately left untouched as a non-blocking scope-discipline judgment call.
+
+All 18 required CI checks passed on the fix-pass head (`2f3fc7e5ab7ea864b99e06eb9fcbf9ac25d21550`), including
+`coverage` and `release-ldd-guard`. An independent round-2 validator re-verified, on this exact head: all three
+stale-sentence fixes read coherently in context with no dangling references; the anchor link resolves
+correctly; the PR's full diff against the `ef1e52f` merge-base stayed within expected scope (OQ-7 licensing,
+OQ-3/OQ-4 master-switch, branch-protection/deviations docs, E-5/E-7 local-fixture rework, plus the fix-pass's
+own corrections — nothing unexpected); and the security-critical `master_switch_regression_matrix` test suite
+passed (`cargo test --lib policy`, 12/12), with `check_ip` confirmed to never consult the allowlist and
+`check_ip_for_host` confirmed to require both the master switch AND an exact hostname match before relaxing
+anything. Verdict: DONE, 0 blocking.
+
+Merged via `gh pr merge 17 --merge --match-head-commit 2f3fc7e5ab7ea864b99e06eb9fcbf9ac25d21550` (after
+`gh pr ready 17`, since the PR had been opened as a draft), merge commit `7d65479` on `main`.
+
+**All 12 sprints are now both code-complete and, per Revision 24, all seven previously-open owner decisions
+(OQ-3, OQ-4, OQ-7, E-5/E-7 mechanism, branch protection, Sprint 5 deviations/panic=abort, coverage/
+release-ldd-guard) are decided AND implemented in code on `main`.** The only remaining items are: (a) the
+owner supplying real fixture files per `docs/TEST-FIXTURES.md` to close A-4/E-5/E-7 (not required for `v1.0`),
+and (b) the coordinator's own `v1.0` tag-push decision, still explicitly reserved pending the owner's separate
+final go-ahead, since it could interact with the now-unblocked `release.yml` `publish` job (a
+public-distribution-adjacent action, gated only by the still-intact `confirm_publish` manual-dispatch
+requirement).
