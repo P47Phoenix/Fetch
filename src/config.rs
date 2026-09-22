@@ -103,10 +103,16 @@ impl Config {
     }
 }
 
-/// Comma-separated hostnames for `FETCH_ALLOW_PRIVATE_HOSTS`: trimmed, lower-cased via
-/// [`crate::ssrf::canonical_name`], no empty entries, no IP literals (an IP literal cannot be allowlisted --
-/// `ssrf::Policy` judges IP-literal hosts before any hostname is known).
+/// Comma-separated hostnames for `FETCH_ALLOW_PRIVATE_HOSTS`: trimmed, validated and canonicalized via
+/// [`crate::ssrf::validate_allowlist_hostname`] (rejects exactly what `ssrf::parse_host` would fold to an IP
+/// literal, or refuse outright -- ports, slashes, brackets, decimal/octal/hex IPv4 spellings, ...), no empty
+/// entries. An all-whitespace (or empty) value is treated as an empty list, so `FETCH_ALLOW_PRIVATE_HOSTS=`
+/// does not hard-fail startup; a stray comma between real entries (e.g. `"a.example,,b.example"`) is still
+/// rejected, since that comma separates two real entries rather than being incidental whitespace.
 fn parse_allow_private_hosts(v: &str) -> Result<Vec<String>, String> {
+    if v.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     for raw in v.split(',') {
         let t = raw.trim();
@@ -115,12 +121,12 @@ fn parse_allow_private_hosts(v: &str) -> Result<Vec<String>, String> {
                 "FETCH_ALLOW_PRIVATE_HOSTS: empty hostname in {v:?}"
             ));
         }
-        if t.parse::<std::net::IpAddr>().is_ok() || t.starts_with('[') {
-            return Err(format!(
-                "FETCH_ALLOW_PRIVATE_HOSTS: {t:?} is an IP literal, which cannot be allowlisted"
-            ));
+        match crate::ssrf::validate_allowlist_hostname(t) {
+            Ok(name) => out.push(name),
+            Err(reason) => {
+                return Err(format!("FETCH_ALLOW_PRIVATE_HOSTS: {t:?} {reason}"));
+            }
         }
-        out.push(crate::ssrf::canonical_name(t));
     }
     Ok(out)
 }
@@ -203,6 +209,29 @@ mod tests {
     fn allow_private_hosts_default_is_empty() {
         let c = Config::from_lookup(with(&[])).unwrap();
         assert!(c.allow_private_hosts.is_empty());
+    }
+
+    #[test]
+    fn allow_private_hosts_empty_or_whitespace_value_is_an_empty_list() {
+        for v in ["", "   ", "\t"] {
+            let c = Config::from_lookup(with(&[("FETCH_ALLOW_PRIVATE_HOSTS", v)])).unwrap();
+            assert!(c.allow_private_hosts.is_empty(), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn allow_private_hosts_rejects_ip_literal_spellings_beyond_plain_dotted_form() {
+        for v in [
+            "0xa000001",  // hex whole-address form of 10.0.0.1
+            "10.1",       // short IPv4 form
+            "0177.0.0.1", // octal form of 127.0.0.1
+            "2130706433", // decimal form of 127.0.0.1
+            "host:8080",  // a port is not a hostname
+            "host/path",  // a slash is not a hostname
+        ] {
+            let e = Config::from_lookup(with(&[("FETCH_ALLOW_PRIVATE_HOSTS", v)])).unwrap_err();
+            assert!(e.starts_with("FETCH_ALLOW_PRIVATE_HOSTS"), "{v}: {e}");
+        }
     }
 
     #[test]

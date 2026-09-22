@@ -154,7 +154,23 @@ pub fn canonical_name(host: &str) -> String {
     strip_root_dot(host).to_ascii_lowercase()
 }
 
-fn parse_host(host: &str) -> Result<Host, &'static str> {
+/// Validate one entry of `FETCH_ALLOW_PRIVATE_HOSTS` (config.rs): `Ok` with the canonical hostname exactly when
+/// `t` parses as a hostname that would become [`Host::Name`] under [`parse_host`] -- i.e. exactly the strings
+/// this module's own host parser would accept as a name rather than fold to an IP literal. This rejects every
+/// spelling `parse_host` folds to [`Host::Ip`] (decimal/octal/hex/short IPv4 forms, bracketed IPv6, a bare `::1`
+/// literal), and anything `parse_host` refuses outright (a port, a slash, whitespace, or other characters
+/// `parse_host` does not allow in a host).
+///
+/// # Errors
+/// A message describing why `t` is not a plain hostname.
+pub(crate) fn validate_allowlist_hostname(t: &str) -> Result<String, &'static str> {
+    match parse_host(t)? {
+        Host::Name(n) => Ok(n),
+        Host::Ip(_) => Err("is an IP literal, which cannot be allowlisted"),
+    }
+}
+
+pub(crate) fn parse_host(host: &str) -> Result<Host, &'static str> {
     if let Some(inner) = host.strip_prefix('[') {
         let inner = inner.strip_suffix(']').ok_or("unterminated IPv6 bracket")?;
         if inner.contains('%') {
@@ -557,5 +573,17 @@ mod tests {
         ] {
             assert!(init(u).is_ok(), "{u} must pass");
         }
+    }
+
+    /// C-2: an IP-literal URL is refused even when that exact literal string appears in the allowlist --
+    /// `FETCH_ALLOW_PRIVATE_HOSTS` only accepts hostnames (`config::parse_allow_private_hosts` /
+    /// `validate_allowlist_hostname` reject IP literals before this point), but this asserts the end-to-end
+    /// guarantee holds even if an IP-literal string ever ended up in the list: `check_url` judges an IP-literal
+    /// host with `Policy::check_ip`, never `check_ip_for_host`, so no hostname allowlist can apply to it.
+    #[test]
+    fn ip_literal_url_is_refused_even_if_the_literal_string_is_allowlisted() {
+        let p = Policy::with_allow_private_hosts(vec!["10.0.0.1".to_string()]);
+        let err = check_url("http://10.0.0.1/", &p, Origin::Initial).unwrap_err();
+        assert!(matches!(err, FetchError::BlockedTarget(_)), "{err:?}");
     }
 }

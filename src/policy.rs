@@ -6,11 +6,6 @@
 use crate::ssrf::ranges::{self, Blocked, Kind};
 use std::net::IpAddr;
 
-/// Category word used by [`ranges::classify`] for RFC 1918 / private-use ranges. The only category an
-/// allowlisted hostname can relax (C-2); every other category (metadata, link-local, CGNAT, multicast,
-/// reserved, ...) stays blocked for every policy, allowlisted or not.
-const PRIVATE_RANGE_CATEGORY: &str = "private";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
     allow_loopback: bool,
@@ -55,9 +50,11 @@ impl Policy {
         &self.allow_private_hosts
     }
 
-    /// `Err` with the block classification when `ip` may not be dialled. Loopback is the only relaxable class
-    /// (and only when [`Policy::allows_loopback`]); private, link-local, CGNAT, ULA, multicast, reserved and the
-    /// cloud metadata addresses are blocked for every policy. Addresses embedding an IPv4 address are judged by it.
+    /// `Err` with the block classification when `ip` may not be dialled. Loopback is relaxable only when
+    /// [`Policy::allows_loopback`]; the IPv4 "private" (RFC 1918) category is relaxable only through
+    /// [`Policy::check_ip_for_host`], for an exact allowlisted hostname -- this method alone never relaxes it.
+    /// link-local, CGNAT, IPv6 unique-local (ULA), multicast, reserved and the cloud metadata addresses are
+    /// blocked for every policy. Addresses embedding an IPv4 address are judged by it.
     ///
     /// # Errors
     /// The [`Blocked`] classification (category word only, never the address).
@@ -81,7 +78,7 @@ impl Policy {
     pub fn check_ip_for_host(&self, ip: IpAddr, hostname: &str) -> Result<(), Blocked> {
         match self.check_ip(ip) {
             Ok(()) => Ok(()),
-            Err(b) if b.category == PRIVATE_RANGE_CATEGORY => {
+            Err(b) if b.kind == Kind::Private => {
                 if self.allow_private_hosts.iter().any(|h| h == hostname) {
                     Ok(())
                 } else {
@@ -211,6 +208,27 @@ mod tests {
     #[test]
     fn test_constructor_permits_loopback() {
         assert!(Policy::permit_loopback_for_tests().allows_loopback());
+    }
+
+    #[cfg(not(feature = "bench-loopback"))]
+    #[test]
+    fn for_build_preserves_the_allowlist_without_bench_feature() {
+        let p = Policy::for_build(vec!["printer.lan".to_string()]);
+        assert_eq!(p.allow_private_hosts(), &["printer.lan".to_string()]);
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "printer.lan")
+            .is_ok());
+    }
+
+    #[cfg(feature = "bench-loopback")]
+    #[test]
+    fn for_build_preserves_the_allowlist_with_bench_feature() {
+        let p = Policy::for_build(vec!["printer.lan".to_string()]);
+        assert_eq!(p.allow_private_hosts(), &["printer.lan".to_string()]);
+        assert!(p.allows_loopback());
+        assert!(p
+            .check_ip_for_host("192.168.1.5".parse().unwrap(), "printer.lan")
+            .is_ok());
     }
 
     // --- C-2: allowlist mechanism (OQ-4 still open; empty by default) ---

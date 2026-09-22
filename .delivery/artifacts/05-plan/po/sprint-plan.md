@@ -327,3 +327,17 @@ Sprint 9 CLOSED: PR #13 merged to `main` as `c902b3e` (merge of `sprint-9/multi-
 - D-4 install/config docs (README "Configuration" section) list every `FETCH_*` variable, its default and its validation-error behavior, and explicitly flag OQ-3 and OQ-4 as still-open product decisions with the mechanism described as "available but unendorsed" pending those decisions.
 
 Full implementation, test evidence and CI status: `.delivery/artifacts/06-dev/sprint-10/dev-report.md`. **Owner decisions still needed, carried forward unchanged in substance: OQ-3 (robots.txt default policy) and OQ-4 (whether/how to use the private-host allowlist mechanism now shipped inert).**
+
+## Revision 20 (2026-09-22): Sprint 10 PR #14 fix-pass 1 (after two review rounds)
+
+D-4 was closed out fully: the original PR only added the config-variable table (a partial reading of the AC).
+This fix-pass adds the remaining D-4 AC content to README.md -- a "Registering in Claude Code" section with a
+`docker run` snippet worded as not-yet-generally-available (consistent with the pre-M3 banner and OQ-7 still
+being open), a "Limitations" section (no JS rendering, prompt-injection/untrusted-content note), and an
+"Other operational notes" section (config-error-before-handshake, fixed no-proxy client, NAT64/6to4 gateway
+behavior, musl `.local`/split-DNS resolution gap). No AC bullet needed to be deferred or disclosed as a gap;
+all were writable from already-decided facts. `docs/SSRF.md` was also corrected: it previously said no
+private-host allowlist existed, which C-2 had already made false. See the dev-report's "Fix-pass 1" section
+for the full list of review findings addressed (`Kind::Private` replacing a string-matched category check,
+tightened `FETCH_ALLOW_PRIVATE_HOSTS` IP-literal validation, the empty-value startup-failure fix, corrected
+stale security comments, and new regression tests). OQ-3 and OQ-4 remain open and unchanged in substance.

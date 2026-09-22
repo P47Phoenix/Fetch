@@ -127,6 +127,56 @@ description / handback for `gh pr checks` output.
   needs to confirm these semantics as implemented, or reject the mechanism entirely (e.g. remove
   `FETCH_ALLOW_PRIVATE_HOSTS` and the `Policy` allowlist field) before any real deployment sets it.
 
+## Fix-pass 1 (PR #14 review round 2)
+
+Two fresh reviews found the initial PR incomplete/inaccurate. Addressed:
+
+- **D-4 scope completed.** The original PR only added the config-variable table. This pass adds the missing
+  D-4 AC content to README.md: a "Registering in Claude Code" section with the `docker run` snippet (worded as
+  not-yet-generally-available, consistent with the "Do not register before M3" banner and the still-open OQ-7
+  image-distribution question -- the snippet is illustrative, not an endorsement to register today), a
+  "Limitations" bullet list (no JS rendering; prompt-injection / untrusted-content note), and an "Other
+  operational notes" section documenting config-error-before-handshake behavior, the fixed no-proxy client,
+  NAT64/6to4 gateway behavior, and the musl static build's `.local`/split-DNS resolution gap. No AC bullet was
+  skipped or fabricated; all were writable from already-decided facts (the pre-M3 banner, ADR-007, OQ-5's "no
+  label" decision, and the existing SSRF/NAT64 documentation).
+- **docs/SSRF.md corrected.** The "Deliberately not blocked" section and the "How the rule works" bullet both
+  said a private-host allowlist "is not decided and does not exist" / "only loopback can be relaxed". Both are
+  now inaccurate since C-2: the mechanism exists, is wired end-to-end, and is inert only by an empty default.
+  Corrected to match README's framing (mechanism exists, empty/inert by default, OQ-4 still undecided).
+- **`Kind::Private` added** to `ssrf/ranges.rs` (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), replacing the
+  string-matched `PRIVATE_RANGE_CATEGORY` check in `policy.rs::check_ip_for_host` with a match on `Kind`, so a
+  future range added with the "private" category string but the wrong `Kind` cannot silently become
+  allowlist-relaxable (or vice versa) with no test catching it.
+- **`parse_allow_private_hosts` tightened** (`config.rs`): now delegates to a new `ssrf::validate_allowlist_hostname`,
+  which rejects exactly what `ssrf::parse_host` would fold to `Host::Ip` (decimal/octal/hex/short IPv4 forms,
+  bracketed IPv6) or refuse outright (ports, slashes, whitespace, disallowed characters) -- rather than the
+  previous `t.parse::<IpAddr>().is_ok() || t.starts_with('[')` check, which missed those forms.
+- **`FETCH_ALLOW_PRIVATE_HOSTS=` (declared, empty) no longer hard-fails startup.** An all-whitespace value is
+  now treated as an empty list; a stray comma between real entries is still rejected.
+- **Stale security comments corrected** in `ranges.rs` (`Kind` doc comment) and `policy.rs` (`check_ip` doc
+  comment) to state that the "private" category is relaxable via `check_ip_for_host`'s allowlist, not "only
+  loopback can be relaxed" / "blocked for every policy".
+- **IPv6 unique-local scope documented, not code-changed.** `fc00::/7` stays a separate, non-relaxable category
+  from IPv4 "private" (lower risk than extending relaxability to it, per the review's own preference). README
+  now states the allowlist is IPv4-private-only under `FETCH_ALLOW_PRIVATE_HOSTS`.
+- **`FETCH_LOG` vs `FETCH_ROBOTS_TXT` case-sensitivity documented** in the README config table (`Level::parse`
+  is exact-case; `RobotsMode::parse` lower-cases first) rather than changed, since aligning them was judged a
+  larger, non-obviously-in-scope behavior change for this fix pass; flagging for a future story if the owner
+  wants them aligned.
+- **`FETCH_MAX_LENGTH_CAP` row reworded** to say the clamp footer appears only when the caller explicitly
+  requested more than the cap, not on every clamp.
+- **New regression tests:** `policy.rs` (`for_build` preserves the allowlist in both default and
+  `bench-loopback` builds, using the existing `allow_private_hosts()` accessor as the test caller so it is no
+  longer dead code), `ssrf/mod.rs` (`http://10.0.0.1/` is refused even when `"10.0.0.1"` is in the allowlist),
+  `config.rs` (whitespace-only value is an empty list; tightened IP-literal/port/slash rejections).
+
+All local quality gates re-run clean after this pass: `cargo fmt --check`, `cargo clippy --locked --all-targets
+-- -D warnings` (default and `--features bench-loopback`), `cargo test --locked` (default and
+`--features bench-loopback`, 193+17 passed respectively), `cargo deny check` (advisories/bans/licenses/sources
+ok), `scripts/check-release-features.sh` (guard OK), and `cargo llvm-cov --summary-only` (97.03% combined line
+coverage, well above the 90% gate).
+
 ## Files changed
 
 - `src/config.rs` -- `RobotsMode`, `FETCH_ROBOTS_TXT` and `FETCH_ALLOW_PRIVATE_HOSTS` parsing/validation, tests.
