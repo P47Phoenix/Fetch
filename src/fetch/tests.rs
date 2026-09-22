@@ -121,8 +121,8 @@ fn public_resolver() -> Arc<FakeResolver> {
     Arc::new(FakeResolver::new().on("public.test", &["127.0.0.1"]))
 }
 
-async fn get(
-    c: &FetchClient<FakeResolver>,
+async fn get<R: crate::ssrf::resolver::Resolver>(
+    c: &FetchClient<R>,
     url: &str,
 ) -> (Result<super::Fetched, FetchError>, String, usize) {
     let mut text = String::new();
@@ -472,6 +472,170 @@ async fn redirect_loop_stops_at_the_bound() {
     let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
     assert_eq!(res, Err(FetchError::TooManyRedirects));
     assert_eq!(srv.accepted(), MAX_REDIRECTS + 1);
+}
+
+/// B-3: the server redirects `/n` to `/n+1` until `/{len}`, which answers 200.
+async fn chain_server(len: usize) -> Server {
+    spawn_server(handler(move |mut s, head| async move {
+        let n: usize = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|p| p.trim_start_matches('/').parse().ok())
+            .unwrap_or(0);
+        let resp = if n >= len {
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok".to_string()
+        } else {
+            format!("HTTP/1.1 302 Found\r\nConnection: close\r\nContent-Length: 0\r\nLocation: /{}\r\n\r\n", n + 1)
+        };
+        let _ = s.write_all(resp.as_bytes()).await;
+    }))
+    .await
+}
+
+/// B-3: a chain of exactly `MAX_REDIRECTS` (5) hops succeeds; the sixth redirect fails with too_many_redirects.
+#[tokio::test]
+async fn b3_a_chain_of_five_redirects_succeeds_and_a_chain_of_six_fails() {
+    assert_eq!(MAX_REDIRECTS, 5);
+    let ok = chain_server(5).await;
+    let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/0", ok.port)).await;
+    let f = res.unwrap();
+    assert_eq!((f.redirects, text.as_str()), (5, "ok"));
+    assert_eq!(ok.accepted(), 6);
+
+    let bad = chain_server(6).await;
+    let (res, text, _) = get(&c, &format!("http://public.test:{}/0", bad.port)).await;
+    assert_eq!(res, Err(FetchError::TooManyRedirects));
+    assert!(text.is_empty());
+    assert_eq!(bad.accepted(), 6, "the sixth redirect is never followed");
+}
+
+/// B-3 / B-2: a redirect to any encoded or IPv6 spelling of a blocked address is refused; only hop 1 connects.
+#[tokio::test]
+async fn b3_redirect_to_every_encoded_blocked_form_is_refused_without_a_second_connection() {
+    for target in [
+        "http://167772161/",
+        "http://0xa000001/",
+        "http://012.0.0.1/",
+        "http://10.1/",
+        "http://[::ffff:10.0.0.1]/",
+        "http://[::ffff:a00:1]/",
+        "http://[fc00::1]/",
+        "http://0.0.0.0/",
+        "http://[::]/",
+    ] {
+        let loc: &'static str = Box::leak(format!("Location: {target}").into_boxed_str());
+        let extra: &'static [&'static str] = Box::leak(vec![loc].into_boxed_slice());
+        let srv = spawn_server(fixed("302 Found", extra, Vec::new())).await;
+        let c = client(loopback(), &public_resolver(), limits(5000, 1 << 20, 3));
+        let (res, _, _) = get(&c, &format!("http://public.test:{}/", srv.port)).await;
+        assert_eq!(code(&res), "blocked_target", "{target}: {res:?}");
+        assert_eq!(srv.accepted(), 1, "{target}: only the first hop connects");
+    }
+}
+
+/// B-2 at `revalidate_hop` (the function the redirect loop calls; the loop itself is covered by the b3_ redirect test above) with the default policy: loopback in every encoded and IPv6 spelling is refused.
+#[tokio::test]
+async fn b2_revalidate_hop_refuses_every_loopback_spelling() {
+    let r = FakeResolver::new();
+    for t in [
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://0177.0.0.1/",
+        "http://127.1/",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://[::ffff:7f00:1]/",
+    ] {
+        let e = crate::ssrf::resolver::revalidate_hop(&r, &Policy::default(), t)
+            .await
+            .expect_err(t);
+        assert_eq!(e.code(), "blocked_target", "{t}: {e:?}");
+    }
+    assert_eq!(r.count(), 0);
+}
+
+/// B-2 end to end: encoded and IPv6 spellings given as the request URL are refused before any connection or lookup.
+#[tokio::test]
+async fn b2_encoded_and_ipv6_forms_are_refused_as_the_request_url() {
+    let srv = spawn_server(fixed("200 OK", &[], b"lan".to_vec())).await;
+    let r = Arc::new(FakeResolver::new());
+    let c = client(Policy::default(), &r, limits(5000, 1 << 20, 3));
+    for host in [
+        "2130706433",
+        "0x7f000001",
+        "0X7F.0.0.1",
+        "0177.0.0.1",
+        "017700000001",
+        "127.1",
+        "127.0.1",
+        "0",
+        "0.0.0.0",
+        "[::1]",
+        "[0:0:0:0:0:0:0:1]",
+        "[::ffff:127.0.0.1]",
+        "[::ffff:7f00:1]",
+        "[fc00::1]",
+        "[fd00::1]",
+        "[::]",
+    ] {
+        let (res, text, _) = get(&c, &format!("http://{host}:{}/", srv.port)).await;
+        let e = res.expect_err(host);
+        assert_eq!(e.code(), "blocked_target", "{host}: {e:?}");
+        assert!(text.is_empty(), "{host}");
+    }
+    assert_eq!(r.count(), 0, "encoded literals never reach the resolver");
+    assert_eq!(srv.accepted(), 0, "no connection to any encoded form");
+}
+
+/// Resolver that never answers for one name.
+struct HangResolver {
+    hang_on: &'static str,
+}
+impl crate::ssrf::resolver::Resolver for HangResolver {
+    fn resolve(
+        &self,
+        host: &str,
+    ) -> impl Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send {
+        let hang = host == self.hang_on;
+        async move {
+            if hang {
+                std::future::pending::<()>().await;
+            }
+            Ok(vec!["127.0.0.1".parse().unwrap()])
+        }
+    }
+}
+
+/// B-3 note (A-3b fix-pass 1): a resolver that never answers is bounded by the fetch deadline on the first hop and
+/// on a redirect hop, and the concurrency slot is released so later fetches still run.
+#[tokio::test]
+async fn b3_a_hung_resolver_is_bounded_by_the_deadline_on_every_hop_and_frees_the_slot() {
+    let srv = spawn_server(fixed(
+        "302 Found",
+        &["Location: http://hang.test/"],
+        Vec::new(),
+    ))
+    .await;
+    let c = FetchClient::new(
+        loopback(),
+        Arc::new(HangResolver {
+            hang_on: "hang.test",
+        }),
+        limits(400, 1 << 20, 1),
+    );
+    let t = std::time::Instant::now();
+    let (res, _, _) = get(&c, "http://hang.test/").await;
+    assert_eq!(code(&res), "timeout", "{res:?}");
+    assert!(t.elapsed() < Duration::from_secs(5));
+    // Redirect hop hangs. Concurrency is 1: a leaked slot would make later attempts queue.
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let (res, _, _) = get(&c, &format!("http://ok.test:{}/", srv.port)).await;
+        assert_eq!(code(&res), "timeout", "{res:?}");
+        assert!(t.elapsed() < Duration::from_secs(5));
+    }
+    assert_eq!(srv.accepted(), 3, "each attempt reached hop 1");
 }
 
 // ---- dial-once and dial-only-validated ---------------------------------------------------------------

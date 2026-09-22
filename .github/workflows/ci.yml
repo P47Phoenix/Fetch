@@ -95,12 +95,17 @@ jobs:
       - name: Run the gate tests on the release profile and prove they actually ran
         run: |
           set -euo pipefail
-          cargo test --locked --release --lib -- a3b_merge_gate refusal_ dial_once differential b1_every_blocked_class 2>&1 | tee gate.log
+          cargo test --locked --release --lib -- a3b_merge_gate refusal_ dial_once differential b1_every_blocked_class b2_ b3_ 2>&1 | tee gate.log
           for t in a3b_merge_gate refusal_loopback_ip_literal refusal_metadata_ip_literal \
                    refusal_name_resolving_to_a_private_address refusal_redirect_to_a_private_address \
                    dial_once_a_second_private_answer_is_never_looked_up_or_dialled \
                    differential::encodings_corpus differential::every_ipv4_spelling_is_judged_like_the_reference \
                    b1_every_blocked_class_by_name_mixed_and_literal_is_refused_before_any_connection \
-                   differential::deterministic_fuzz_corpus; do
+                   differential::deterministic_fuzz_corpus \
+                   b2_encoded_and_ipv6_forms_are_refused_as_the_request_url \
+                   b2_revalidate_hop_refuses_every_loopback_spelling \
+                   b3_a_chain_of_five_redirects_succeeds_and_a_chain_of_six_fails \
+                   b3_redirect_to_every_encoded_blocked_form_is_refused_without_a_second_connection \
+                   b3_a_hung_resolver_is_bounded_by_the_deadline_on_every_hop_and_frees_the_slot; do
             grep -Eq "^test .*${t} \.\.\. ok$" gate.log || { echo "gate test missing or not ok: $t" >&2; exit 1; }
           done
