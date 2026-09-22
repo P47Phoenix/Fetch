@@ -167,6 +167,17 @@ jobs:
           cat out/peak.jsonl
           exit "$rc"
 
+      - name: "E-6 memory-regression tripwire: idle/peak vs the stored last-main baseline, >10% regression fails even under the absolute target"
+        id: regression
+        continue-on-error: true
+        run: |
+          set -u
+          rc=0
+          python3 scripts/regression_gate.py --idle out/idle.jsonl --peak out/peak.jsonl \
+            --baseline bench/baseline.json --platform "${{ matrix.arch }}-${{ matrix.libc }}" --max-regression-pct 10 || rc=$?
+          echo "regression_exit=$rc" | tee -a out/exitcodes.txt
+          exit "$rc"
+
       - name: "Public-host cross-check (E-8, advisory): shipped vs bench on one real HTTPS page, recorded not gating"
         id: public
         continue-on-error: true
@@ -186,7 +197,7 @@ jobs:
           {
             echo "## bench-gate ${{ matrix.arch }} ${{ matrix.libc }}: native ${{ matrix.os }}, hosted runner"
             echo
-            echo "idle step: ${{ steps.idle.outcome }}; bench idle step: ${{ steps.idle_bench.outcome }}; peak step: ${{ steps.peak.outcome }}; public-host cross-check (advisory): ${{ steps.public.outcome }} (gating runs, native host; INVALID/INCOMPLETE/refused exit 2/3 also fail the job)"
+            echo "idle step: ${{ steps.idle.outcome }}; bench idle step: ${{ steps.idle_bench.outcome }}; peak step: ${{ steps.peak.outcome }}; regression tripwire (E-6, vs last-main baseline): ${{ steps.regression.outcome }}; public-host cross-check (advisory): ${{ steps.public.outcome }} (gating runs, native host; INVALID/INCOMPLETE/refused exit 2/3 also fail the job)"
             echo
             python3 bench/report.py --platform out/platform.txt --idle out/idle.jsonl --idle-bench out/idle-bench.jsonl --peak out/peak.jsonl --public out/public.jsonl \
               --shipped "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-shipped" \
@@ -200,8 +211,74 @@ jobs:
           path: out/
           if-no-files-found: warn
 
-      - name: Fail the job if a gating run missed, was INVALID or INCOMPLETE, or the bench idle run failed
+      - name: Fail the job if a gating run missed, was INVALID or INCOMPLETE, the bench idle run failed, or the E-6 regression tripwire fired
         if: always()
         run: |
-          echo "idle=${{ steps.idle.outcome }} idle_bench=${{ steps.idle_bench.outcome }} peak=${{ steps.peak.outcome }}"
-          [ "${{ steps.idle.outcome }}" = success ] && [ "${{ steps.peak.outcome }}" = success ] && [ "${{ steps.idle_bench.outcome }}" = success ]
+          echo "idle=${{ steps.idle.outcome }} idle_bench=${{ steps.idle_bench.outcome }} peak=${{ steps.peak.outcome }} regression=${{ steps.regression.outcome }}"
+          [ "${{ steps.idle.outcome }}" = success ] && [ "${{ steps.peak.outcome }}" = success ] && \
+            [ "${{ steps.idle_bench.outcome }}" = success ] && [ "${{ steps.regression.outcome }}" = success ]
+
+  # E-6: after a same-repo push-to-main bench-gate PASS, refresh the stored per-platform baseline (bench/baseline.json)
+  # that the regression tripwire above compares against, so the 10% band tracks main rather than staying pinned to the
+  # Sprint 5 G4b figures forever. Runs only on push to main (never on a PR, so a PR cannot move its own goalposts);
+  # elevates to contents: write for this job only (least-privilege: every other job/event stays contents: read).
+  update-baseline:
+    name: update-baseline (${{ matrix.arch }}, ${{ matrix.libc }})
+    needs: bench-gate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, libc: gnu }
+          - { arch: amd64, libc: musl }
+          - { arch: arm64, libc: gnu }
+          - { arch: arm64, libc: musl }
+    concurrency:
+      # Serialize baseline commits across the four matrix legs (they all write the same file) and across
+      # overlapping workflow runs on main, so pushes never race and clobber each other.
+      group: bench-baseline-update-main
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: true
+          ref: main
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bench-gate-${{ matrix.arch }}-${{ matrix.libc }}
+          path: out/
+
+      - name: Only refresh the baseline if that cell's bench-gate leg actually PASSED (never bless a failing or advisory run)
+        run: |
+          set -eu
+          [ -s out/idle.jsonl ] && [ -s out/peak.jsonl ] || { echo "::warning::missing idle.jsonl/peak.jsonl for ${{ matrix.arch }}-${{ matrix.libc }}, skipping baseline update"; exit 0; }
+          python3 scripts/regression_gate.py --update --idle out/idle.jsonl --peak out/peak.jsonl \
+            --baseline bench/baseline.json --platform "${{ matrix.arch }}-${{ matrix.libc }}" --run-id "${{ github.run_id }}"
+
+      - name: Commit and push bench/baseline.json if it changed (retry on a racing push)
+        run: |
+          set -eu
+          if git diff --quiet -- bench/baseline.json; then
+            echo "baseline unchanged for ${{ matrix.arch }}-${{ matrix.libc }}"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git add bench/baseline.json
+            git commit -m "E-6: refresh bench baseline (${{ matrix.arch }}-${{ matrix.libc }}, run ${{ github.run_id }}) [skip ci]"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push race, retrying ($attempt/5)"; sleep $((attempt * 3))
+            git reset --soft HEAD~1
+            git pull --rebase origin main
+            python3 scripts/regression_gate.py --update --idle out/idle.jsonl --peak out/peak.jsonl \
+              --baseline bench/baseline.json --platform "${{ matrix.arch }}-${{ matrix.libc }}" --run-id "${{ github.run_id }}"
+          done
+          echo "::error::could not push the updated baseline after 5 attempts" >&2
+          exit 1

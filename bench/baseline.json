@@ -1,0 +1,7 @@
+{
+  "_comment": "E-6 regression-tripwire baseline (last-known-good last-main idle/peak medians, kB=KiB, per docs/BENCHMARK.md section 17 G4b run 35641694726). Updated by the update-baseline job in .github/workflows/bench.yml on every push-to-main bench-gate PASS. This is a 10%-regression TRIPWIRE only: it never raises or lowers the absolute 10 MiB idle / 40 MiB peak targets enforced separately by bench/measure.py --gate, and a regression-gate failure never overrides an absolute-target failure or PASS.",
+  "amd64-gnu": { "idle_kB": 4731, "peak_kB": 6205, "updated_from_run": "35641694726", "updated_utc": "2026-09-22T00:00:00.000Z" },
+  "amd64-musl": { "idle_kB": 2416, "peak_kB": 4567, "updated_from_run": "35641694726", "updated_utc": "2026-09-22T00:00:00.000Z" },
+  "arm64-gnu": { "idle_kB": 4003, "peak_kB": 5540, "updated_from_run": "35641694726", "updated_utc": "2026-09-22T00:00:00.000Z" },
+  "arm64-musl": { "idle_kB": 2652, "peak_kB": 4485, "updated_from_run": "35641694726", "updated_utc": "2026-09-22T00:00:00.000Z" }
+}
