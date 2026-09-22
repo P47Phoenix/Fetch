@@ -22,7 +22,7 @@ A second workflow, `.github/workflows/arm-bench.yml`, runs the advisory native a
 
 | Item | Status |
 |---|---|
-| Rule on `main` (required checks) | NOT YET CONFIGURED. The first CI run has now happened, so the owner can set it. **Also STALE since Sprint 11 (D-3, unfixed):** D-3's matrix split renamed the `test` job to `test (amd64)` / `test (arm64)`; if a rule naming plain `test` were ever configured from an old snapshot of this doc it would reference a check name that no longer exists. Use the current job ids below, not the historical six-name list. |
+| Rule on `main` (required checks) | RESOLVED 2026-09-22: deliberately NOT configured (owner decision, solo-developer repo, not worth the settings friction — see "Branch protection: RESOLVED" below). CI checks including `coverage` and `release-ldd-guard` are still de facto required by the delivery process's own merge checklist. **Historical note, Sprint 11 (D-3):** D-3's matrix split renamed the `test` job to `test (amd64)` / `test (arm64)`; if a native rule were ever configured (it will not be, per the decision above) a name of plain `test` would silently match nothing. |
 | The workflow on hosted GitHub Actions | Has run on many pull requests (first #2, most recently #15), and every required-check job (`fmt`, `clippy`, `test (amd64)`, `test (arm64)`, `deny`, `release-guard`, `a3b-merge-gate`) has passed each time. That is still not a trend claim, and branch protection is not configured yet (see below). |
 | `cargo-deny` (the `deny` job) | Has run in those hosted runs and passed. It is still not installed on the dev host. |
 | `cargo-audit` (the `audit` job, Sprint 12/D-6) | Added this sprint; installs `cargo-audit` 0.22.2 by version pin and runs it against `Cargo.lock`. Ran clean locally (0 vulnerabilities, 209 crates scanned) before this PR opened; hosted-CI evidence is in the Sprint 12 dev report. Not yet in the required-check set (owner action, same as everything else in this table). |
@@ -48,9 +48,35 @@ A "required status check" is a CI job that must pass before a change can be merg
 
 "Locked" (`--locked`) means the build must use exactly the versions in `Cargo.lock`. A "feature" is an optional switch compiled into the program.
 
-## Owner quickstart: turn on the rule
+## Branch protection: RESOLVED, deliberately not configured (2026-09-22)
 
-**This is the single biggest carried-forward action item in this repository.** It has been open, unfixed, and reflagged by every sprint's agent since Sprint 0 (D-7) because no agent working here has permission to change GitHub repository settings — only the owner can do this. Do it now; the check names below only appear in GitHub's rule picker once each job has run at least once.
+**Owner decision (2026-09-22, Sprint 13): native GitHub branch protection on `main` will NOT be configured.**
+This is a deliberate, accepted decision, not a gap or an oversight: this is a solo-developer repository, and
+the owner judged the GitHub-settings friction not worth it. This supersedes every earlier "carried-forward
+action item" framing in this document and in the sprint plan — the item below is now historical context for
+what branch protection *would* look like, kept for reference, not an open task. No GitHub settings have been
+or will be changed by any agent (none has repository-settings access regardless).
+
+**This does not mean CI checks are optional in practice.** See "De facto required checks" immediately below:
+the delivery process itself enforces green CI before any merge, independent of whether GitHub's native
+required-checks list is configured.
+
+### De facto required checks (process-enforced, not GitHub-native)
+
+`coverage` (B-5/D-1, Sprint 8) and `release-ldd-guard` (D-1, Sprint 8) exist and run on every PR, exactly like
+every other CI job in this repository, but — consistent with the branch-protection decision above — neither is
+in a GitHub-native "required status checks" list, because no such list exists. They are nonetheless
+**de facto required by process**: this project's own merge checklist (the delivery coordinator's own
+Definition of Done, applied by whoever merges a sprint PR) already requires all CI checks green, `coverage`
+and `release-ldd-guard` included, before any merge — regardless of what GitHub's branch-protection setting
+would or would not natively enforce. In other words, the practical effect of "required" is achieved by the
+delivery process, not by a repository setting, and the owner's decision not to configure branch protection
+does not relax that process requirement.
+
+## Historical: what "turn on the rule" would have looked like (not pursued)
+
+The section below is kept for reference only. It predates the 2026-09-22 decision above and is **not an open
+action item** — do not act on it.
 
 1. Open the repository on GitHub. Go to Settings, then Branches.
 2. Add a rule for `main`.
@@ -82,7 +108,7 @@ A-3a needed no new job: the existing `release-guard` job (id unchanged) is the r
 - Only the publish job gets `packages: write` (and `id-token` and `attestations` write if provenance is added). Every other job keeps the default `contents: read`.
 - The publish job has no fork or pull request trigger. It runs only from a maintainer-controlled event on the default branch or a tag, after both platform gates pass on the same image digest. It adds tags to the tested digest and never rebuilds.
 - Candidate images are pushed by digest and left untagged. Fork pull requests run the same hosted jobs with no secrets and never push an image.
-- GHCR packages are private by default when a workflow first pushes them. Making the package public is a manual setting and is the distribution act that open question OQ-7 (licence and distribution) must come before. Until then anonymous `docker pull` fails. This document does not decide OQ-7.
+- GHCR packages are private by default when a workflow first pushes them. Making the package public is a manual, `confirm_publish`-gated act (see `release.yml`); OQ-7 (licence and distribution) is resolved as `MIT OR Apache-2.0` (see "Licence" below), but that answers the licence question, not the timing of the first publish, which is still gated on M3 and the manual confirmation. Until published, anonymous `docker pull` fails.
 
 ## What can go wrong
 
@@ -132,9 +158,16 @@ Options:
 - `.github/dependabot.yml` opens weekly update PRs for Cargo and GitHub Actions. Action pins stay full-SHA. Dependabot updates the SHA and the comment.
 - `cargo audit` **is now installed and run** (job `audit`, Sprint 12/D-6, `ci.yml`) in addition to `cargo deny check advisories`, which covers the same RustSec database by a different tool; ran clean locally before this PR (0 vulnerabilities against 209 scanned crates) and D-6's dev-report entry has the hosted-CI evidence.
 
-## Licence (OQ-7 still open)
+## Licence (OQ-7 resolved)
 
-An Apache-2.0 `LICENSE` file has existed since the initial commit. **The project's licence and distribution are still open under OQ-7, with the project owner. Nothing here decides them.** `Cargo.toml` has `publish = false` until they are decided.
+**RESOLVED 2026-09-22 (owner decision, Sprint 13): `fetch-mcp` is open source, dual-licensed `MIT OR
+Apache-2.0`** -- the standard Rust-ecosystem convention. `LICENSE-APACHE` (the file that previously lived at
+`LICENSE` since the initial commit) and a new `LICENSE-MIT` both exist at the repo root; `Cargo.toml`'s
+`license` field is `"MIT OR Apache-2.0"`. `Cargo.toml` keeps `publish = false` (this project is not published
+to crates.io; that is unrelated to the dual-licence choice, which governs redistribution of the source and the
+container image). The `release.yml` `publish` job's `false &&` short-circuit has been removed accordingly (see
+that workflow's comments); the separate, mandatory `confirm_publish` manual-dispatch gate is unchanged and
+still required before any tag/publish can happen.
 
 What changed with A-4 (facts, from the Sprint 4 architect review; `deny.toml` `[licenses]` covers dependencies):
 
@@ -142,7 +175,5 @@ What changed with A-4 (facts, from the Sprint 4 architect review; `deny.toml` `[
 - MPL-2.0 is file-level weak copyleft. (a) Using the crates unmodified from crates.io does not extend MPL-2.0 to this project's own files; an Apache-2.0 licence, or whatever OQ-7 chooses, stays possible (MPL-2.0 section 3.3, "Larger Work"). (b) Modifying any of their files, for example by patching or vendoring a fork, obliges publishing those modifications under MPL-2.0. (c) Distributing the executable form (the statically linked binary, and therefore the GHCR image) requires telling recipients how to obtain the source of the covered crates (section 3.2: exact crate names and versions, for example a pointer to crates.io plus `Cargo.lock`) and preserving their copyright and licence notices (section 3.4). There is no obligation to release this project's source because of them. (d) The MPL-2.0 patent grant and termination terms apply to the contributors of those files.
 - Practical consequence: the container image (D-2) and the dependency audit (D-6) need a third-party notices file with the licence texts (the same file also has to cover `webpki-roots`, CDLA-Permissive-2.0, and the BSD-3-Clause part of `encoding_rs`).
 
-**D-6 (Sprint 12) status: audit and dependency-count mechanisms delivered; the actual `v1.0` tag is deliberately NOT pushed here.** D-6's AC couples the tag to "a licence selected per OQ-7" — OQ-7 (image distribution/licence) is still open (see above and the Sprint 12 dev report), so tagging now would decide it by default, exactly the risk the sprint plan calls out explicitly ("Publishing a public image (GHCR) is a distribution act... Publishing before OQ-7 is answered would decide licence/distribution by default"). What this sprint *does* deliver toward D-6, all mechanism with no decision baked in: the `audit` and `dependency-count` CI jobs above (both green locally and both wired for hosted CI), confirmation that direct dependencies are 11 of the <= 15 limit, and this section's disclosure of the LICENSE file that has existed since the initial commit (Apache-2.0) without that file constituting an OQ-7 answer by itself — a repo-level source licence and an OQ-7 image-distribution/publication decision are two different questions, and this sprint does not conflate them. The `release.yml` `publish` job remains hard-gated `if: false` from Sprint 9 (D-2), unchanged. **Creating the `v1.0` git tag against `main` is the coordinator's decision after full review, not an action taken by this sprint's agent** (per this sprint's explicit instructions).
-- Ways to avoid MPL-2.0 entirely, if the owner wants that: ADR-002 option C (the permissively licensed `html5gum` tokenizer with more own code, not measured, kept as the fallback behind the `Converter` trait), a hand-written tokenizer, or `lol_html` 3.x if its dependency tree drops the selector crates (not checked).
-
-The owner decides OQ-7 (licence and distribution); until then the README and this section only state the facts above.
+**D-6 status (Sprint 12 mechanism, Sprint 13 licence decision): audit and dependency-count mechanisms delivered in Sprint 12; OQ-7 is now RESOLVED (2026-09-22) as `MIT OR Apache-2.0`; the actual `v1.0` tag is still deliberately NOT pushed by any sprint agent.** D-6's AC couples the tag to "a licence selected per OQ-7" — that licence is now selected (this section, `Cargo.toml`, `LICENSE-MIT`, `LICENSE-APACHE`), so the licence half of the D-6 blocker is cleared. What Sprint 13 delivers toward D-6: the OQ-7 decision itself, the dual-license files, the `Cargo.toml` `license` field, and removal of the `false &&` short-circuit in `release.yml`'s `publish` job (the `confirm_publish` manual-dispatch gate stays, unweakened, as the actual safety net). **Creating the `v1.0` git tag against `main` remains the coordinator's decision after full review, not an action taken by any sprint agent** — this sprint does not create or push it, per its explicit instructions.
+- Ways to avoid MPL-2.0 dependency obligations entirely, if the owner ever wants that: ADR-002 option C (the permissively licensed `html5gum` tokenizer with more own code, not measured, kept as the fallback behind the `Converter` trait), a hand-written tokenizer, or `lol_html` 3.x if its dependency tree drops the selector crates (not checked). This is independent of the OQ-7 (this project's own licence) decision above, which is settled.
