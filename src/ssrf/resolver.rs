@@ -29,6 +29,10 @@ pub struct Validated {
 
 /// Resolve `host` once, refuse if ANY answer is blocked, and return exactly the validated set.
 ///
+/// `origin` gates the C-2 allowlist relaxation ([`Policy::check_ip_for_host`]): it applies only for
+/// [`Origin::Initial`] (the exact hostname of the original request), never for [`Origin::Redirect`], per the
+/// architecture's OQ-4 answer text -- a redirect hop to a private host is always refused, allowlisted or not.
+///
 /// # Errors
 /// `DnsFailure` on a resolver error or an empty answer; `BlockedTarget` if any answer is blocked (the whole
 /// answer is refused, which covers mixed public/private answers). The message never contains an address.
@@ -37,6 +41,7 @@ pub async fn resolve_validated<R: Resolver>(
     policy: &Policy,
     host: &str,
     port: u16,
+    origin: Origin,
 ) -> Result<Vec<SocketAddr>, FetchError> {
     let answers = resolver
         .resolve(host)
@@ -49,7 +54,11 @@ pub async fn resolve_validated<R: Resolver>(
     }
     let mut out = Vec::with_capacity(answers.len());
     for ip in answers {
-        if let Err(b) = policy.check_ip(ip) {
+        let checked = match origin {
+            Origin::Initial => policy.check_ip_for_host(ip, host),
+            Origin::Redirect => policy.check_ip(ip),
+        };
+        if let Err(b) = checked {
             return Err(FetchError::BlockedTarget(format!(
                 "hostname resolves to a non-public address ({})",
                 b.category
@@ -64,7 +73,8 @@ pub async fn resolve_validated<R: Resolver>(
 }
 
 /// Full validation of one URL: [`check_url`], then (for a name) the resolver filter. An IP literal is already
-/// judged by `check_url` and is returned as its single address with no lookup.
+/// judged by `check_url` and is returned as its single address with no lookup (IP literals are never
+/// allowlistable, C-2, since `check_url` has no hostname to match against the allowlist).
 ///
 /// # Errors
 /// As [`check_url`] and [`resolve_validated`].
@@ -77,7 +87,7 @@ pub async fn validate_target<R: Resolver>(
     let checked = check_url(url, policy, origin)?;
     let addrs = match &checked.host {
         Host::Ip(ip) => vec![SocketAddr::new(*ip, checked.port)],
-        Host::Name(n) => resolve_validated(resolver, policy, n, checked.port).await?,
+        Host::Name(n) => resolve_validated(resolver, policy, n, checked.port, origin).await?,
     };
     Ok(Validated {
         url: checked,
@@ -178,7 +188,7 @@ mod tests {
         assert_send_sync::<FakeResolver>();
         let r = FakeResolver::new();
         let p = Policy::default();
-        assert_send(&resolve_validated(&r, &p, "a.example", 80));
+        assert_send(&resolve_validated(&r, &p, "a.example", 80, Origin::Initial));
         assert_send(&validate_target(
             &r,
             &p,
@@ -384,6 +394,48 @@ mod tests {
             .unwrap();
         assert_eq!(v.addrs, vec![sa("8.8.8.8", 443)]);
         assert!(v.url.https);
+    }
+
+    #[tokio::test]
+    async fn c2_allowlisted_hostname_resolves_to_a_private_address() {
+        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let r = FakeResolver::new().on("printer.lan", &["192.168.1.5"]);
+        let v = validate_target(&r, &p, "http://printer.lan/", Origin::Initial)
+            .await
+            .unwrap();
+        assert_eq!(v.addrs, vec![sa("192.168.1.5", 80)]);
+    }
+
+    #[tokio::test]
+    async fn c2_allowlist_does_not_relax_metadata_answers() {
+        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let r = FakeResolver::new().on("printer.lan", &["169.254.169.254"]);
+        assert!(
+            validate_target(&r, &p, "http://printer.lan/", Origin::Initial)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn c2_allowlist_does_not_cover_a_different_hostname() {
+        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let r = FakeResolver::new().on("other.lan", &["192.168.1.5"]);
+        assert!(
+            validate_target(&r, &p, "http://other.lan/", Origin::Initial)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn c2_allowlist_never_applies_to_a_redirect_hop_even_to_the_same_hostname() {
+        let p = Policy::with_allow_private_hosts(vec!["printer.lan".to_string()]);
+        let r = FakeResolver::new().on("printer.lan", &["192.168.1.5"]);
+        let e = revalidate_hop(&r, &p, "http://printer.lan/")
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), "blocked_target");
     }
 
     #[tokio::test]
