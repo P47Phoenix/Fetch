@@ -11,6 +11,7 @@ pub mod error;
 pub mod fetch;
 pub mod obs;
 pub mod policy;
+pub mod robots;
 pub mod server;
 pub mod ssrf;
 

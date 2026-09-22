@@ -35,6 +35,10 @@ pub enum FetchError {
     BadResponse(String),
     /// The HTML converter hit a memory or output limit (or could not process the page). `raw=true` returns the text unconverted.
     ConverterLimit(String),
+    /// The target's robots.txt disallows this path (B-4). Only returned when `Config.robots_txt` is
+    /// `RobotsMode::Enforce`; a missing, unreadable or otherwise-failing robots.txt fetch is never this error
+    /// (it is treated as "no restrictions", so the fetch proceeds instead).
+    RobotsDisallowed(String),
     /// An unexpected internal failure on an `Err` path (panics abort instead, `panic = "abort"`). The detail is logged, never shown.
     Internal(String),
 }
@@ -60,6 +64,7 @@ impl FetchError {
             Self::Network(_) => "network_error",
             Self::BadResponse(_) => "bad_response",
             Self::ConverterLimit(_) => "converter_limit",
+            Self::RobotsDisallowed(_) => "robots_disallowed",
             Self::Internal(_) => "internal",
         }
     }
@@ -83,7 +88,8 @@ impl fmt::Display for FetchError {
             | Self::UnsupportedEncoding(m)
             | Self::Network(m)
             | Self::BadResponse(m)
-            | Self::ConverterLimit(m) => f.write_str(m),
+            | Self::ConverterLimit(m)
+            | Self::RobotsDisallowed(m) => f.write_str(m),
             // The detail of an unexpected failure is for the log (stderr), never for the caller.
             Self::Internal(_) => f.write_str(INTERNAL_MESSAGE),
             Self::HttpStatus(code) => {
@@ -136,5 +142,11 @@ mod tests {
         let b = FetchError::BlockedTarget("host is not public".into());
         assert_eq!(b.tool_text(), "error[blocked_target]: host is not public");
         assert_eq!(FetchError::DnsFailure("x".into()).code(), "dns_failure");
+        let r = FetchError::RobotsDisallowed("robots.txt disallows fetching /private".into());
+        assert_eq!(r.code(), "robots_disallowed");
+        assert_eq!(
+            r.tool_text(),
+            "error[robots_disallowed]: robots.txt disallows fetching /private"
+        );
     }
 }

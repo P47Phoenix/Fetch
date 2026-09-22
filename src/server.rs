@@ -137,11 +137,10 @@ impl Fetch {
     #[must_use]
     pub fn new(policy: Policy, cfg: &Config) -> Self {
         Self {
-            client: Arc::new(FetchClient::new(
-                policy,
-                Arc::new(SystemResolver),
-                Limits::from_config(cfg),
-            )),
+            client: Arc::new(
+                FetchClient::new(policy, Arc::new(SystemResolver), Limits::from_config(cfg))
+                    .with_robots_mode(cfg.robots_txt),
+            ),
             max_length_cap: cfg.max_length_cap,
         }
     }

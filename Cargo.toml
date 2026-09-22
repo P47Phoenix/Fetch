@@ -15,7 +15,7 @@ test-support = []
 bench-loopback = []
 
 [dependencies]
-# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13). A-2 adds 4 (4 of 15); A-3a adds none (std::net parsing, own range tables; no `url`/`ipnet` crate); A-3b adds 4 (reqwest, rustls, webpki-roots, flate2: 8 of 15); A-4 adds 2 (lol_html, html-escape: 10 of 15).
+# Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13). A-2 adds 4 (4 of 15); A-3a adds none (std::net parsing, own range tables; no `url`/`ipnet` crate); A-3b adds 4 (reqwest, rustls, webpki-roots, flate2: 8 of 15); A-4 adds 2 (lol_html, html-escape: 10 of 15); A-8 (Sprint 11) adds 1 (encoding_rs: 11 of 15).
 # Versions match spikes/a1/Cargo.lock where the spike had them (architecture sec 9.1).
 # 1. rmcp: MCP server, stdio transport, #[tool_router] macros (ADR-001). Exact pin: high-churn 3.x (R5).
 rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
@@ -42,6 +42,10 @@ lol_html = { version = "=2.9.0", default-features = false }
 # 10. html-escape: HTML5 character-reference decoding (text and attribute values), no dependencies, MIT. Used instead
 #    of a hand-kept entity table (2125 named references).
 html-escape = { version = "=0.2.15", default-features = false }
+# 11. encoding_rs: WHATWG Encoding Standard decoder (A-8, Sprint 11), used for the non-UTF-8 charset path
+#    (Content-Type/meta charset -> full-body decode with BOM handling and replacement, both built in). MIT/Apache-2.0,
+#    no dependencies. Exact pin: the version cached in this environment's cargo registry (sec 9.1 style).
+encoding_rs = { version = "=0.8.41", default-features = false }
 
 [dev-dependencies]
 # url: dev-dependency only, reference parser for the A-3b differential test (architect N2). Same version reqwest resolves.
