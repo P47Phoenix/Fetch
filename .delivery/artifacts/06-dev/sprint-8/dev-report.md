@@ -16,7 +16,9 @@ No gaps were found requiring new test cases. What Sprint 8 adds: a required CI j
 
 ## D-1: Size- and memory-optimized release profile (2 pts) — DONE
 
-The release profile pinned in D-7 (`opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`) is finalised unchanged: every G4a/G4b gate run recorded in `docs/BENCHMARK.md` sections 16-17 already passes with margin on it (worst-case gating peak 6.06 MiB vs a 40 MiB target, worst-case idle 4.74 MiB vs 10 MiB), so there is no measured case for moving to `opt-level = 3`. The re-measure required by the AC (idle RSS and 5 MiB peak RSS on the shipped build, gnu and musl, amd64 and arm64, median of 10 valid runs, hosted native runners) runs via the existing `bench.yml` `bench-gate` job (the same 4-cell matrix used for G4a/G4b) triggered by this PR — see the PR's CI run for the actual figures; `docs/BENCHMARK.md` section 18 records the run once it completes and is not backfilled with invented numbers.
+The release profile pinned in D-7 (`opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`) is finalised unchanged: every G4a/G4b gate run recorded in `docs/BENCHMARK.md` sections 16-17 already passes with margin on it (worst-case gating peak 6.06 MiB vs a 40 MiB target, worst-case idle 4.74 MiB vs 10 MiB), so there is no measured case for moving to `opt-level = 3`.
+
+`bench.yml`'s `pull_request` path filters do not cover this PR's diff (no `src/` or `Cargo.*` change), so it did not auto-trigger; it was run directly via `workflow_dispatch` on this branch instead ([run 35682100887](https://github.com/P47Phoenix/Fetch/actions/runs/35682100887), head `8d606cc`). All 4 `bench-gate` cells PASSED, median of 10 runs each: idle RSS 4.55 MiB (amd64 gnu) / 2.38 MiB (amd64 musl) / 3.92 MiB (arm64 gnu) / 2.61 MiB (arm64 musl); gating peak 5.99 / 4.53 / 5.39 / 4.38 MiB respectively — all well inside the 10 MiB idle / 40 MiB peak targets. Full breakdown in `docs/BENCHMARK.md` section 18.
 
 Added: CI job `release-ldd-guard` builds the release binary and asserts (via `ldd` + grep) that it links no `ssl`/`crypto`/`native-tls` library — a machine-checked version of the AC's `ldd` inspection requirement, rather than a one-off manual check. Locally confirmed (x86_64 dev build): only `libgcc_s`, `libm`, `libc` and the dynamic linker are linked.
 
@@ -30,7 +32,7 @@ E-5 (2 pts) remains open: the owner's 10-URL live-smoke list (and the separate 5
 
 ## Deviations from AC
 
-- D-1's actual re-measured figures are not in this report; they are recorded in `docs/BENCHMARK.md` section 18 (filled in once this PR's `bench-gate` CI run completes — see PR checks for the run number).
+- D-1's re-measure ran via `workflow_dispatch` rather than as an automatic `pull_request`-triggered check, because `bench.yml`'s path filters don't cover this PR's diff (docs/CI/tests/scripts, no `src/` or `Cargo.*` change) — it is not one of this PR's required `gh pr checks` entries, but the run (35682100887) is real, against this branch's head commit, and its figures are recorded in `docs/BENCHMARK.md` section 18.
 - B-5's coverage gate enforces a combined 90% across the listed modules rather than a strict per-file 90% floor (one file, `src/fetch/mod.rs`, measures 89.2% locally); this reading of the AC text is stated explicitly rather than silently assumed.
 
 ## OWNER_DECISIONS_NEEDED

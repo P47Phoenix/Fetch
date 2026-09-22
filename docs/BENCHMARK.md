@@ -599,7 +599,18 @@ The 5 MiB page converts to 4,356,474 characters; the raw fixture is 5,241,856 ch
 
 ## 18. D-1: release profile finalised, re-measured; B-5 coverage gate (Sprint 8, PR #12)
 
-**D-1 (release profile).** The profile pinned in D-7 (`Cargo.toml` `[profile.release]`: `opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`) is finalised unchanged for Sprint 8: `opt-level = "s"` (not `3`) is kept because every G4a/G4b gate run to date (sections 16-17) already passes on it with margin (gating peak <= 6.06 MiB against a 40 MiB target, idle <= 4.74 MiB against 10 MiB), so there is no measured reason to trade code size/possible cache behaviour for a size-vs-speed profile this project does not need; re-opening it is a size/CPU-time trade with no memory upside and is not done here. Idle RSS and 5 MiB peak RSS are re-measured on the shipped build (gnu and musl, amd64 and arm64) by the existing `bench.yml` `bench-gate` job (the same 4-cell matrix and `--gate` harness used for G4a/G4b in sections 16-17) on this PR; see the CI run recorded in the Sprint 8 dev report (`.delivery/artifacts/06-dev/sprint-8/dev-report.md`) for the actual run number and figures once that job completed on this PR — no number is invented here in advance of that run.
+**D-1 (release profile).** The profile pinned in D-7 (`Cargo.toml` `[profile.release]`: `opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`) is finalised unchanged for Sprint 8: `opt-level = "s"` (not `3`) is kept because every G4a/G4b gate run to date (sections 16-17) already passes on it with margin (gating peak <= 6.06 MiB against a 40 MiB target, idle <= 4.74 MiB against 10 MiB), so there is no measured reason to trade code size/possible cache behaviour for a size-vs-speed profile this project does not need; re-opening it is a size/CPU-time trade with no memory upside and is not done here.
+
+**Re-measure (this PR, `bench.yml` `bench-gate`, `workflow_dispatch` run [35682100887](https://github.com/P47Phoenix/Fetch/actions/runs/35682100887), branch `sprint-8/ssrf-suite-release-profile` at head `8d606cc`).** `bench.yml`'s `pull_request` path filters (`bench/**`, `src/**`, `Cargo.toml`, `Cargo.lock`, ...) do not cover this PR's diff (docs/CI/tests/scripts only, no `src` or `Cargo.*` change), so it does not auto-trigger on the PR; it was run directly via `workflow_dispatch` on the PR branch instead, same 4-cell matrix, same `--gate` harness, same targets (idle <= 10 MiB, peak <= 40 MiB) as G4a/G4b. All four cells PASSED:
+
+| cell | idle RSS median (10 runs) | gating peak median (10 runs) |
+|---|---|---|
+| amd64 gnu | 4.55 MiB | 5.99 MiB |
+| amd64 musl | 2.38 MiB | 4.53 MiB |
+| arm64 gnu | 3.92 MiB | 5.39 MiB |
+| arm64 musl | 2.61 MiB | 4.38 MiB |
+
+Both well inside target (idle <= 10 MiB, peak <= 40 MiB), consistent with the G4a/G4b figures in sections 16-17. Build identity for this run: commit `8d606cc75bd0cbd34720088ada22c59f63e33528`, Cargo.lock hash `65a5a943b0f1f2aa31f26b87c3958c5413bfa2a57c889076e3b7a4ed0454cce1` (shipped and bench builds matched on both, per the `--gate` identity check).
 
 **No OpenSSL / native-tls linkage.** `ldd` on a local `cargo build --release --locked` (x86_64, dev machine, not a gate figure) shows only `linux-vdso.so.1`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6` and the dynamic linker — no `libssl`, `libcrypto` or native-tls library, consistent with reqwest's `rustls-no-provider` feature (ADR-001). CI job `release-ldd-guard` (`.github/workflows/ci.yml`) makes this a required, machine-checked assertion (greps `ldd` output for `ssl|crypto|native-tls` and fails the build if any match) rather than a one-off manual check.
 
