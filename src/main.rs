@@ -53,9 +53,15 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn serve(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let svc = Fetch::new(Policy::for_build(cfg.allow_private_hosts.clone()), cfg)
-        .serve(rmcp::transport::stdio())
-        .await?;
+    let svc = Fetch::new(
+        Policy::for_build(
+            cfg.allow_private_hosts.clone(),
+            cfg.allow_private_hosts_enabled,
+        ),
+        cfg,
+    )
+    .serve(rmcp::transport::stdio())
+    .await?;
     svc.waiting().await?;
     Ok(())
 }

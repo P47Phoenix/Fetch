@@ -9,16 +9,25 @@
 //! error fetching, reading or parsing it -- missing, non-2xx, refused by SSRF, timed out, truncated at the cap,
 //! malformed, whatever. A disallowed path is refused with `error[robots_disallowed]`. The default
 //! ([`RobotsMode::Ignore`]) is unchanged: robots.txt is never fetched or enforced unless an operator opts in.
-//! OQ-3 (whether fetches should respect robots.txt BY DEFAULT) is still an open product-owner decision; this
-//! only answers "how enforcement works", not "should it be on". `FETCH_ALLOW_PRIVATE_HOSTS` wires a mechanism
-//! (C-2) whose default is an empty, inert allowlist; OQ-4 (whether/how to use it) is still open.
+//! OQ-3 is RESOLVED (2026-09-22, owner decision,
+//! Sprint 13): the default stays `ignore` BY DESIGN, not by omission, because network-level ACLs elsewhere in
+//! the operator's infrastructure are the intended control point for this concern; `FETCH_ROBOTS_TXT=enforce`
+//! remains available for operators who want it, but it is not the shipped default and will not become the
+//! default. `FETCH_ALLOW_PRIVATE_HOSTS` wires a mechanism (C-2): a per-hostname allowlist that relaxes only the
+//! RFC 1918 "private" range check. OQ-4 is RESOLVED (2026-09-22, owner decision, Sprint 13): the mechanism
+//! ships, available and enabled by operator choice, gated behind a SEPARATE master switch,
+//! `FETCH_ALLOW_PRIVATE_HOSTS_ENABLED` (default `false`). Even a non-empty `FETCH_ALLOW_PRIVATE_HOSTS` list has
+//! no effect unless the master switch is explicitly set to `true` -- defense in depth, so a populated list left
+//! over from a prior config (or set defensively "just in case") cannot silently relax anything. The recommended
+//! posture for most operators is to leave the master switch at its default (`false`) and never populate the
+//! list at all.
 
 use crate::obs::Level;
 
 /// robots.txt handling (B-4, Sprint 11). [`RobotsMode::Enforce`] genuinely fetches and enforces the target
 /// origin's robots.txt (initial hop only, fail-open on any fetch/parse error, SSRF-checked and 512 KB capped
 /// like a normal fetch -- see the module docs); [`RobotsMode::Ignore`], the default, never fetches it. The
-/// default preserves the pre-B-4 behaviour and does NOT represent a decision on OQ-3 (whether to enforce it by
+/// default preserves the pre-B-4 behaviour; OQ-3 is resolved (2026-09-22) as staying `ignore` by design (whether to enforce it by
 /// default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RobotsMode {
@@ -51,6 +60,12 @@ pub struct Config {
     /// `FETCH_ALLOW_PRIVATE_HOSTS`. Does not relax the metadata-address, scheme or port rules, and does not
     /// apply to IP-literal hosts or to redirect hops (see `ssrf::Policy`).
     pub allow_private_hosts: Vec<String>,
+    /// Master switch for the `allow_private_hosts` mechanism (OQ-4, resolved 2026-09-22). Default `false`
+    /// (disabled): even a non-empty `allow_private_hosts` list has no effect unless this is explicitly `true`
+    /// (`FETCH_ALLOW_PRIVATE_HOSTS_ENABLED=true`). This is a separate, independent gate from whether the list
+    /// itself is empty -- a single kill switch an operator can flip to hard-disable the whole
+    /// allowlist-relaxation mechanism regardless of list contents.
+    pub allow_private_hosts_enabled: bool,
 }
 
 impl Default for Config {
@@ -63,7 +78,19 @@ impl Default for Config {
             max_concurrency: 3,
             robots_txt: RobotsMode::Ignore,
             allow_private_hosts: Vec::new(),
+            allow_private_hosts_enabled: false,
         }
+    }
+}
+
+/// `true`/`false`, case-insensitive, matching the convention used by [`RobotsMode::parse`] and every other
+/// boolean-shaped `FETCH_*` variable: no other spelling (`1`/`0`, `yes`/`no`, `on`/`off`) is accepted, and an
+/// invalid value is a startup error naming the variable.
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
@@ -97,6 +124,11 @@ impl Config {
         }
         if let Some(v) = get("FETCH_ALLOW_PRIVATE_HOSTS") {
             c.allow_private_hosts = parse_allow_private_hosts(&v)?;
+        }
+        if let Some(v) = get("FETCH_ALLOW_PRIVATE_HOSTS_ENABLED") {
+            c.allow_private_hosts_enabled = parse_bool(&v).ok_or_else(|| {
+                format!("FETCH_ALLOW_PRIVATE_HOSTS_ENABLED: expected true|false, got {v:?}")
+            })?;
         }
         Ok(c)
     }
@@ -188,13 +220,14 @@ mod tests {
             ("FETCH_ALLOW_PRIVATE_HOSTS", "a.example,,b.example"),
             ("FETCH_ALLOW_PRIVATE_HOSTS", "10.0.0.1"),
             ("FETCH_ALLOW_PRIVATE_HOSTS", "[::1]"),
+            ("FETCH_ALLOW_PRIVATE_HOSTS_ENABLED", "yes"),
         ] {
             let e = Config::from_lookup(with(&[(k, v)])).unwrap_err();
             assert!(e.starts_with(k), "{e}");
         }
     }
 
-    /// The default is still `Ignore` (no decision on OQ-3), but -- unlike before B-4 -- `Enforce` is now a real,
+    /// The default is `Ignore` (OQ-3 resolved 2026-09-22: `ignore` stays the default by design), but -- unlike before B-4 -- `Enforce` is now a real,
     /// working mechanism, not a no-op placeholder.
     #[test]
     fn robots_txt_default_is_ignore_but_enforce_is_a_real_mechanism() {
@@ -218,6 +251,53 @@ mod tests {
     fn allow_private_hosts_default_is_empty() {
         let c = Config::from_lookup(with(&[])).unwrap();
         assert!(c.allow_private_hosts.is_empty());
+    }
+
+    // --- OQ-4 (resolved 2026-09-22): master switch, separate from list contents ---
+
+    #[test]
+    fn allow_private_hosts_enabled_default_is_false() {
+        let c = Config::from_lookup(with(&[])).unwrap();
+        assert!(!c.allow_private_hosts_enabled);
+    }
+
+    #[test]
+    fn allow_private_hosts_enabled_accepts_true_and_false_case_insensitively() {
+        for (v, want) in [
+            ("true", true),
+            ("TRUE", true),
+            ("True", true),
+            ("false", false),
+            ("FALSE", false),
+        ] {
+            let c = Config::from_lookup(with(&[("FETCH_ALLOW_PRIVATE_HOSTS_ENABLED", v)])).unwrap();
+            assert_eq!(c.allow_private_hosts_enabled, want, "{v}");
+        }
+    }
+
+    /// The switch is independent of the list: a populated list with the switch left at its default (false)
+    /// still parses fine and the list is retained, but (per `Policy`, see policy.rs tests) has no effect.
+    #[test]
+    fn allow_private_hosts_enabled_is_independent_of_list_contents() {
+        let c = Config::from_lookup(with(&[
+            ("FETCH_ALLOW_PRIVATE_HOSTS", "printer.lan"),
+            // switch not set: stays false even though the list is populated
+        ]))
+        .unwrap();
+        assert_eq!(c.allow_private_hosts, vec!["printer.lan".to_string()]);
+        assert!(!c.allow_private_hosts_enabled);
+
+        let c2 = Config::from_lookup(with(&[
+            ("FETCH_ALLOW_PRIVATE_HOSTS", "printer.lan"),
+            ("FETCH_ALLOW_PRIVATE_HOSTS_ENABLED", "true"),
+        ]))
+        .unwrap();
+        assert!(c2.allow_private_hosts_enabled);
+
+        let c3 =
+            Config::from_lookup(with(&[("FETCH_ALLOW_PRIVATE_HOSTS_ENABLED", "true")])).unwrap();
+        assert!(c3.allow_private_hosts.is_empty());
+        assert!(c3.allow_private_hosts_enabled);
     }
 
     #[test]

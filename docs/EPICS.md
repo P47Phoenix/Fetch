@@ -336,14 +336,14 @@ As a home-lab operator, I want each redirect hop validated so that a public URL 
 - Note (A-3b fix-pass 1): DNS resolution uses `tokio::net::lookup_host`, which runs on the blocking thread pool; B-3/B-5 must check that the blocking-pool cap and the per-hop lookups (up to 6 per fetch, 3 concurrent fetches) cannot exhaust it, and that a hung resolver is bounded by the fetch deadline.
 - Given a redirect to a non-http(s) scheme, when `fetch` is called, then it is refused.
 
-### B-4: robots.txt enforcement (3 pts) [Mechanism DONE Sprint 11, inert by default -- OQ-3 still open]
+### B-4: robots.txt enforcement (3 pts) [Mechanism DONE Sprint 11; OQ-3 RESOLVED 2026-09-22: default stays `ignore` by design]
 Maps to: FR-11, OQ-3.
 As a site-respecting developer, I want disallowed URLs refused so that the agent follows crawl rules.
 - Given a robots.txt that disallows `/private`, when `fetch` targets `/private`, then it is refused with an explanatory error.
 - Given `FETCH_ROBOTS_TXT=ignore` (the default), when the same URL is fetched, then it is allowed.
 - Given robots.txt is missing or returns 404, when `fetch` runs, then it proceeds.
 - Given the robots.txt fetch itself, when made, then it passes the same SSRF checks and size cap (small, at most 512 KB).
-- Blocked by OQ-3: default on or off is confirmed before this story starts.
+- OQ-3 RESOLVED (2026-09-22, owner decision): default stays `ignore` by design (network-level ACLs elsewhere handle this concern), not by omission; `FETCH_ROBOTS_TXT=enforce` remains available but is not, and will not become, the default.
 
 ### B-5: SSRF suite and coverage gate (3 pts)
 Maps to: NFR-04, Goal 4.
@@ -380,26 +380,26 @@ As a developer, I want fetched content marked as untrusted so that the model tre
 | # | Story | Value | Effort | Dependencies |
 |---|---|---|---|---|
 | C-1 | Environment variable parsing and validation | Medium | 3 | A-3b |
-| C-2 | Private host allowlist | Medium | 2 | B-1, C-1, OQ-4 |
+| C-2 | Private host allowlist | Medium | 2 | B-1, C-1, OQ-4 (RESOLVED) |
 | C-3 | Configurable timeout and max size | Medium | 2 | C-1 |
 
-**MVP Slice:** None required; defaults (15 s, 5 MiB, block all private) suffice for the first release. C-2 is promoted if OQ-4 says home-lab access is needed at v1.0.
+**MVP Slice:** None required; defaults (15 s, 5 MiB, block all private, allowlist mechanism present but disabled by its master switch) suffice for the first release. OQ-4 is RESOLVED (2026-09-22): the mechanism ships, available and enabled by operator choice via `FETCH_ALLOW_PRIVATE_HOSTS_ENABLED` (default `false`).
 
 ### C-1: Environment variable parsing and validation (3 pts)
 Maps to: FR-12.
 As a developer, I want a single validated config so that misconfiguration is caught at startup.
 - Given valid values for timeout, max size, user agent, allowed hosts and robots toggle, when the server starts, then it applies them.
 - Given an invalid value (non-numeric timeout, negative size), when the server starts, then it exits non-zero with a message naming the variable and writing only to stderr.
-- Given no variables, when the server starts, then it uses defaults: 15 s, 5 MiB, `max_length` cap 100,000, concurrency 3, block private, and the robots toggle parsed with a placeholder default only (C-1 does not decide OQ-3; the default is confirmed when OQ-3 is decided, due before Sprint 10 starts).
+- Given no variables, when the server starts, then it uses defaults: 15 s, 5 MiB, `max_length` cap 100,000, concurrency 3, block private, and the robots toggle defaulting to `ignore`, now the confirmed, resolved default (OQ-3, 2026-09-22) rather than a placeholder.
 - Given a config error, when the server exits before the MCP handshake, then the stderr text names the variable (the client shows only a generic spawn failure, so this text is the diagnostic; documented in D-4).
 
 ### C-2: Private host allowlist (2 pts)
-Maps to: FR-06, FR-12, US-6, OQ-4.
+Maps to: FR-06, FR-12, US-6, OQ-4 (RESOLVED 2026-09-22).
 As a home-lab operator, I want to allow named internal hosts so that the agent can use my own services deliberately.
-- Given `FETCH_ALLOW_PRIVATE_HOSTS=nas.local`, when `fetch` targets `nas.local`, then it is permitted.
+- Given `FETCH_ALLOW_PRIVATE_HOSTS=nas.local` AND `FETCH_ALLOW_PRIVATE_HOSTS_ENABLED=true`, when `fetch` targets `nas.local`, then it is permitted.
 - Given the same setting, when `fetch` targets another private host or a redirect leads to one, then it is still refused.
-- Given the allowlist is unset, when any private host is targeted, then it is refused.
-- Blocked by OQ-4.
+- Given the allowlist is unset, or the master switch `FETCH_ALLOW_PRIVATE_HOSTS_ENABLED` is left at its default (`false`), when any private host is targeted, then it is still refused (defense in depth: the switch is independent of list contents).
+- OQ-4 RESOLVED (2026-09-22, owner decision): the mechanism ships, gated behind the new master switch, default disabled; see Sprint 13 dev report for the table-driven regression matrix.
 
 ### C-3: Configurable timeout and max size (2 pts)
 Maps to: FR-07, FR-12, US-6.
@@ -446,8 +446,8 @@ Maps to: NFR-15, NFR-06, FR-15.
 As a developer, I want CI to build, test and publish a container image so that I can run the server without compiling and the published artifact is exactly the tested one.
 - Given a tag push, when the release workflow runs on `ubuntu-24.04-arm`, then per-platform jobs on `ubuntu-24.04` and `ubuntu-24.04-arm` each build the `linux/amd64` / `linux/arm64` image natively from a multi-stage Dockerfile (`--locked`, D-7 profile, pinned toolchain), with a minimal non-root base pinned by digest (architecture 9.3), and push it by digest, untagged, as a private candidate to GHCR; a merge job then creates the manifest list M from the per-platform digests (untagged, private).
 - Given the candidate manifest digest M, when the per-platform test jobs run on their native runner, then each pulls `@sha256:M` (never a mutable tag), asserts the resolved platform digest equals the one built, and passes: MCP handshake in a clean container, `--version` (crate version, commit, libc, Cargo.lock hash), non-root user, FR-15 (no OpenSSL; static for musl or symbol floor check for gnu), the D-7 guard plus marker grep for `test-support` and `bench-loopback` on the binary extracted from that digest, and the platform's memory gates (idle on the shipped image, peak on that platform's never-pushed bench image built from the same commit, Cargo.lock hash and base digest).
-- Given BOTH platform gates are green on the exact per-platform digests and M, when the publish job runs, then it adds the version tag (and `latest` only if OQ-7 says so) to that SAME manifest digest M without rebuilding, attaches provenance and SBOM attestations (recommended, not blocking for MVP), and writes M and both per-platform digests into the release notes, plus any deferred-platform statement. No tag or public visibility exists before both gates pass on those digests; the release is blocked if either platform gate fails or is skipped.
-- Given OQ-7 is answered before Sprint 9 (still OPEN; not decided by this story), when the first image is to be published, then the channel, licence and package visibility follow that decision; until then only private candidates exist and the package is not made public.
+- Given BOTH platform gates are green on the exact per-platform digests and M, when the publish job runs, then it adds the version tag to that SAME manifest digest M without rebuilding (`latest` intentionally left out as a separate follow-up, not implied by OQ-7), attaches provenance and SBOM attestations (recommended, not blocking for MVP), and writes M and both per-platform digests into the release notes, plus any deferred-platform statement. No tag or public visibility exists before both gates pass on those digests AND a human explicitly runs `workflow_dispatch` with `confirm_publish=true`; the release is blocked if either platform gate fails or is skipped, or if that manual confirmation is absent.
+- **OQ-7 is RESOLVED (2026-09-22, owner decision, Sprint 13): open source, `MIT OR Apache-2.0`** (see `LICENSE-MIT`, `LICENSE-APACHE`, `Cargo.toml`). The channel and licence for the first published image follow that decision; the package remains private until the separate manual `confirm_publish` step is exercised (Sprint 13 does not exercise it and does not create/push a `v1.0` tag).
 - Given the workflow, when written, then it follows architecture 9.2: default `contents: read`, `packages: write`/`id-token`/`attestations` only in the publish job, SHA-pinned actions, no `pull_request_target`, fork PRs never push. Skipped or absent gate jobs block the release (required checks; `needs:`).
 - Given `deny.toml` (committed in D-7), when the release pipeline runs, then it still has `advisories`, `bans` (deny `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`), `sources` (crates.io only) and `licenses` (permissive allow-list) sections.
 - Given the base image digest or the toolchain changes, when the pin is bumped, then it is its own PR and re-runs the ARM gates.
@@ -486,7 +486,7 @@ As the project owner, I want a clean v1.0 tag so that the release is auditable.
 - Given a licence is selected per OQ-7, when the release is tagged, then LICENSE is present and direct dependencies are at most 15.
 - Given all PRD Goals are met, when v1.0 is tagged, then the release notes link the benchmark report.
 
-**D-6 status (Sprint 12).** First AC bullet DONE: new CI job `audit` (`ci.yml`) installs `cargo-audit` 0.22.2 and runs `cargo audit --deny warnings`; ran clean locally (0 vulnerabilities, 209 crates scanned) before hosted CI, complementing the pre-existing `deny` job (`cargo deny check`, same RustSec advisory-db, different tool — D-6 names `cargo audit` specifically, so it is now actually installed and run rather than only covered by proxy). Second bullet PARTIALLY done: LICENSE has been present since the initial commit (Apache-2.0) and direct dependencies are machine-checked at 11 of <= 15 by a new CI job, `dependency-count` (`scripts/dependency_count_gate.py`); but "a licence is selected per OQ-7" is explicitly NOT satisfied — OQ-7 (image distribution/licence) is still open (see `docs/ci-branch-protection.md#licence-oq-7-still-open`), and the pre-existing Apache-2.0 LICENSE file is a fact about the repository's source licence, not an OQ-7 answer about image distribution/publication. Third bullet: the release-notes mechanism is implemented (a new step in `release.yml`'s `publish` job generates GitHub release notes linking `docs/BENCHMARK.md` and stating the audit/deny results) but that whole job remains hard-gated `if: false` (blocked on OQ-7 since Sprint 9/D-2) so it has not run and cannot run yet. **The `v1.0` git tag itself is deliberately NOT created by this sprint.** Per this sprint's explicit instructions and the sprint-plan's own risk note ("Publishing a public image (GHCR) is a distribution act... Publishing before OQ-7 is answered would decide licence/distribution by default"), tagging is coupled to an OQ-7 answer this agent has no authority to make, and tag creation is reserved for the coordinator after full review. D-6 is therefore implemented (mechanism) but NOT Done (the story's own AC requires the licence selection and the tag); this mirrors the pattern already used for B-4/C-1/C-2 (mechanism shipped inert pending an owner OQ decision).
+**D-6 status (Sprint 12 mechanism; Sprint 13 licence decision).** First AC bullet DONE: new CI job `audit` (`ci.yml`) installs `cargo-audit` 0.22.2 and runs `cargo audit --deny warnings`; ran clean locally (0 vulnerabilities, 209 crates scanned) before hosted CI, complementing the pre-existing `deny` job (`cargo deny check`, same RustSec advisory-db, different tool — D-6 names `cargo audit` specifically, so it is now actually installed and run rather than only covered by proxy). Second bullet: **DONE as of Sprint 13** — "a licence is selected per OQ-7" is now satisfied: OQ-7 is RESOLVED (2026-09-22, owner decision) as open source, dual-licensed `MIT OR Apache-2.0`; `LICENSE-APACHE` (the file at `LICENSE` since the initial commit) and a new `LICENSE-MIT` are both present, `Cargo.toml`'s `license` field is set, and direct dependencies are machine-checked at 11 of <= 15 by the `dependency-count` CI job (`scripts/dependency_count_gate.py`). Third bullet: the release-notes mechanism is implemented (a step in `release.yml`'s `publish` job generates GitHub release notes linking `docs/BENCHMARK.md` and stating the audit/deny results); the `publish` job's `false &&` short-circuit has been removed (Sprint 13, OQ-7 resolved) but the job is still gated on the separate, unweakened `confirm_publish` manual-dispatch requirement, so it has not run in this sprint. **The `v1.0` git tag itself is still deliberately NOT created by this sprint** (or any sprint agent) — tag creation is reserved for the coordinator after full review, per every sprint's instructions, regardless of the OQ-7 resolution. D-6 is therefore DONE on its licence/audit/dependency-count AC text; the `v1.0` tag remains a coordinator action, not a story-completion blocker for this AC.
 
 ### D-7: Hosted PR CI baseline (2 pts) [added in plan revision 1]
 Maps to: NFR-15, NFR-04 (release-build guard), Definition of Done.
@@ -495,7 +495,7 @@ As a solo developer, I want hosted PR checks from Sprint 0 so that "CI green" in
 - Given the repo, when committed, then `rust-toolchain.toml` pins the exact channel, `Cargo.lock` is committed, all CI commands use `--locked`, and every GitHub Action is pinned by full commit SHA.
 - Given `deny.toml` (sections `advisories`, `bans` denying `openssl`, `openssl-sys`, `native-tls`, `aws-lc-sys`, `aws-lc-rs`, `sources` crates.io only, `licenses` permissive allow-list), when CI runs, then `cargo deny` passes.
 - Given the crate, when CI runs, then a job skeleton builds the release profile and asserts absence of the `test-support` and `bench-loopback` (E-8) features and of their marker strings in the binary (fails if present; becomes meaningful once A-3a adds `test-support`). The guard has a self-test: a deliberately built binary with `bench-loopback` (and one with `test-support`) must fail it, so it cannot pass vacuously. The release build uses `-p <crate>` so a workspace bench member cannot unify `bench-loopback` into it; E-8 unit tests run with `--features bench-loopback` in hosted CI.
-- Given the release profile, when this story closes, then `Cargo.toml` fixes it (opt-level, lto, panic=abort where compatible, strip, codegen-units) with the values chosen from the A-1 spike, and G0, G4a, G4b and E-5 all measure it. D-1 (Sprint 8) finalises it. Also `publish = false` and `licenses.private.ignore` so `cargo deny` passes before OQ-7, and A-1 spike code passes clippy `-D warnings`.
+- Given the release profile, when this story closes, then `Cargo.toml` fixes it (opt-level, lto, panic=abort where compatible, strip, codegen-units) with the values chosen from the A-1 spike, and G0, G4a, G4b and E-5 all measure it. D-1 (Sprint 8) finalises it. Also `publish = false` (unrelated to the dual MIT/Apache-2.0 `license` field, OQ-7 RESOLVED 2026-09-22) and `licenses.private.ignore` so `cargo deny` passes, and A-1 spike code passes clippy `-D warnings`.
 - Given the repository settings, when this story closes, then branch protection on `main` requires the fmt, clippy, test, deny and release-guard checks (configured by the owner and recorded in the PR), so 'required check' is real from Sprint 0.
 - Given fork pull requests, when CI runs, then jobs run with no secrets and a read-only token, no image is pushed, and there is no `pull_request_target` trigger. All runners are GitHub-hosted (ADR-007); there is no self-hosted runner in this project.
 - Note: pushing the branch and opening the sprint PR is covered by the owner's sprint-start instruction; per-story benchmarks are manual on PRs until E-2 (Sprint 3) lands; from then the hosted arm64 workflow can run on same-repo PRs (ADR-007 removed the self-hosted restriction).
@@ -581,10 +581,10 @@ Trade-off: Sprint 10 is 7 points with C-2 and 5 if OQ-4 is "no" (C-2 dropped).
 
 | # | Item | Owner | Blocks |
 |---|---|---|---|
-| OQ-3 | robots.txt default. DUE before Sprint 10 starts (C-1 parses the toggle with a placeholder; the default is decided by OQ-3, still OPEN) | Michael | C-1 default (Sprint 10), B-4 (Sprint 11) |
-| OQ-4 | Private-host allowlist needed. DUE before Sprint 10 | Michael | C-2 (Sprint 10) |
+| OQ-3 | robots.txt default. RESOLVED 2026-09-22: default stays `ignore` by design (network-level ACLs elsewhere handle this concern); `FETCH_ROBOTS_TXT=enforce` remains available but is not, and will not become, the default | Michael | C-1 default (Sprint 10), B-4 (Sprint 11) |
+| OQ-4 | Private-host allowlist governance. RESOLVED 2026-09-22: mechanism ships, available and enabled by operator choice, gated behind a new master switch `FETCH_ALLOW_PRIVATE_HOSTS_ENABLED` (default `false`) | Michael | C-2 (Sprint 10) |
 | OQ-5 | Untrusted-content labelling. **RESOLVED 2026-09-20: no label** (result envelope unchanged; B-6 won't-do) | Michael | None |
-| OQ-7 | Distribution and licence. DUE before Sprint 9 starts, and in any case BEFORE the first image is published to GHCR (D-2 naming/publication/visibility, D-4 install guide, LICENSE). Still OPEN; not decided by ADR-007 | Michael | D-2, D-4, D-6 |
+| OQ-7 | Distribution and licence. RESOLVED 2026-09-22: open source, dual-licensed `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`, `Cargo.toml` `license` field); `release.yml` `publish` job's `false &&` short-circuit removed, `confirm_publish` manual gate unchanged | Michael | D-2, D-4, D-6 |
 | E-8 | Bench-only loopback build. CONFIRMED by the user 2026-09-19 (does not decide OQ-4) | Michael | None (recorded; Sprint 2 E-8, E-2) |
 | OQ-8 | Resolved 2026-09-19: not a replacement; no incumbent; schema is default design | Michael | None |
 | OQ-9 | Resolved 2026-09-19; AMENDED 2026-09-19 by the user (ADR-007): native aarch64 measurement runs on GitHub-hosted arm64 runners (`ubuntu-24.04-arm`, cloud VM), no self-hosted runner; OS/RAM/page size recorded per run | Michael | None |

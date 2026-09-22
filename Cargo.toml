@@ -4,6 +4,8 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 description = "Low-memory MCP fetch server (A-4: guarded streaming fetch with HTML to markdown conversion)"
+# OQ-7 (image distribution/licence), resolved 2026-09-22: open source, dual-licensed, Rust-ecosystem convention.
+license = "MIT OR Apache-2.0"
 
 [features]
 default = []

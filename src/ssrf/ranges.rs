@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Why an address is blocked. `Loopback` can be relaxed by the test/bench-only policy (never in a release
 /// build). The "private" category (`Other` kind) can additionally be relaxed, but only for an exact hostname
-/// configured in `Policy`'s allowlist via [`crate::policy::Policy::check_ip_for_host`] (C-2, OQ-4 still open).
+/// configured in `Policy`'s allowlist via [`crate::policy::Policy::check_ip_for_host`] (C-2, OQ-4 resolved 2026-09-22: available and enabled by operator choice via a master switch, default off).
 /// Everything else, metadata addresses included, is blocked for every policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {

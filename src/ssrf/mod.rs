@@ -582,7 +582,7 @@ mod tests {
     /// host with `Policy::check_ip`, never `check_ip_for_host`, so no hostname allowlist can apply to it.
     #[test]
     fn ip_literal_url_is_refused_even_if_the_literal_string_is_allowlisted() {
-        let p = Policy::with_allow_private_hosts(vec!["10.0.0.1".to_string()]);
+        let p = Policy::with_allow_private_hosts_gated(vec!["10.0.0.1".to_string()], true);
         let err = check_url("http://10.0.0.1/", &p, Origin::Initial).unwrap_err();
         assert!(matches!(err, FetchError::BlockedTarget(_)), "{err:?}");
     }
