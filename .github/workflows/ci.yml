@@ -59,6 +59,52 @@ jobs:
       - name: Bench harness self-test (proves the harness can fail)
         run: python3 bench/selftest.py
 
+  # D-1: the release binary links no OpenSSL/native-tls, only libc/libgcc_s/libm (rustls, ADR-001).
+  release-ldd-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - run: cargo build --release --locked
+      - name: Assert no OpenSSL / native-tls linkage
+        run: |
+          set -euo pipefail
+          ldd target/release/fetch-mcp | tee ldd.txt
+          if grep -Ei 'ssl|crypto|native-tls' ldd.txt; then
+            echo "release binary links a disallowed TLS library" >&2
+            exit 1
+          fi
+
+  # B-5: line coverage gate on the SSRF, redirect and pagination modules (>= 90%, table-driven cases only).
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - run: rustup component add llvm-tools-preview
+      - uses: taiki-e/install-action@d850aa816998e5cf15f67a78c7b933f2a5033f8a # v2.63.3
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage on ssrf, fetch(redirect) and convert::window (pagination) modules
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --locked --lcov --output-path lcov.info \
+            --ignore-filename-regex '^(src/main\.rs|src/server\.rs|src/obs\.rs|src/convert/(html|boilerplate)\.rs|spikes/)'
+          python3 scripts/coverage_gate.py lcov.info \
+            src/ssrf/mod.rs src/ssrf/ranges.rs src/ssrf/resolver.rs src/ssrf/differential.rs \
+            src/fetch/mod.rs src/convert/window.rs \
+            --min 90
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: warn
+
   deny:
     runs-on: ubuntu-latest
     steps:
