@@ -421,12 +421,21 @@ jobs:
     # source, dual-licensed MIT OR Apache-2.0 (see LICENSE-MIT, LICENSE-APACHE, Cargo.toml). The
     # `false &&` short-circuit that made this job unreachable regardless of trigger has been removed
     # now that the licence/distribution question is decided — but the safety net is unchanged and
-    # MUST NOT be weakened: `inputs.confirm_publish == 'true'` is still a mandatory conjunct, not an
+    # MUST NOT be weakened: `inputs.confirm_publish == true` is still a mandatory conjunct, not an
     # either/or with the trigger type, so a bare `v*` tag push can never reach this job on its own.
     # It only runs on a `workflow_dispatch` that explicitly sets `confirm_publish: true` AND the ref
     # is a version tag — i.e. publishing still requires a deliberate, separate, manual confirmation
     # step after the tag exists, never an automatic side effect of pushing the tag.
-    if: startsWith(github.ref, 'refs/tags/v') && inputs.confirm_publish == 'true'
+    #
+    # NB (fix, 2026-09-22): `confirm_publish` is declared `type: boolean` above, so `inputs.confirm_publish`
+    # is the boolean `true`/`false`, never the string `'true'`. GitHub Actions expression comparisons
+    # between a boolean and a string coerce both operands to numbers; `'true'` isn't numeric, so that
+    # conversion fails and the comparison silently evaluates to `false` no matter what was passed at
+    # dispatch time. The prior `== 'true'` form therefore made this job permanently unreachable even
+    # with `confirm_publish: true` supplied (confirmed: run 35803606353 skipped `publish` despite a
+    # `workflow_dispatch -f confirm_publish=true` run). Comparing against the boolean literal `true`
+    # (no quotes) fixes this while keeping the exact same intent and strictness.
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.confirm_publish == true
     # These permissions are pre-provisioned for this job's steps (version-tag push, provenance/SBOM
     # attestation, release-notes write) - see NB-8 in the PR #13 review.
     permissions:
