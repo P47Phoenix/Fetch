@@ -7,15 +7,17 @@ name: release
 # That answers WHAT licence governs distribution; it does not by itself make a tag push auto-publish a
 # public image. The `merge` job still pushes only a `candidate-<sha>` reference (never a version tag or
 # `latest`) because `imagetools create` requires some registry reference to target (a bare digest cannot
-# be a push target) - this is a technical necessity, not a release artifact, and it is immediately
-# followed by an automated GHCR package-visibility check (`Assert GHCR package is private (OQ-7 guard)`)
-# that FAILS the job if the package is not private, so "candidates stay private until explicitly
-# published" is enforced in CI, not just claimed in this comment. The `publish` job below is the only
-# path that can add a version tag / make the package public, and it requires a manual, non-`push`-
-# triggered `workflow_dispatch` with `confirm_publish=true` in addition to the tag existing (see that
-# job) - a bare `git push` of a `v*` tag can never by itself publish anything; a human must separately
-# run `workflow_dispatch` with `confirm_publish=true` after the tag exists. Do not weaken that
-# `confirm_publish` requirement without an owner decision recorded in the sprint plan.
+# be a push target) - this is a technical necessity, not a release artifact. An earlier revision of this
+# workflow also hard-failed the `merge` job unless the GHCR package was `private`, written while OQ-7 was
+# still undecided; that guard is now report-only (Revision 25 fix-pass, 2026-09-22) because a public
+# package is the intended end state post-OQ-7, and a hard "must stay private" assertion would permanently
+# block every release once the package first goes public. What actually stops an unreviewed candidate from
+# ever being mistaken for a release is unchanged and structural: only the `publish` job below can add a
+# version tag / `latest` / flip the package to public, and it requires a manual, non-`push`-triggered
+# `workflow_dispatch` with `confirm_publish=true` in addition to the tag existing (see that job) - a bare
+# `git push` of a `v*` tag can never by itself publish or expose anything; a human must separately run
+# `workflow_dispatch` with `confirm_publish=true` after the tag exists. Do not weaken that `confirm_publish`
+# requirement without an owner decision recorded in the sprint plan.
 #
 # Trigger: a `v*` tag push (the build/test/candidate path; publishing still needs the separate manual
 # confirmation above) and `workflow_dispatch` (so the build/test path can be exercised for CI evidence
@@ -201,7 +203,18 @@ jobs:
             echo "manifest list digest: \`$digest\` (private; \`docker pull $IMAGE@$digest\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "Assert GHCR package is private (OQ-7 guard)"
+      - name: "Report GHCR package visibility (informational, OQ-7 resolved open source)"
+        # This step used to fail the job unless the package was 'private' - written while OQ-7 (image
+        # distribution/licence) was still undecided, to stop an unreviewed candidate manifest from
+        # ever landing in a public package by accident. OQ-7 is now RESOLVED (2026-09-22): open
+        # source, dual-licensed MIT OR Apache-2.0. A public package is the intended end state, so a
+        # hard "must be private" assertion here is no longer correct and would permanently block
+        # every release after the first `publish` run makes the package public (this is exactly what
+        # broke the v1.0 publish attempt). What still protects against an unreviewed candidate ever
+        # being mistaken for a release: this job only ever pushes a `candidate-<sha>` reference, never
+        # a version tag or `latest` - only the `publish` job (gated on `confirm_publish == 'true'` AND
+        # a `v*` tag ref) can add those. Visibility is orthogonal to that guarantee, so this step is
+        # now report-only and never fails the run.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -213,10 +226,8 @@ jobs:
           else
             endpoint="users/${{ github.repository_owner }}/packages/container/$package"
           fi
-          vis=$(gh api "$endpoint" --jq .visibility) \
-            || { echo "::error::cannot read GHCR package visibility at $endpoint - failing closed"; exit 1; }
+          vis=$(gh api "$endpoint" --jq .visibility 2>/dev/null || echo "unknown (package may not exist yet)")
           echo "GHCR package '$package' visibility: $vis"
-          [ "$vis" = "private" ] || { echo "::error::GHCR package '$package' visibility is '$vis', not 'private'; OQ-7 forbids any non-private candidate. Failing the run."; exit 1; }
 
   # ---------------------------------------------------------------------------------------------
   # Per-platform test: pulls the candidate BY DIGEST ONLY, never the candidate tag, on the platform's
@@ -439,6 +450,28 @@ jobs:
           docker buildx imagetools create -t "$IMAGE:$version" "$IMAGE@$digest"
           # `latest` is intentionally left out here; adding it is a separate follow-up, not implied by
           # OQ-7's licence resolution.
+
+      - name: "Make the GHCR package public (OQ-7: open source)"
+        # Runs only under this job's own guard (confirm_publish == 'true' AND a v* tag ref), so a
+        # candidate build can never trigger this. GHCR container package visibility is a package-level
+        # setting, not per-tag, so this is the one place in the pipeline that should ever change it -
+        # and only once a version has actually been confirmed and tagged above. Idempotent: if the
+        # package is already public (e.g. a prior release already flipped it), this is a no-op.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          package="$(basename "$IMAGE")"
+          owner_type="$(gh api "repos/${{ github.repository }}" --jq .owner.type)"
+          if [ "$owner_type" = "Organization" ]; then
+            endpoint="orgs/${{ github.repository_owner }}/packages/container/$package"
+          else
+            endpoint="users/${{ github.repository_owner }}/packages/container/$package"
+          fi
+          gh api --method PATCH "$endpoint" -f visibility=public
+          vis=$(gh api "$endpoint" --jq .visibility)
+          echo "GHCR package '$package' visibility is now: $vis"
+          [ "$vis" = "public" ] || { echo "::error::expected 'public' after PATCH, got '$vis'"; exit 1; }
       - name: Provenance / SBOM attestation (best-effort, non-blocking for MVP)
         continue-on-error: true
         run: |
