@@ -107,7 +107,7 @@ jobs:
           persist-credentials: false
       - run: rustup show active-toolchain
       - run: rustup component add llvm-tools-preview
-      - uses: taiki-e/install-action@d850aa816998e5cf15f67a78c7b933f2a5033f8a # v2.63.3
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-llvm-cov
       - name: Coverage on ssrf, fetch(redirect) and convert::window (pagination) modules
