@@ -35,7 +35,7 @@ rustls = { version = "=0.23.45", default-features = false, features = ["ring", "
 # 7. webpki-roots: embedded trust anchors (ADR-001; static musl binary and bare containers work).
 webpki-roots = "=1.0.9"
 # 8. flate2: pure-Rust (miniz_oxide) gzip decoder driven with a bounded output buffer (ADR-004).
-flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 # 9. lol_html: streaming HTML tokenizer (send API) driving the markdown converter (ADR-002 option B). Chosen because the
 #    buffered DOM converters measured 56-185 MiB in the A-1 spike (fail the 40 MiB target) while lol_html stays in the
 #    single digits. Exact pin: 2.9.0 is the version the spike measured (3.x exists; moving is a re-measure). Licence
