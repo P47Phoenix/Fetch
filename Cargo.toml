@@ -23,7 +23,7 @@ bench-loopback = []
 rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
 # 2. tokio: current_thread runtime, minimal features. `net` (lookup_host), `time` (the fetch deadline) and `sync`
 #    (the concurrency Semaphore) were added by A-3b and are what it needs. Exact pin (sec 9.1).
-tokio = { version = "=1.53.1", default-features = false, features = ["rt", "macros", "io-std", "io-util", "net", "time", "sync"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["rt", "macros", "io-std", "io-util", "net", "time", "sync"] }
 # 3. serde: FetchParams deserialisation.
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 # 4. schemars: JSON schema for the tool input (rmcp uses schemars 1.x).
