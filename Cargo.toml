@@ -20,7 +20,7 @@ bench-loopback = []
 # Direct-dependency ledger against NFR-05 (<= 15; architecture sec 14 R13). A-2 adds 4 (4 of 15); A-3a adds none (std::net parsing, own range tables; no `url`/`ipnet` crate); A-3b adds 4 (reqwest, rustls, webpki-roots, flate2: 8 of 15); A-4 adds 2 (lol_html, html-escape: 10 of 15); A-8 (Sprint 11) adds 1 (encoding_rs: 11 of 15).
 # Versions match spikes/a1/Cargo.lock where the spike had them (architecture sec 9.1).
 # 1. rmcp: MCP server, stdio transport, #[tool_router] macros (ADR-001). Exact pin: high-churn 3.x (R5).
-rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
 # 2. tokio: current_thread runtime, minimal features. `net` (lookup_host), `time` (the fetch deadline) and `sync`
 #    (the concurrency Semaphore) were added by A-3b and are what it needs. Exact pin (sec 9.1).
 tokio = { version = "=1.53.1", default-features = false, features = ["rt", "macros", "io-std", "io-util", "net", "time", "sync"] }
