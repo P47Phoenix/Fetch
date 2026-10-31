@@ -23,7 +23,7 @@ bench-loopback = []
 rmcp = { version = "=3.4.0", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
 # 2. tokio: current_thread runtime, minimal features. `net` (lookup_host), `time` (the fetch deadline) and `sync`
 #    (the concurrency Semaphore) were added by A-3b and are what it needs. Exact pin (sec 9.1).
-tokio = { version = "=1.53.1", default-features = false, features = ["rt", "macros", "io-std", "io-util", "net", "time", "sync"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["rt", "macros", "io-std", "io-util", "net", "time", "sync"] }
 # 3. serde: FetchParams deserialisation.
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 # 4. schemars: JSON schema for the tool input (rmcp uses schemars 1.x).
@@ -31,9 +31,9 @@ schemars = "1"
 # 5. reqwest: HTTP/1.1 client (ADR-001). rustls without a bundled provider: ring is installed at start.
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
 # 6. rustls: ring provider only (no aws-lc; deny.toml bans it) and the preconfigured client TLS config.
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # 7. webpki-roots: embedded trust anchors (ADR-001; static musl binary and bare containers work).
-webpki-roots = "=1.0.9"
+webpki-roots = "=1.0.10"
 # 8. flate2: pure-Rust (miniz_oxide) gzip decoder driven with a bounded output buffer (ADR-004).
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 # 9. lol_html: streaming HTML tokenizer (send API) driving the markdown converter (ADR-002 option B). Chosen because the
