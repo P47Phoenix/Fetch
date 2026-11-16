@@ -460,27 +460,9 @@ jobs:
           # `latest` is intentionally left out here; adding it is a separate follow-up, not implied by
           # OQ-7's licence resolution.
 
-      - name: "Make the GHCR package public (OQ-7: open source)"
-        # Runs only under this job's own guard (confirm_publish == 'true' AND a v* tag ref), so a
-        # candidate build can never trigger this. GHCR container package visibility is a package-level
-        # setting, not per-tag, so this is the one place in the pipeline that should ever change it -
-        # and only once a version has actually been confirmed and tagged above. Idempotent: if the
-        # package is already public (e.g. a prior release already flipped it), this is a no-op.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          package="$(basename "$IMAGE")"
-          owner_type="$(gh api "repos/${{ github.repository }}" --jq .owner.type)"
-          if [ "$owner_type" = "Organization" ]; then
-            endpoint="orgs/${{ github.repository_owner }}/packages/container/$package"
-          else
-            endpoint="users/${{ github.repository_owner }}/packages/container/$package"
-          fi
-          gh api --method PATCH "$endpoint" -f visibility=public
-          vis=$(gh api "$endpoint" --jq .visibility)
-          echo "GHCR package '$package' visibility is now: $vis"
-          [ "$vis" = "public" ] || { echo "::error::expected 'public' after PATCH, got '$vis'"; exit 1; }
+      # No visibility step here on purpose: GITHUB_TOKEN cannot change GHCR package visibility (the PATCH
+      # returned 404 in run 35807210210). The package is set public once by hand in the GitHub UI; that
+      # is a one-time owner action, not part of the release pipeline.
       - name: Provenance / SBOM attestation (best-effort, non-blocking for MVP)
         continue-on-error: true
         run: |
