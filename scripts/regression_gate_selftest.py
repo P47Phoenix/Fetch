@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Self-test for scripts/regression_gate.py (E-6). Proves: PASS within threshold, FAIL beyond it,
+PASS when over 10% but under the absolute noise floor, FAIL when over both,
 --update seeds/refreshes a baseline, and a missing baseline entry is advisory (exit 0), not a false PASS
 or silent gate bypass. Run: python3 scripts/regression_gate_selftest.py
 """
@@ -49,16 +50,32 @@ with tempfile.TemporaryDirectory() as d:
     rc, out, err = run("--idle", idle, "--peak", peak, "--baseline", baseline, "--platform", "amd64-gnu")
     check("within threshold exits 0", rc == 0, f"rc={rc} err={err}")
 
-    idle = idle_jsonl(d, 5000)   # +25%, over 10%
+    idle = idle_jsonl(d, 5600)   # +40% and +1600 kB, over both bars
     peak = peak_jsonl(d, 6100)
     rc, out, err = run("--idle", idle, "--peak", peak, "--baseline", baseline, "--platform", "amd64-gnu")
     check("idle regression beyond threshold exits 1", rc == 1, f"rc={rc}")
     check("idle regression names the metric in stderr", "idle (VmRSS)" in err, err)
 
     idle = idle_jsonl(d, 4100)
-    peak = peak_jsonl(d, 7000)   # +16.7%, over 10%
+    peak = peak_jsonl(d, 7600)   # +26.7% and +1600 kB, over both bars
     rc, out, err = run("--idle", idle, "--peak", peak, "--baseline", baseline, "--platform", "amd64-gnu")
     check("peak regression beyond threshold exits 1", rc == 1, f"rc={rc}")
+
+    # Noise floor: +18.6% but only +896 kB (the amd64-musl 4816 -> 5712 kB swing seen on unchanged code) passes.
+    with open(baseline) as f:
+        b = json.load(f)
+    b["amd64-musl"] = {"idle_kB": 2348, "peak_kB": 4816, "updated_from_run": "seed"}
+    with open(baseline, "w") as f:
+        json.dump(b, f)
+    rc, out, err = run("--idle", idle_jsonl(d, 2400), "--peak", peak_jsonl(d, 5712), "--baseline", baseline, "--platform", "amd64-musl")
+    check("over 10% but under the 1536 kB floor exits 0 (runner noise)", rc == 0, f"rc={rc} err={err}")
+
+    rc, out, err = run("--idle", idle_jsonl(d, 2400), "--peak", peak_jsonl(d, 6400), "--baseline", baseline, "--platform", "amd64-musl")
+    check("over 10% and over the 1536 kB floor exits 1", rc == 1, f"rc={rc}")
+
+    rc, out, err = run("--idle", idle_jsonl(d, 2400), "--peak", peak_jsonl(d, 5712), "--baseline", baseline,
+                       "--platform", "amd64-musl", "--min-regression-kb", "0")
+    check("--min-regression-kb 0 restores the pure 10% band", rc == 1, f"rc={rc}")
 
     idle = idle_jsonl(d, 4100)
     peak = peak_jsonl(d, 6200)
