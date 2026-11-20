@@ -40,7 +40,7 @@ flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backe
 #    buffered DOM converters measured 56-185 MiB in the A-1 spike (fail the 40 MiB target) while lol_html stays in the
 #    single digits. Exact pin: 2.9.0 is the version the spike measured (3.x exists; moving is a re-measure). Licence
 #    BSD-3-Clause; its selector crates (cssparser, selectors, ...) are MPL-2.0, allowed by exception in deny.toml.
-lol_html = { version = "=2.9.0", default-features = false }
+lol_html = { version = "=3.0.1", default-features = false }
 # 10. html-escape: HTML5 character-reference decoding (text and attribute values), no dependencies, MIT. Used instead
 #    of a hand-kept entity table (2125 named references).
 html-escape = { version = "=0.2.15", default-features = false }
