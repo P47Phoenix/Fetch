@@ -4,6 +4,12 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
+# RUSTSEC-2026-0543: chrono is unmaintained (informational notice, no known vulnerability). It reaches us only
+# through rmcp and schemars, and every rmcp 3.x release depends on it, so it cannot be dropped by a bump. Revisit
+# when rmcp moves off chrono. Mirrored in .cargo/audit.toml, which is where the `audit` CI job reads its ignores.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained notice; transitive via rmcp/schemars, no rmcp release without it" },
+]
 
 [bans]
 multiple-versions = "warn"
