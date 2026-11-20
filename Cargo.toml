@@ -47,7 +47,7 @@ html-escape = { version = "=0.2.15", default-features = false }
 # 11. encoding_rs: WHATWG Encoding Standard decoder (A-8, Sprint 11), used for the non-UTF-8 charset path
 #    (Content-Type/meta charset -> full-body decode with BOM handling and replacement, both built in). MIT/Apache-2.0,
 #    no dependencies. Exact pin: the version cached in this environment's cargo registry (sec 9.1 style).
-encoding_rs = { version = "=0.8.41", default-features = false }
+encoding_rs = { version = "=0.8.42", default-features = false }
 
 [dev-dependencies]
 # url: dev-dependency only, reference parser for the A-3b differential test (architect N2). Same version reqwest resolves.
