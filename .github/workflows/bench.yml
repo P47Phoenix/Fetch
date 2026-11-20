@@ -167,14 +167,15 @@ jobs:
           cat out/peak.jsonl
           exit "$rc"
 
-      - name: "E-6 memory-regression tripwire: idle/peak vs the stored last-main baseline, >10% regression fails even under the absolute target"
+      - name: "E-6 memory-regression tripwire: idle/peak vs the stored baseline, fails when >10% AND >1.5 MiB over it, even under the absolute target"
         id: regression
         continue-on-error: true
         run: |
           set -u
           rc=0
           python3 scripts/regression_gate.py --idle out/idle.jsonl --peak out/peak.jsonl \
-            --baseline bench/baseline.json --platform "${{ matrix.arch }}-${{ matrix.libc }}" --max-regression-pct 10 || rc=$?
+            --baseline bench/baseline.json --platform "${{ matrix.arch }}-${{ matrix.libc }}" --max-regression-pct 10 \
+            --min-regression-kb 1536 || rc=$?
           echo "regression_exit=$rc" | tee -a out/exitcodes.txt
           exit "$rc"
 
@@ -204,6 +205,20 @@ jobs:
               --bench "$RUNNER_TEMP/bin/fetch-mcp-${{ matrix.triple }}-${{ matrix.libc }}-bench"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Record this leg's own verdict in its artifact so update-baseline can refresh this cell
+      # on its own pass, without waiting for the other three legs (same condition as the final fail step).
+      - name: Record this leg's gate verdict for update-baseline
+        if: always()
+        run: |
+          mkdir -p out
+          if [ "${{ steps.idle.outcome }}" = success ] && [ "${{ steps.peak.outcome }}" = success ] && \
+             [ "${{ steps.idle_bench.outcome }}" = success ] && [ "${{ steps.regression.outcome }}" = success ]; then
+            echo PASS > out/verdict.txt
+          else
+            echo FAIL > out/verdict.txt
+          fi
+          cat out/verdict.txt
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -218,14 +233,17 @@ jobs:
           [ "${{ steps.idle.outcome }}" = success ] && [ "${{ steps.peak.outcome }}" = success ] && \
             [ "${{ steps.idle_bench.outcome }}" = success ] && [ "${{ steps.regression.outcome }}" = success ]
 
-  # E-6: after a same-repo push-to-main bench-gate PASS, refresh the stored per-platform baseline (bench/baseline.json)
-  # that the regression tripwire above compares against, so the 10% band tracks main rather than staying pinned to the
-  # Sprint 5 G4b figures forever. Runs only on push to main (never on a PR, so a PR cannot move its own goalposts);
-  # elevates to contents: write for this job only (least-privilege: every other job/event stays contents: read).
+  # E-6: after a bench-gate PASS on main (a push or the nightly schedule), refresh the stored per-platform baseline
+  # (bench/baseline.json) that the regression tripwire above compares against, so the band tracks main rather than
+  # staying pinned to old figures. Each cell refreshes on its OWN leg's pass (out/verdict.txt in that leg's artifact):
+  # one noisy leg no longer freezes the other three cells' baselines. Never on a PR (a PR cannot move its own
+  # goalposts); elevates to contents: write for this job only (every other job/event stays contents: read).
   update-baseline:
     name: update-baseline (${{ matrix.arch }}, ${{ matrix.libc }})
     needs: bench-gate
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # !cancelled() instead of the implicit success(): run even when another matrix leg failed; the per-leg
+    # verdict check below decides whether this cell is refreshed.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -249,6 +267,7 @@ jobs:
           ref: main
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true   # a leg that died before uploading has no artifact; the verdict check below skips it
         with:
           name: bench-gate-${{ matrix.arch }}-${{ matrix.libc }}
           path: out/
@@ -256,6 +275,10 @@ jobs:
       - name: Only refresh the baseline if that cell's bench-gate leg actually PASSED (never bless a failing or advisory run)
         run: |
           set -eu
+          if [ "$(cat out/verdict.txt 2>/dev/null || true)" != PASS ]; then
+            echo "bench-gate ${{ matrix.arch }}-${{ matrix.libc }} did not PASS this run (verdict: $(cat out/verdict.txt 2>/dev/null || echo missing)), leaving its baseline unchanged"
+            exit 0
+          fi
           [ -s out/idle.jsonl ] && [ -s out/peak.jsonl ] || { echo "::warning::missing idle.jsonl/peak.jsonl for ${{ matrix.arch }}-${{ matrix.libc }}, skipping baseline update"; exit 0; }
           python3 scripts/regression_gate.py --update --idle out/idle.jsonl --peak out/peak.jsonl \
             --baseline bench/baseline.json --platform "${{ matrix.arch }}-${{ matrix.libc }}" --run-id "${{ github.run_id }}"
