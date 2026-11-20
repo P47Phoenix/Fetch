@@ -145,6 +145,7 @@ jobs:
   # through cargo-deny, but D-6 names cargo-audit specifically, so this job runs it directly rather than only by
   # proxy through `deny`. Installed by version pin (RustSec ships no first-party GitHub Action we can SHA-pin the
   # way every other step here is pinned), same pattern as cargo-zigbuild/cargo-llvm-cov elsewhere in this repo.
+  # cargo-audit does not read deny.toml: its ignores live in .cargo/audit.toml (keep the two lists in step).
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -153,7 +154,7 @@ jobs:
           persist-credentials: false
       - run: rustup show active-toolchain
       - run: cargo install --locked cargo-audit --version 0.22.2
-      - name: "D-6: cargo audit, no high/critical issues (RUSTSEC-... ignores, if ever needed, live in deny.toml)"
+      - name: "D-6: cargo audit, no high/critical issues (RUSTSEC-... ignores live in .cargo/audit.toml)"
         run: cargo audit --deny warnings
 
   # D-6 AC: "direct dependencies are at most 15" (NFR-05). Machine-checks the [dependencies] table in Cargo.toml
