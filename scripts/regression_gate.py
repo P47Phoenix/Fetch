@@ -3,7 +3,13 @@
 
 Compares this run's median idle (VmRSS) and gating peak (VmHWM) against the stored last-main
 baseline (bench/baseline.json) for one platform cell, and fails (exit 1) if either regressed by
-more than --max-regression-pct (default 10%) relative to the baseline.
+more than --max-regression-pct (default 10%) relative to the baseline AND by more than
+--min-regression-kb (default 1536 kB = 1.5 MiB) in absolute terms.
+
+The absolute floor exists because hosted-runner RSS is noisy at this scale: on the same commit the
+amd64-musl gating peak measured 4688, 4816 and 5712 kB in runs on the same day (a ~1 MiB, ~22% swing,
+docs/BENCHMARK.md also records musl amd64 outliers), so a pure 10% band on a ~2-6 MiB figure fails on
+noise. A real regression has to clear both bars.
 
 This is a TRIPWIRE on top of, never a replacement for, the absolute-target gate already enforced
 by `bench/measure.py --gate` (10 MiB idle / 40 MiB peak, strict). A run that is comfortably under
@@ -14,7 +20,7 @@ target (sprint-plan.md E-6 AC).
 
 Usage:
   regression_gate.py --idle out/idle.jsonl --peak out/peak.jsonl --baseline bench/baseline.json \
-      --platform amd64-gnu [--max-regression-pct 10]
+      --platform amd64-gnu [--max-regression-pct 10] [--min-regression-kb 1536]
 
   regression_gate.py --update --idle out/idle.jsonl --peak out/peak.jsonl --baseline bench/baseline.json \
       --platform amd64-gnu --run-id 12345
@@ -69,6 +75,8 @@ def main(argv=None):
     ap.add_argument("--baseline", required=True, help="bench/baseline.json")
     ap.add_argument("--platform", required=True, help="baseline key, e.g. amd64-gnu")
     ap.add_argument("--max-regression-pct", type=float, default=10.0)
+    ap.add_argument("--min-regression-kb", type=float, default=1536.0,
+                    help="absolute noise floor: a metric only regresses if it is also more than this many kB over baseline")
     ap.add_argument("--update", action="store_true", help="write this run's medians as the new baseline instead of gating")
     ap.add_argument("--run-id", default="", help="recorded alongside an --update (e.g. the GitHub Actions run id)")
     a = ap.parse_args(argv)
@@ -123,16 +131,19 @@ def main(argv=None):
         base = entry.get(base_key)
         if not base:
             continue
-        limit = base * threshold
+        # Both bars must be cleared: over the relative band AND over the absolute noise floor.
+        limit = max(base * threshold, base + a.min_regression_kb)
         pct = (current / base - 1.0) * 100.0
+        delta = current - base
         verdict = "REGRESSION" if current > limit else "ok"
         print(f"regression_gate[{a.platform}] {label}: current={current} kB baseline={base} kB "
-              f"({pct:+.1f}%, limit {a.max_regression_pct:.0f}% -> {limit:.0f} kB) {verdict}")
+              f"({pct:+.1f}%, {delta:+.0f} kB; limit max({a.max_regression_pct:.0f}%, +{a.min_regression_kb:.0f} kB) -> {limit:.0f} kB) {verdict}")
         if current > limit:
-            failures.append(f"{label}: {current} kB > {limit:.0f} kB ({pct:+.1f}% vs baseline {base} kB from run {entry.get('updated_from_run', '?')})")
+            failures.append(f"{label}: {current} kB > {limit:.0f} kB ({pct:+.1f}%, {delta:+.0f} kB vs baseline {base} kB from run {entry.get('updated_from_run', '?')})")
 
     if failures:
-        print(f"regression_gate[{a.platform}]: FAIL - regressed more than {a.max_regression_pct:.0f}% vs the stored last-main baseline:",
+        print(f"regression_gate[{a.platform}]: FAIL - regressed more than {a.max_regression_pct:.0f}% and more than "
+              f"{a.min_regression_kb:.0f} kB vs the stored baseline:",
               file=sys.stderr)
         for f_ in failures:
             print(f"  - {f_}", file=sys.stderr)
@@ -141,7 +152,7 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
-    print(f"regression_gate[{a.platform}]: PASS - within {a.max_regression_pct:.0f}% of the stored last-main baseline")
+    print(f"regression_gate[{a.platform}]: PASS - within max({a.max_regression_pct:.0f}%, {a.min_regression_kb:.0f} kB) of the stored baseline")
     return 0
 
 
