@@ -13,10 +13,10 @@
     "updated_utc": "2026-11-21T11:16:52.263Z"
   },
   "arm64-gnu": {
-    "idle_kB": 4136.0,
-    "peak_kB": 5572.0,
-    "updated_from_run": "44896771026",
-    "updated_utc": "2026-11-21T11:16:58.879Z"
+    "idle_kB": 4132.0,
+    "peak_kB": 5580.0,
+    "updated_from_run": "45016680718",
+    "updated_utc": "2026-11-22T11:38:55.334Z"
   },
   "arm64-musl": {
     "idle_kB": 2392.0,
