@@ -7,10 +7,10 @@
     "updated_utc": "2026-11-20T18:24:56.582Z"
   },
   "amd64-musl": {
-    "idle_kB": 2838.0,
-    "peak_kB": 5436.0,
-    "updated_from_run": "44896771026",
-    "updated_utc": "2026-11-21T11:16:52.263Z"
+    "idle_kB": 2836.0,
+    "peak_kB": 4924.0,
+    "updated_from_run": "45175217166",
+    "updated_utc": "2026-11-23T12:51:42.139Z"
   },
   "arm64-gnu": {
     "idle_kB": 4136.0,
