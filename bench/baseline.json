@@ -8,9 +8,9 @@
   },
   "amd64-musl": {
     "idle_kB": 2838.0,
-    "peak_kB": 4986.0,
-    "updated_from_run": "45819741314",
-    "updated_utc": "2026-11-26T12:46:17.155Z"
+    "peak_kB": 4792.0,
+    "updated_from_run": "45996747871",
+    "updated_utc": "2026-11-27T12:32:01.915Z"
   },
   "arm64-gnu": {
     "idle_kB": 4136.0,
